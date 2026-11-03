@@ -14,7 +14,7 @@ O dono, sozinho, no computador. Ação frequente: **Copiar** a mensagem de um ca
 | Card: loja vira rótulo neutro (sem laranja Amazon / amarelo ML); URL crua removida; ordem título → preço/desconto → avaliação → mensagem → ação; título limitado a 2 linhas | Sinal-ruído; hierarquia |
 | Contador do cabeçalho mantém o texto original (totais por loja, única visão deles), em Legenda Mudo; contagem das abas sem parênteses e em Mono | Sinal-ruído |
 | Espaçamento em tokens, grid `minmax(min(100%,340px),1fr)` (sem rolagem horizontal em 320 px), painéis com campos empilhados | Espaço em branco |
-| Etiqueta só em: Copiar, aba ativa (Etiqueta clara + borda + negrito), foco e o desconto (`.off`, Etiqueta escura) | ~5% de acento |
+| Etiqueta só em: Copiar, aba ativa (Etiqueta clara + borda + negrito), foco, o desconto (`.off`, Etiqueta escura) e a etiqueta do logo | ~5% de acento |
 
 ## Acessibilidade (WCAG 2.2 AA)
 - Texto sobre Etiqueta usa Tinta (`#111110`, ~6,4:1). Mudo sobre Papel ~5:1.
@@ -46,5 +46,7 @@ Não confundir com `--etiqueta`, que é o token da cor de acento (#FF5B14 / #FF6
 - **No `index.html`:** SVG inline dentro do `<h1>` (`svg.logo`, `role="img"`, `aria-label="Etiqueta"`). As letras são paths (traçados da Geist 600, sem depender da fonte carregar) com `fill:currentColor`; a etiqueta usa `var(--etiqueta)`. Por isso a versão positiva (Tinta no claro) e a negativa (texto claro no escuro) saem dos tokens e do `prefers-color-scheme`, sem cor fixa. Altura 28 px, largura automática.
 - **Favicon:** só a etiqueta, em SVG data URI no `<link rel="icon">`, com #FF5B14 fixo (data URI não lê tokens) e furo vazado.
 - **Quando usar cada versão:** positivo sobre Papel ou Superfície claros (padrão); negativo sobre fundo escuro; **sobre acento** (texto e etiqueta em Tinta sobre fundo laranja) só documentado, sem lugar na interface hoje. Se for usar, mantenha tudo em Tinta.
-- **Área de respiro:** pelo menos a altura do "i" sem o pingo (x-height, cerca de metade da altura das letras) livre em volta. Não girar, esticar nem recolorir; não usar abaixo de 20 px de altura.
+- **Área de respiro:** em uso isolado (prancha, material externo, redes), pelo menos a altura do "i" sem o pingo (x-height, cerca de metade da altura das letras) livre em volta. Na barra do `index.html`, o respiro é o da própria barra: 8 px (`--s2`) até o contador e o padding do header; não aumentar só por causa do logo. Não girar, esticar nem recolorir; não usar abaixo de 20 px de altura.
+- **Cor no escuro:** a prancha negativa usa a etiqueta em #FF6A2B, igual ao token escuro `--etiqueta`; não há diferença a corrigir.
+- **Na barra (28 px):** a etiqueta mede cerca de 6×5 px e o furo some; lê-se como um "pingo laranja", como na proporção da prancha. A forma completa aparece no favicon e em usos maiores.
 - **Arquivos originais:** as três PNGs vieram da Lixeira (o dono as tinha movido de Downloads).
