@@ -8,13 +8,16 @@ Os testes usam as duas para nunca tocar o banco real nem o servidor em 8765.
 Disparo automático (disparo.py): ACHADINHOS_DISPARO=0 desliga o agendador, ACHADINHOS_TICK_SEG
 troca o intervalo (padrão 30 s) e ACHADINHOS_TRANSPORTE=falso com ACHADINHOS_TRANSPORTE_ARQUIVO
 liga o transporte de teste.
+API v1 de ofertas (api_ofertas.py, docs/produto/planos/api-achadinho-turbo.md): só liga com o token
+Bearer de api_token.txt, ao lado deste arquivo (ACHADINHOS_API_TOKEN_ARQUIVO troca o caminho). Sem o
+arquivo, toda rota /api/v1/ responde 503. Para trocar o token, troque o arquivo e reinicie.
 
 O disparo é importado dentro das funções que o usam (criar_banco, rotas e __main__): quem importa
 este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
 mesmo numa cópia sem o disparo.py. O coletar_amazon.py chama criar_banco, então precisa do
 disparo.py ao lado e também migra o banco (só aditivo: cria numeros, regras e envios).
 """
-import json, re, sqlite3, html, os, logging, urllib.request, urllib.parse
+import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
@@ -45,6 +48,15 @@ ESTATICO_TESTES = re.compile(r'\A/testes/[a-z0-9-]+\.test\.html\Z')
 # Preenchidos no __main__; importado como módulo, o transporte é o manual e não há agendador.
 TRANSPORTE = None
 AGENDADOR = None
+# API v1 de ofertas (Achadinho Turbo). API_TOKEN é preenchido no __main__ (iniciar_api_v1); importado como
+# módulo, fica None e a v1 responde 503. O token nunca vai para log, resposta nem query string.
+# O prefixo mora no api_ofertas.PREFIXO, como o do disparo (as rotas não ficam escritas aqui).
+SUFIXOS_V1_LOG = ('ofertas', 'categorias')   # só para o log; quem decide a rota é o api_ofertas.rota
+API_TOKEN_ARQUIVO = os.environ.get('ACHADINHOS_API_TOKEN_ARQUIVO') or os.path.join(BASE, 'api_token.txt')
+API_TOKEN = None
+TOKEN_VALIDO = re.compile(r'[A-Za-z0-9_-]{32,}')
+MAX_ARQUIVO_TOKEN = 4096   # bytes; um token de verdade tem 43 caracteres
+METODOS_HTTP = ('GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')
 UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36'
 
 
@@ -339,6 +351,77 @@ def extrair_produto_amazon(h):
     }
 
 
+# ---------- API v1 de ofertas: token, guarda e log ----------
+def carregar_token_api(caminho):
+    """Lê o token da API v1. Devolve (token, motivo); token None quer dizer API desligada.
+
+    O arquivo tem de ser regular, ASCII e ter no máximo MAX_ARQUIVO_TOKEN bytes; o token, sem os
+    espaços das pontas, precisa de 32 caracteres ou mais de [A-Za-z0-9_-]. Com token válido, o motivo
+    é '' ou o aviso de permissão aberta (grupo ou outros podem ler). O motivo nunca traz o token nem
+    o conteúdo do arquivo, e a mensagem da exceção não entra (só o tipo).
+    """
+    try:
+        # O_NONBLOCK: um FIFO no lugar do arquivo não trava a subida do servidor
+        fd = os.open(caminho, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, 'arquivo do token não encontrado'
+    except OSError as e:
+        return None, f'não consegui abrir o arquivo do token ({type(e).__name__})'
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None, 'o caminho do token não é um arquivo comum'
+        bruto = os.read(fd, MAX_ARQUIVO_TOKEN + 1)
+    except OSError as e:
+        return None, f'não consegui ler o arquivo do token ({type(e).__name__})'
+    finally:
+        os.close(fd)
+    if len(bruto) > MAX_ARQUIVO_TOKEN:
+        return None, f'o arquivo do token passa de {MAX_ARQUIVO_TOKEN} bytes'
+    try:
+        token = bruto.decode('ascii').strip()
+    except UnicodeDecodeError:
+        token = ''
+    if not TOKEN_VALIDO.fullmatch(token):
+        return None, 'token inválido: use 32 ou mais caracteres de A-Z, a-z, 0-9, _ e -'
+    aviso = ''
+    if info.st_mode & 0o077:
+        aviso = f'o arquivo do token pode ser lido por outros usuários (use chmod 600 {caminho})'
+    return token, aviso
+
+
+def prefixo_v1():
+    """api_ofertas.PREFIXO, importado sob demanda (como o disparo): quem importa este módulo só pelo
+    conectar/DB não precisa do api_ofertas.py nem do disparo.py."""
+    import api_ofertas
+    return api_ofertas.PREFIXO
+
+
+def eh_rota_v1(caminho):
+    """Caminho cru (sem query) da API v1: o prefixo sem a barra final ou qualquer coisa abaixo dele."""
+    if not caminho.startswith('/api/'):
+        return False
+    p = prefixo_v1()
+    return caminho == p[:-1] or caminho.startswith(p)
+
+
+def linha_v1_para_log(linha):
+    """Linha da requisição da v1 sem nada que o cliente possa ter mandado de segredo.
+
+    Fica o método (se for um conhecido), a rota (se for ofertas ou categorias; senão "(outra rota)"),
+    "?(omitida)" no lugar da query e a versão HTTP (se bem formada). Um ?token= mandado por engano,
+    um token no caminho ou numa linha malformada nunca chegam ao log.
+    """
+    prefixo = prefixo_v1()
+    partes = linha.split()
+    metodo = partes[0] if partes and partes[0] in METODOS_HTTP else '?'
+    alvo = next((p for p in partes if prefixo[:-1] in p), '')
+    caminho, tem_query, _ = alvo.partition('?')
+    rota = caminho if caminho in [prefixo + suf for suf in SUFIXOS_V1_LOG] else prefixo + '(outra rota)'
+    versao = partes[-1] if partes and re.fullmatch(r'HTTP/[0-9]\.[0-9]', partes[-1]) else ''
+    return ' '.join(p for p in (metodo, rota + ('?(omitida)' if tem_query else ''), versao) if p)
+
+
 class Handler(SimpleHTTPRequestHandler):
     timeout = 15   # segundos por leitura no socket: corpo menor que o Content-Length não prende a thread
 
@@ -347,8 +430,20 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # args[0] é a linha da requisição no log de acesso, mas um código (HTTPStatus) no send_error
-        if '/api/' in (str(args[0]) if args else ''):
+        primeiro = str(args[0]) if args else ''
+        if '/api/' in primeiro:
+            if prefixo_v1()[:-1] in primeiro:   # pela linha crua: pega também a linha malformada
+                args = (linha_v1_para_log(primeiro),) + args[1:]
             super().log_message(fmt, *args)
+
+    def send_error(self, code, message=None, explain=None):
+        """Erro do próprio http.server (linha malformada, método sem do_X, linha longa demais).
+
+        Só a frase padrão do código: a página de erro padrão repetiria ao cliente o método ou a linha
+        que ele mandou (um token posto ali por engano, por exemplo). O log de acesso segue passando
+        pelo log_message, que tira o que vier na linha da v1.
+        """
+        super().send_error(code)
 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store')
@@ -361,10 +456,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Vary', 'Origin')
         super().end_headers()
 
-    def json(self, obj, code=200):
+    def json(self, obj, code=200, cabecalhos=()):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        for nome, valor in cabecalhos:
+            self.send_header(nome, valor)
         self.send_header('Content-Length', str(len(b)))
         self.end_headers()
         if self.command != 'HEAD':
@@ -381,6 +478,8 @@ class Handler(SimpleHTTPRequestHandler):
         self._caminho = self.path.split('?', 1)[0]
         if (self.headers.get('Host') or '').strip().lower() not in HOSTS_LOCAIS:
             self.json({'error': 'host não permitido'}, 403); return True
+        if eh_rota_v1(self._caminho):
+            return self.bloquear_v1()
         if not self._caminho.startswith('/api/'):
             return False
         origem = self.headers.get('Origin')
@@ -398,6 +497,40 @@ class Handler(SimpleHTTPRequestHandler):
         if (self.headers.get('Sec-Fetch-Site') or '').strip().lower() in ('cross-site', 'same-site'):
             self.json({'error': 'origem não permitida'}, 403); return True
         return False
+
+    def bloquear_v1(self):
+        """Guarda da API v1, depois da checagem de Host. Responde e devolve True quando recusa.
+
+        Ordem: navegador (Origin, mesmo a local, ou Sec-Fetch-Site) dá 403; API desligada (sem
+        token) dá 503; sem "Authorization: Bearer <token>" certo dá 401 com WWW-Authenticate; método
+        diferente de GET dá 405, só depois da autenticação. O token só vale no cabeçalho (?token= não
+        autentica) e é comparado em tempo constante. A v1 nunca leva CORS.
+        """
+        if self.headers.get('Origin') is not None or self.headers.get('Sec-Fetch-Site') is not None:
+            self.json({'error': 'a API v1 não aceita pedidos de navegador'}, 403); return True
+        if not API_TOKEN:
+            # o motivo (arquivo ausente, token inválido, caminho trocado) já foi para o stderr na subida
+            self.json({'error': 'a API v1 está desligada: veja o motivo no log do servidor'}, 503); return True
+        if not self.token_v1_confere():
+            self.json({'error': 'token ausente ou inválido: envie Authorization: Bearer <token>'}, 401,
+                      cabecalhos=[('WWW-Authenticate', 'Bearer')])
+            return True
+        if self.command != 'GET':
+            self.json({'error': 'método não permitido: a API só aceita GET'}, 405,
+                      cabecalhos=[('Allow', 'GET')])
+            return True
+        return False
+
+    def token_v1_confere(self):
+        """Um único cabeçalho Authorization, no formato "Bearer <token>" (esquema sem diferenciar caixa)."""
+        valores = self.headers.get_all('Authorization') or []
+        if len(valores) != 1:
+            return False
+        esquema, _, recebido = valores[0].strip().partition(' ')
+        if esquema.lower() != 'bearer':
+            return False
+        # bytes dos dois lados: compare_digest com str recusa texto fora do ASCII
+        return hmac.compare_digest(recebido.strip().encode('utf-8', 'replace'), API_TOKEN.encode('ascii'))
 
     def estatico_permitido(self):
         """Só /, /index.html e /testes/<nome>.test.html; ajusta self.path para o arquivo."""
@@ -460,6 +593,35 @@ class Handler(SimpleHTTPRequestHandler):
                 con.close()
         return True
 
+    def despachar_v1(self):
+        """GET autenticado em /api/v1/ vai para api_ofertas.rota. True se a rota era da v1.
+
+        O bloquear_v1() já conferiu navegador, token e método. A conexão fica só de leitura
+        (PRAGMA query_only): a v1 nunca grava. ErroApi vira {"error": msg} com o código; erro
+        inesperado vira 500 com só o tipo no log (a mensagem do sqlite pode trazer dados).
+        """
+        if not eh_rota_v1(self._caminho):
+            return False
+        import api_ofertas
+        pares = urllib.parse.parse_qsl(self.path.split('?', 1)[1] if '?' in self.path else '',
+                                       keep_blank_values=True)   # "q=" vazio dá 400 em vez de sumir
+        con = None
+        try:
+            con = conectar()
+            con.execute('PRAGMA query_only=1')
+            resposta = api_ofertas.rota(con, self.command, self._caminho, pares, eh_link_afiliado)
+        except api_ofertas.ErroApi as e:
+            self.json({'error': e.msg}, e.codigo)
+        except Exception as e:   # noqa: BLE001
+            self.log_message('"%s" api v1 falhou: %s', self.requestline, type(e).__name__)
+            self.json({'error': 'erro interno na API v1'}, 500)
+        else:
+            self.json(resposta)
+        finally:
+            if con is not None:
+                con.close()
+        return True
+
     def do_OPTIONS(self):
         if self.bloquear():
             return
@@ -481,7 +643,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_HEAD()
 
     def do_GET(self):
-        if self.bloquear() or self.despachar_disparo():
+        if self.bloquear() or self.despachar_v1() or self.despachar_disparo():
             return
         caminho = self._caminho
         q = dict(urllib.parse.parse_qsl(self.path.split('?', 1)[1] if '?' in self.path else ''))
@@ -624,11 +786,28 @@ def iniciar_disparo():
     log.info('disparo: agendador %s, transporte %s', 'ligado' if AGENDADOR else 'desligado', TRANSPORTE.nome)
 
 
+def iniciar_api_v1():
+    """Lê o token da API v1 (uma vez, na subida) e avisa no stderr se ela ficou ligada ou não.
+
+    Só o caminho e o motivo vão para o log, nunca o token. Sem token válido o servidor sobe do
+    mesmo jeito e a v1 responde 503.
+    """
+    global API_TOKEN
+    API_TOKEN, motivo = carregar_token_api(API_TOKEN_ARQUIVO)
+    if API_TOKEN:
+        print(f'API v1 ligada (token em {API_TOKEN_ARQUIVO})', file=sys.stderr, flush=True)
+        if motivo:
+            print(f'API v1: aviso: {motivo}', file=sys.stderr, flush=True)
+    else:
+        print(f'API v1 desligada: {motivo} ({API_TOKEN_ARQUIVO})', file=sys.stderr, flush=True)
+
+
 if __name__ == '__main__':
     criar_banco()
     # bind antes do agendador: a porta ocupada impede uma segunda instância de disparar em dobro
     servidor = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Site em http://localhost:{PORT}/  (banco: {DB})')
+    iniciar_api_v1()
     iniciar_disparo()
     try:
         servidor.serve_forever()

@@ -7,3 +7,4 @@
 - [Tela Disparo e seu teste](disparo-tela-testes.md) — servidor falso no iframe; corrida de hash no abrir(); dialog close atrasado; classes que colidem
 - [Testes do coletar_shopee.py](coletar-shopee-testes.md) — dois pontos de rede mockados; ID vazio e mock; Secret no subprocesso; mutantes; test_servidor instável em paralelo
 - [Shopee no front e nos testes](shopee-front-testes.md) — LOJA em 1 linha p/ o test_disparo_qa; chips de loja; itens falsos; HOSTS_FOTO exato
+- [API v1: api_ofertas.py e servidor](api-ofertas-testes.md) — ORDER BY/índice; afinidade TEXT; inf; literais /api/ no fonte; undici; log cru; token em teste

@@ -5,3 +5,4 @@
 - [Testes do disparo](testes-disparo.md) — suítes, paridade via node vm, armadilhas (Write converte \u, pendente expira), mutantes e fatos do banco
 - [Tela Disparo (páginas qa/integração)](testes-disparo-tela.md) — nomes sem underscore, integração com banco novo, slot de 1 s, mutantes
 - [Perfumaria em 3 lojas (Shopee, ordens, 42 termos)](testes-perfumaria-tres-lojas.md) — arquivos test_shopee_qa/test_ordens_qa, armadilhas de import e mutantes
+- [API v1 de ofertas (Achadinho Turbo)](testes-api-ofertas-v1.md) — test_api_ofertas_qa.py, cópia do banco real em mode=ro, mutantes, armadilhas de laço/pkill

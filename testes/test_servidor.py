@@ -40,13 +40,18 @@ def porta_livre():
 PROXY_MORTO = 'http://127.0.0.1:9'
 PROXIES_MORTOS = {'http_proxy': PROXY_MORTO, 'https_proxy': PROXY_MORTO, 'ftp_proxy': PROXY_MORTO,
                   'no_proxy': ''}
+# Arquivo de token da API v1 que nunca existe (diretório de nome único, nunca criado): o servidor de
+# teste sobe com a v1 desligada mesmo que o dono tenha criado o api_token.txt real ao lado do servidor.py.
+SEM_TOKEN_API = os.path.join(tempfile.gettempdir(), f'achadinhos-sem-token-{os.getpid()}-{time.time_ns()}',
+                             'api_token.txt')
 
 
 def ambiente(db, porta=None):
-    """Ambiente do subprocesso: sempre com banco temporário, nunca o real, e sem rede."""
+    """Ambiente do subprocesso: sempre com banco temporário, nunca o real, sem rede e sem o token da API v1."""
     if os.path.realpath(db) == DB_REAL:
         raise RuntimeError('o teste tentou usar o banco real')
     env = dict(os.environ, ACHADINHOS_DB=db, PYTHONDONTWRITEBYTECODE='1', **PROXIES_MORTOS)
+    env['ACHADINHOS_API_TOKEN_ARQUIVO'] = SEM_TOKEN_API
     if porta:
         env['ACHADINHOS_PORTA'] = str(porta)
     return env

@@ -732,6 +732,7 @@ function usarServidor() {
     s.proc = spawn('python3', ['-u', 'servidor.py'], {
       cwd: RAIZ, stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...process.env, ACHADINHOS_DB: db, ACHADINHOS_PORTA: String(s.porta), PYTHONDONTWRITEBYTECODE: '1',
+        ACHADINHOS_API_TOKEN_ARQUIVO: path.join(s.dir, 'sem-api-token.txt'),   // v1 desligada mesmo com o token real
         http_proxy: morto, https_proxy: morto, ftp_proxy: morto, no_proxy: '' },
     });
     s.proc.stderr.resume();

@@ -21,6 +21,9 @@ __pycache__/
 # Segredos
 .env*
 !.env.example
+# Token da API v1 para o Achadinho Turbo (servidor.py, ACHADINHOS_API_TOKEN_ARQUIVO)
+api_token.txt
+api_cabecalho.txt
 
 # Estado local do Claude Code
 .claude/scheduled_tasks.lock

@@ -25,6 +25,10 @@ Padrões a procurar sempre (origem: revisões de 2026-11-03).
 - **Host do link não amarrado à loja do item** (S1 Shopee, 2026-11-03, corrigido na rodada 2 com `URL_DA_LOJA`/`eh_link_afiliado_da_loja`/`GLOB`): validação de url por allowlist global (`eh_url_de_loja`, PATCH `eh_link_afiliado`, `sql_link_preservado`) deixa `loja:'ml'` com link da Shopee etc. Em loja nova, exija host por loja na gravação, não só no disparo.
 - **Cliente HTTP autenticado que segue redirect**: `urllib` repassa `Authorization` em 301/302/303 para qualquer host, inclusive `http` (S2 Shopee, corrigido em 2026-11-03 com `OPENER_API` sem redirect). Chamada com credencial deve usar opener sem redirect.
 - **Segredo exportado no shell**: instrução `export SECRET` deixa o valor no ambiente de tudo que o terminal abrir depois (inclusive sessões de agente, onde `env` vazaria para a conversa). Prefira variável só no comando + `unset`, ou `getpass` (S3 Shopee, corrigido em 2026-11-03: `os.environ.pop` + README).
+- **Log de acesso com a query**: `log_message` grava a linha da requisição crua. Rota que pode receber segredo (token, `?token=` por engano) precisa redigir pela linha crua (feito na v1 com `linha_v1_para_log`, 2026-11-03). O `send_error` passa o código em `args[0]`, então a mensagem dele (que pode citar a linha) não é logada.
+- **Método sem `do_X` (TRACE, CONNECT, FOO)**: o `http.server` responde 501 antes do `bloquear()` (sem checar Host). Desde 2026-11-03 o `Handler.send_error` só repassa o código (a página não ecoa nada); confira que continua assim.
+- **Token sem entropia mínima**: `TOKEN_VALIDO` aceita qualquer texto de 32+ caracteres (INFORMATIVA local, docs mandam `token_urlsafe(32)`; vira requisito com VPS).
+- **Valor numérico gigante em campo de item** (`coletar_amazon.py` grava sem teto): `contagem`/`pct` podem levantar `OverflowError`/`ValueError`; caminho novo que converte campo do item deve isolar por linha (feito em `api_ofertas.oferta`).
 - Runner `testes/rodar.mjs`: CDP em porta efêmera de 127.0.0.1, perfil temporário, `kill` no `finally` e em SIGINT/SIGTERM.
 
 Ver [[areas-sensiveis]], [[riscos-aceitos]].

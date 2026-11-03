@@ -14,6 +14,7 @@ Variáveis de ambiente (todas opcionais):
 - `ACHADINHOS_PORTA`: porta do servidor (padrão `8765`).
 - `ACHADINHOS_FEITOS`: arquivo de progresso do `coletar_amazon.py` (padrão `coleta_amazon_feitos.txt`).
 - `ACHADINHOS_FEITOS_SHOPEE`: arquivo de progresso do `coletar_shopee.py` (padrão `coleta_shopee_feitos.txt`).
+- `ACHADINHOS_API_TOKEN_ARQUIVO`: arquivo do token da API para o Achadinho Turbo (padrão `api_token.txt` ao lado do `servidor.py`; veja "API para o Achadinho Turbo").
 
 O `coletar_shopee.py` também lê `ACHADINHOS_SHOPEE_APP_ID` e `ACHADINHOS_SHOPEE_SECRET` (veja "Coleta da Shopee"). O servidor não usa essas duas.
 
@@ -23,7 +24,7 @@ Use sempre proxies mortos, para nenhum teste sair para a rede:
 
 ```
 export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 ftp_proxy=http://127.0.0.1:9
-python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py
+python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py
 python3 testes/test_servidor.py -v
 python3 testes/test_migrar_categorias.py -v
 python3 testes/test_coletar_amazon.py -v
@@ -31,7 +32,12 @@ python3 testes/test_coletar_shopee.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
 python3 testes/test_classificar_lista.py -v
+python3 testes/test_api_ofertas.py -v
+python3 testes/test_api_ofertas_servidor.py -v
 node --test testes/coletar_ml.test.mjs
+node --test testes/api_ofertas.test.mjs
+python3 testes/test_api_ofertas_qa.py -v   # lenta: cerca de 60 s
+node --test testes/api_ofertas_qa.test.mjs
 python3 testes/test_servidor_qa.py -v
 python3 testes/test_migrar_categorias_qa.py -v
 python3 testes/test_coletar_amazon_qa.py -v
@@ -48,7 +54,7 @@ Os testes que falam com o servidor sobem o `servidor.py` como subprocesso, com b
 Os testes do front precisam de Node 22+ e do Chrome. Rode-os sobre uma cópia do banco (veja "Backup"), com o servidor de teste na 8766. Para a página das abas, a cópia tem que estar migrada:
 
 ```
-ACHADINHOS_DB=/caminho/copia.db ACHADINHOS_PORTA=8766 python3 servidor.py
+ACHADINHOS_DB=/caminho/copia.db ACHADINHOS_PORTA=8766 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe python3 servidor.py
 PORTA=8766 node testes/rodar.mjs abas
 PORTA=8766 node testes/rodar.mjs copiar-imagem
 PORTA=8766 node testes/rodar.mjs abrir-e-adicionar
@@ -58,9 +64,34 @@ PORTA=8766 node testes/rodar.mjs mensagens
 A página `disparo` testa a tela do disparo com um servidor falso dentro dela: só lê os itens do servidor sob teste. Suba esse servidor com o agendador desligado, para nenhuma regra gerar envio durante o teste:
 
 ```
-ACHADINHOS_DB=/caminho/copia.db ACHADINHOS_PORTA=8766 ACHADINHOS_DISPARO=0 python3 servidor.py
+ACHADINHOS_DB=/caminho/copia.db ACHADINHOS_PORTA=8766 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe ACHADINHOS_DISPARO=0 python3 servidor.py
 PORTA=8766 node testes/rodar.mjs disparo
 ```
+
+## API para o Achadinho Turbo
+
+O servidor tem uma API só de leitura, `/api/v1/ofertas` e `/api/v1/categorias`, para o Achadinho Turbo (no mesmo computador) buscar ofertas. Toda oferta sai com link de afiliado da própria loja. Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+
+**Ligar:** crie o token e reinicie o servidor. O `api_token.txt` fica ao lado do `servidor.py` e está no `.gitignore`.
+
+```
+python3 -c "import secrets; print(secrets.token_urlsafe(32))" > api_token.txt; chmod 600 api_token.txt
+# pare o servidor.py (Ctrl+C) e suba de novo: python3 servidor.py
+```
+
+O servidor lê o arquivo só na subida e avisa no terminal "API v1 ligada". **Nunca cole o token em chat, issue, commit nem log.** Para trocar o token, troque o arquivo e reinicie; depois atualize o valor no Turbo. O token só vale no cabeçalho `Authorization: Bearer`; `?token=` na URL não autentica, e navegador é barrado.
+
+**Testar** (as categorias e as 2 primeiras ofertas de uma aba). Para o token não aparecer na linha de comando (o `ps` e o histórico do shell mostrariam um `$(cat api_token.txt)`), crie uma vez um arquivo de cabeçalho e use `curl -H @arquivo`:
+
+```
+{ printf 'Authorization: Bearer '; cat api_token.txt; } > api_cabecalho.txt; chmod 600 api_cabecalho.txt
+curl -s -H @api_cabecalho.txt "http://localhost:8765/api/v1/categorias"
+curl -s -G -H @api_cabecalho.txt --data-urlencode "cat=Perfumes e Perfumaria" -d limite=2 "http://localhost:8765/api/v1/ofertas"
+```
+
+**`api_cabecalho.txt` também é segredo** (tem o token): não versione (confira se está no `.gitignore`) e apague quando não precisar mais. Sem token (ou com ele errado) a resposta é 401; com a API desligada, 503 (o motivo aparece no terminal do servidor).
+
+**Desligar:** apague o `api_token.txt` e reinicie o servidor (a API passa a responder 503).
 
 ## Backup
 

@@ -192,6 +192,10 @@ Os horários são ISO local sem fuso. Trate como texto.
 - **Mudança no Turbo por outra sessão:** este plano não toca `/home/ufla/Documentos/achadinhoturbo`. As linhas citadas podem mudar, e o guia de encaixe é uma sugestão.
 - **Migração:** não há.
 
+## Decisões tomadas na implementação (03/11/2026)
+- **P3 revista por recomendação do `seguranca`:** o guia de encaixe manda o Turbo **regerar o link do ML** com a etiqueta do dono (ou revisar antes de enviar) e **revisar os da Shopee** antes de enviar. Motivo: o Etiqueta confere só o formato (`meli.la`, `s.shopee.com.br`), não de quem é a conta; com o R1 (API local sem token para escrita), um link de terceiro plantado no banco chegaria aos grupos sem revisão. Amazon segue "como veio" (a tag é conferida).
+- O dono pediu para seguir até o fim sem parar; as premissas P1, P2, P4 a P7 foram adotadas como estão.
+
 ## Perguntas em aberto e premissas adotadas
 - **P1 (dono):** o Turbo busca no Etiqueta (pull)? *Premissa:* sim.
 - **P2 (dono):** a v1 exige token em `api_token.txt` e fica desligada até você criar esse arquivo? *Premissa:* sim.

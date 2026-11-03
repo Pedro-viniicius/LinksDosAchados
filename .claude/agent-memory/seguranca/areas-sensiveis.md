@@ -49,6 +49,14 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - Botão "Abrir": só `https:` via `new URL`, com `noopener,noreferrer` (S1 corrigido em 2026-11-03). POST `/api/items` exige `eh_url_de_loja` (https, netloc == host, `HOSTS_LOJAS` + `*.mercadolivre.com.br`); PATCH segue com `eh_link_afiliado`. `coletar_amazon.py` grava por `S.upsert()` direto, sem essa validação (ramo do WhatsApp grava `https?://\S+` do chat).
 - Banco em 2026-11-03: toda `url` é `https://meli.la/` (ml) ou `https://www.amazon.com.br/` (amazon); toda `imagem` em `http2.mlstatic.com`/`m.media-amazon.com`.
 
+**API v1 de ofertas (`api_ofertas.py` + `bloquear_v1`/`despachar_v1` no `servidor.py`; plano api-achadinho-turbo, E1/E2 revisadas em 2026-11-03)**
+- Primeiro segredo do servidor: token Bearer em `api_token.txt` (`ACHADINHOS_API_TOKEN_ARQUIVO`), no `.gitignore`, lido uma vez no `__main__` (arquivo regular, ≤ 4096 B, ASCII, `[A-Za-z0-9_-]{32,}`; permissão aberta só avisa). Sem token: 503. Estático é allowlist, então o arquivo não é servido.
+- Ordem: Host → Origin/`Sec-Fetch-Site` (qualquer valor) 403 → 503 → 401 (`compare_digest` em bytes, um só `Authorization`) → 405. `eh_rota_v1` usa o caminho cru (`/api/v1` ou `/api/v1/...`); variantes (`/api//v1`, `%6F`, `V1`) caem no roteamento antigo e dão 404.
+- Log: linha com `/api/v1` passa por `linha_v1_para_log` (query vira `?(omitida)`); 500 loga só o tipo. Conexão com `PRAGMA query_only=1`.
+- Sai só `items` (nada de `numeros`/`regras`/`envios`); CA2 via `link_da_loja_ok`, `urls_da_mensagem` em titulo/cupom/cat/busca/item_id, `imagem_permitida(url, loja)`. Medido: ~0,5 s por pedido com 8.380 itens; sem limite de taxa.
+- Consumidor: Achadinho Turbo (Node, 3737, outro repo; não acessar). Texto sai cru: o consumidor escapa (no contrato). `api_cabecalho.txt` (cabeçalho com o token, para `curl -H @`) também é segredo e está no `.gitignore`. Testes antigos apontam `ACHADINHOS_API_TOKEN_ARQUIVO` para caminho inexistente.
+- Contrato: `docs/produto/referencias/api-ofertas.md` (guia do Turbo manda regerar o link do ML; Shopee segue "como veio").
+
 **Invariantes**
 - Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`).
 - Servidor só em 127.0.0.1; toda resposta leva `X-Frame-Options: SAMEORIGIN` e `frame-ancestors 'self'` (o teste embute o index.html); sem outra CSP.

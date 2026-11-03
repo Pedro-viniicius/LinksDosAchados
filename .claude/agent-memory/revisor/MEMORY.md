@@ -5,3 +5,4 @@
 - [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo com o estado que ele cria; a doc herda erro do plano (FEITOS novo recoleta tudo)
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
+- [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
