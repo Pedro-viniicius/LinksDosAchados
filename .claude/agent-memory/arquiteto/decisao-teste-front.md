@@ -1,10 +1,13 @@
 ---
 name: decisao-teste-front
-description: Estratégia de teste proposta para o front sem dependência, com página testes/*.test.html no Chrome headless via --dump-dom e iframe do index.html
+description: Estratégia de teste do front sem dependência, com testes/*.test.html rodados por node testes/rodar.mjs (Chrome headless via CDP) e iframe do index.html real
 metadata:
   type: project
 ---
-Proposta em 2026-11-03 (plano copiar-imagem, ADR 2), **aguardando aprovação do dono**. Os testes do front ficam em `testes/*.test.html`, servidos pelo `servidor.py` real. Um iframe carrega `/index.html`, e a página roda com `google-chrome --headless=new --virtual-time-budget=30000 --dump-dom URL | grep RESULTADO`. Só GET na API e itens falsos montados com `win.renderCard`.
+Adotada no commit `fcfcff8` (2026-11-03), a partir da ADR 2 do plano copiar-imagem.
+- Os testes do front ficam em `testes/*.test.html`, servidos pelo `servidor.py`. Um iframe carrega `/index.html`, só faz GET na API e monta itens falsos com `win.renderCard`.
+- O comando que vale é `node testes/rodar.mjs <nome>`, com Chrome headless via CDP em tempo real. O `--dump-dom` com virtual-time **não** serve: o resultado sai pendente com fotos reais.
+- O plano blindar-servidor propõe a variável `PORTA` no runner e testes de servidor em `testes/test_servidor.py` (unittest com subprocesso).
 
-**Why:** o projeto não tem suíte nem dependências. O Chrome está em `/usr/bin/google-chrome`; o node existe via nvm, mas não tem canvas nem clipboard e exigiria extrair o JS do HTML. O hook do qa só aceita caminhos com `/testes/` ou `.test.`.
-**How to apply:** em features do front, exija lógica testável em `function` global (`let`/`const` não ficam em `window`). Antes de reusar, confira se o dono aprovou e se o `CLAUDE.md` já registra o comando. Veja [[cdn-imagens-fatos]].
+**Why:** o projeto não tem suíte nem dependências. O node não tem canvas nem clipboard. O hook do qa só aceita caminhos com `/testes/` ou `.test.`.
+**How to apply:** em features do front, exija lógica testável em `function` global (`let`/`const` não ficam em `window`). Veja [[cdn-imagens-fatos]] e [[decisao-blindar-servidor]].

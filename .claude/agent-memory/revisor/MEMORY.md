@@ -1,2 +1,2 @@
-- [Ambiente de revisão](revisao-ambiente.md) — git desde 309bb89, servidor real só com GET, Chrome headless para layout, testes/*.test.html em tempo real via CDP
+- [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio com ACHADINHOS_DB/PORTA, Chrome headless, testes do front e do servidor
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global

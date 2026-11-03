@@ -1,27 +1,29 @@
 ---
 name: areas-sensiveis
-description: Onde mora dado pessoal, entradas públicas, superfícies de rede e invariantes do projeto achadinhos (servidor local 127.0.0.1:8765)
+description: Onde mora dado pessoal, entradas, guardas do servidor (Host/Origin/Sec-Fetch-Site, estático fechado) e invariantes do projeto achadinhos
 metadata:
   type: project
 ---
 
-Mapa de superfície (conferido em 2026-11-03; confira no código antes de usar).
+Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; confira no código antes de usar).
 
 **Dado pessoal**
-- `WhatsApp Chat - AmazonLinks/_chat.txt` (e o `.zip`): nome do dono. Fora do git (`.gitignore`), mas DENTRO da pasta servida pelo `servidor.py` (static de BASE inteira) -> responde 200 com `Access-Control-Allow-Origin: *`. Não leia o conteúdo; cheque só status/headers.
-- `achadinhos.db`: produtos e links de afiliado, sem dado de cliente. Também servido como arquivo estático.
+- `WhatsApp Chat - AmazonLinks/_chat.txt` (e o `.zip`): nome do dono. Fora do git. Desde o blindar-servidor NÃO é servido (estático só `/`, `/index.html`, `/testes/<nome>.test.html`). Não leia o conteúdo; cheque só status.
+- `achadinhos.db`: produtos e links de afiliado, sem dado de cliente. Testes usam `ACHADINHOS_DB`/`ACHADINHOS_PORTA` com banco temporário.
 
-**Entradas externas**
-- POST `/api/items`, PATCH/DELETE `/api/items/<id>`, PUT `/api/config/<chave>`: sem autenticação, sem checagem de Origin/Content-Type (`corpo()` faz json.loads de qualquer corpo). `loja` é livre no upsert.
-- `/api/fetch?url=`: `urllib.request.urlopen` de URL arbitrária no servidor (SSRF; aceita esquemas do urllib). Devolve só campos extraídos por regex.
-- Coluna `imagem`/`titulo` etc. vêm de scraping (Amazon, ML via Claude in Chrome).
+**Guardas do `servidor.py` (`bloquear()`)**
+- Host exato `localhost:<PORTA>`/`127.0.0.1:<PORTA>` (anti rebinding), em todo método.
+- `/api/`: Origin local passa; Origin do ML (`lista.` e `www.mercadolivre.com.br`) só GET/POST/PATCH em `ROTAS_ML`; sem Origin, `Sec-Fetch-Site` cross/same-site = 403.
+- Caminho cru (sem decodificar) para roteamento; HTTP/1.0 (uma requisição por conexão).
+- Corpo: 415 sem `application/json`, 400 JSON inválido; `loja` em `LOJAS`; PATCH `url` só afiliado (`eh_link_afiliado`).
+- `/api/fetch`: allowlist https `www.amazon.com.br`, `amazon.com.br`, `amzn.to`, conferida em cada redirect (`RedirecionamentoAmazon`).
 
 **Saídas no front (`index.html`)**
-- Tudo via template string + `innerHTML`; `esc()` escapa `& < > "` (não `'`; atributos usam aspas duplas).
-- "Copiar imagem" (2026-11-03): allowlist `HOSTS_FOTO` + https antes do fetch, `credentials:'omit'`, timeout 15 s, canvas -> PNG -> clipboard só no clique.
+- `innerHTML` com template string; `esc()` escapa `& < > "`. "Copiar imagem": `HOSTS_FOTO` na URL pedida e no `r.url` final.
 
 **Invariantes**
-- Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`). Qualquer escrita não autenticada em `url` ameaça isso.
-- Servidor escuta só em 127.0.0.1; não há CSP; headers CORS abertos em `end_headers`.
+- Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`).
+- Servidor só em 127.0.0.1; toda resposta leva `X-Frame-Options: SAMEORIGIN` e `frame-ancestors 'self'` (o teste embute o index.html); sem outra CSP.
+- O servidor em 8765 é o REAL: só GET nele.
 
 Ver [[problemas-recorrentes]] e [[riscos-aceitos]].

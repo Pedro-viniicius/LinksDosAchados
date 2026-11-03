@@ -745,12 +745,14 @@ teste('CA5: a mensagem de um card sem foto continua igual a buildMsg e o botão 
 });
 
 // ================================================================ CA6
-teste('CA6: servidor.py não ganhou rota nem proxy de imagem', async () => {
-  const src = await (await FETCH_ORIG('/servidor.py')).text();
-  afirma(src.length > 1000, 'não consegui ler servidor.py pelo servidor estático');
-  const rotas = [...new Set([...src.matchAll(/['"](\/api\/[^'"]*)['"]/g)].map(m => m[1]))].sort();
-  igual(rotas, ['/api/', '/api/config/', '/api/fetch', '/api/items', '/api/ml-sem-afiliado']);
-  afirma(!/\/api\/(imagem|img|foto|proxy|copiar)/i.test(src), 'rota de proxy de imagem não faz parte do plano');
+// A checagem "sem rota nem proxy de imagem" no fonte do servidor.py mora em testes/test_servidor.py
+// (plano blindar-servidor): o estático não serve mais o fonte, o banco nem o log.
+teste('CA6: o estático não serve servidor.py, o banco nem o log (404, só o status)', async () => {
+  for (const p of ['/servidor.py', '/achadinhos.db', '/servidor.log']) {
+    const r = await FETCH_ORIG(p);
+    if (r.body) r.body.cancel();   // não lê o corpo
+    igual(r.status, 404, p);
+  }
 });
 
 teste('CA6: index.html não ganhou script externo, import nem biblioteca; só as fontes que já existiam', async () => {

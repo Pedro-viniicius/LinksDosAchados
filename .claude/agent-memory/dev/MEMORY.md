@@ -1,1 +1,2 @@
 - [Chrome headless nos testes do front](chrome-headless-testes.md) — virtual-time trava decode de imagem; runner `node testes/rodar.mjs`; clipboard real com grantPermissions
+- [Testes do servidor.py](servidor-testes.md) — rede só via proxy morto; mutantes numa cópia; órfãos; `//` no 3.14; front na 8766 com cópia

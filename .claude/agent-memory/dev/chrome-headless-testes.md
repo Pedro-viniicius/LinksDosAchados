@@ -9,7 +9,7 @@ Testes do front em `testes/*.test.html` rodam no Chrome headless. Armadilhas vis
 
 - `--virtual-time-budget`: `fetch` real funciona, mas `createImageBitmap` de uma foto real fica pendente e o tempo virtual acaba antes (dump sai no meio). Polling com `setTimeout` consome o orçamento rápido.
 - `--timeout=N` (tempo real) com `--dump-dom`: o `fetch` aos CDNs ficou pendente; não confiável.
-- O que funcionou: Chrome com `--remote-debugging-port`, navegar por CDP (`Page.navigate`) e consultar o DOM com `Runtime.evaluate` a cada 500 ms, usando o `WebSocket` global do node 22 (sem dependência). O `qa` fez disso o runner do projeto: `node testes/rodar.mjs copiar-imagem` (servidor 8765 no ar; espera `RESULTADO: OK`).
+- O que funcionou: Chrome com `--remote-debugging-port`, navegar por CDP (`Page.navigate`) e consultar o DOM com `Runtime.evaluate` a cada 500 ms, usando o `WebSocket` global do node 22 (sem dependência). O `qa` fez disso o runner do projeto: `node testes/rodar.mjs copiar-imagem` (servidor no ar; `PORTA=<n>` troca a porta, padrão 8765; espera `RESULTADO: OK`).
 - Stubs do qa montam `new W.Response(...)` com `r.url` vazio quando não passam URL: validação de `r.url` no código precisa aceitar vazio, senão quebra os casos de sucesso.
 - Área de transferência real no headless: `Browser.grantPermissions` com `clipboardReadWrite` e `clipboardSanitizedWrite` mais `Emulation.setFocusEmulationEnabled`. Assim `ClipboardItem` com Promise e `clipboard.read()` funcionam, sem gesto.
 - Página de teste com iframe: use `window.onload` do pai, não `iframe.onload` (a página pode carregar antes de o handler ser ligado via CDP).

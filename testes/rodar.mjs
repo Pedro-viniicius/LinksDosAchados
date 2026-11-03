@@ -1,5 +1,6 @@
 // Roda uma página testes/*.test.html no Chrome headless em tempo real e imprime a saída (#saida).
 // Uso (com o servidor no ar):  node testes/rodar.mjs copiar-imagem [segundos]
+// PORTA no ambiente troca a porta do servidor (padrão 8765), ex.: PORTA=8766 node testes/rodar.mjs copiar-imagem
 // Sai com código 0 só se a saída trouxer a linha de resultado "OK". Sem dependência (node 22+).
 // Por quê: com --virtual-time-budget o createImageBitmap/fetch de foto real não termina antes do dump.
 import { spawn } from 'node:child_process';
@@ -10,10 +11,22 @@ import { join } from 'node:path';
 const nome = process.argv[2];
 if (!nome) { console.error('uso: node testes/rodar.mjs <nome> [segundos]'); process.exit(2); }
 const maxSeg = +(process.argv[3] || 90);
-const url = `http://localhost:8765/testes/${nome}.test.html`;
+const portaServidor = process.env.PORTA || '8765';
+if (!/^\d{1,5}$/.test(portaServidor)) { console.error('PORTA inválida: ' + portaServidor); process.exit(2); }
+const url = `http://localhost:${portaServidor}/testes/${nome}.test.html`;
 const perfil = mkdtempSync(join(tmpdir(), 'qa-chrome-'));
 const chrome = spawn('google-chrome', ['--headless=new', '--disable-gpu', '--remote-debugging-port=0', `--user-data-dir=${perfil}`, 'about:blank'], { stdio: 'ignore' });
 const espera = ms => new Promise(r => setTimeout(r, ms));
+// Fecha o Chrome e apaga o perfil uma vez só, no fim normal ou em Ctrl+C/kill (sem deixar Chrome órfão).
+let limpo = false;
+async function limpar() {
+  if (limpo) return;
+  limpo = true;
+  chrome.kill(); await espera(300); rmSync(perfil, { recursive: true, force: true });
+}
+for (const [sinal, cod] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(sinal, () => { limpar().finally(() => process.exit(cod)); });
+}
 let codigo = 1;
 try {
   let porta;
@@ -40,10 +53,10 @@ try {
     txt = (await cmd('Runtime.evaluate', { expression: "(document.getElementById('saida')||{}).textContent||''", returnByValue: true })).result?.result?.value || '';
     if (/RESULTADO: (OK|FALHOU)/.test(txt)) break;
   }
-  console.log(txt || '(sem saída: o servidor está no ar em :8765?)');
+  console.log(txt || `(sem saída: o servidor está no ar em :${portaServidor}?)`);
   codigo = /RESULTADO: OK/.test(txt) ? 0 : 1;
   ws.close();
 } finally {
-  chrome.kill(); await espera(300); rmSync(perfil, { recursive: true, force: true });
+  await limpar();
 }
 process.exit(codigo);

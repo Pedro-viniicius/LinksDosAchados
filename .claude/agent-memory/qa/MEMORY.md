@@ -1,1 +1,2 @@
 - [Testes do front (copiar-imagem)](testes-front-copiar-imagem.md) — comando Chrome headless, armadilhas do --dump-dom, stubs e portas do scratchpad
+- [Testes do servidor Python](testes-servidor-python.md) — unittest com subprocesso, mutantes sem rede, backlog 5 e bugs q1/q2 abertos
