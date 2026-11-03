@@ -2,7 +2,7 @@
 
 > **A definir** (parcial): dados de teste. Os demais itens foram verificados em 2026-11-03.
 
-- **Produto:** gerador de mensagens de ofertas ("achadinhos") para grupos de WhatsApp. O dono coleta produtos da Amazon e do Mercado Livre, escolhe um template e copia a mensagem pronta, sempre com link de afiliado. Uso local, uma pessoa, no computador. A visão fica em `docs/produto/visao.md` (a escrever na sessão `produto`).
+- **Produto:** **Etiqueta** (nome que aparece no `<title>` e no `<h1>` do `index.html`; antes "Mensagens Achadinhos"; não confundir com a cor de acento Etiqueta, token `--etiqueta`, nem com a etiqueta de afiliado do ML; ao falar da cor, diga "cor Etiqueta" ou `--etiqueta`), gerador de mensagens de ofertas ("achadinhos") para grupos de WhatsApp. O dono coleta produtos da Amazon e do Mercado Livre, escolhe um template e copia a mensagem pronta, sempre com link de afiliado. Uso local, uma pessoa, no computador. A visão fica em `docs/produto/visao.md` (a escrever na sessão `produto`).
 - **Stack:** Python 3.14 só com a biblioteca padrão no servidor (`http.server` + `sqlite3`); `beautifulsoup4` e `lxml` na coleta da Amazon; front em HTML, CSS e JS puros num arquivo só, sem build; fontes Geist e Geist Mono pelo Google Fonts (sem internet, cai na fonte do sistema). Identidade visual em `Identidade visual — links de afiliado.pdf`; decisões de UI em `docs/produto/specs/ux-ui-identidade.md`. Sem manifesto de dependências.
 - **Camadas e pastas:**
   - `servidor.py`: API REST (`/api/items`, `/api/config/<chave>`, `/api/fetch`, `/api/ml-sem-afiliado`) em http://localhost:8765/. Estático só de `/`, `/index.html` e `/testes/<nome>.test.html` (o resto dá 404). Só aceita `Host` `localhost`/`127.0.0.1` na porta; na API, só a própria origem e, para a coleta do ML, `https://lista.mercadolivre.com.br` e `https://www.mercadolivre.com.br` (GET, POST e PATCH em `/api/items`, `/api/items/<id>` e `/api/ml-sem-afiliado`). Escritas exigem `Content-Type: application/json` (415), corpo até 5 MB (413), `loja` `amazon`/`ml` e, no PATCH de `url`, link de afiliado (400). `/api/fetch` só busca `https` da Amazon. Banco e porta vêm de `ACHADINHOS_DB` e `ACHADINHOS_PORTA` (padrão: `achadinhos.db` e 8765). Plano: `docs/produto/planos/blindar-servidor.md`. **Regra de negócio.**
@@ -17,7 +17,7 @@
 - **Regra do dono:** todo link gravado tem que ser de afiliado (Amazon `?tag=desejodemen01-20`; Mercado Livre `https://meli.la/...` da etiqueta `achadosmenicas`). Nunca troque um link de afiliado por um link comum.
 - **Dado pessoal (LGPD):** não há dado de cliente. O `_chat.txt` em `WhatsApp Chat - AmazonLinks/` tem o nome do dono; não copie para logs.
 - **Segredos:** nunca leia nem imprima `.env*` (exceto `.env.example`) nem arquivos de senha.
-- **Docs que acompanham a mudança:** `README.md` (a criar) e `CLAUDE.md`.
+- **Docs que acompanham a mudança:** `README.md` (hoje só o título do repositório, `LinksDosAchados`) e `CLAUDE.md`.
 
 ## Equipe de agentes
 

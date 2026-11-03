@@ -39,3 +39,12 @@ Padrão, hover, foco, desabilitado (opacidade .45 e cursor not-allowed), erro (`
 ## Pendências / observações para o dev
 - Card re-renderiza no "Atualizar preço", o que apaga `.done` (comportamento já existente).
 - Excluir não pede confirmação (regra existente); agora fica dentro de "Mais ações", o que já reduz clique acidental.
+
+## Logo (produto "Etiqueta")
+Não confundir com `--etiqueta`, que é o token da cor de acento (#FF5B14 / #FF6A2B no escuro).
+- **Forma:** palavra "etiqueta" em minúsculas, Geist Semibold, com o pingo do "i" trocado por uma etiqueta de preço (ponta para a esquerda, furo vazado). Originais em `docs/produto/marca/` (não servidos pelo `servidor.py`): `etiqueta-positivo.png`, `etiqueta-negativo.png`, `etiqueta-sobre-acento.png`. As legendas e a moldura da prancha não fazem parte do logo.
+- **No `index.html`:** SVG inline dentro do `<h1>` (`svg.logo`, `role="img"`, `aria-label="Etiqueta"`). As letras são paths (traçados da Geist 600, sem depender da fonte carregar) com `fill:currentColor`; a etiqueta usa `var(--etiqueta)`. Por isso a versão positiva (Tinta no claro) e a negativa (texto claro no escuro) saem dos tokens e do `prefers-color-scheme`, sem cor fixa. Altura 28 px, largura automática.
+- **Favicon:** só a etiqueta, em SVG data URI no `<link rel="icon">`, com #FF5B14 fixo (data URI não lê tokens) e furo vazado.
+- **Quando usar cada versão:** positivo sobre Papel ou Superfície claros (padrão); negativo sobre fundo escuro; **sobre acento** (texto e etiqueta em Tinta sobre fundo laranja) só documentado, sem lugar na interface hoje. Se for usar, mantenha tudo em Tinta.
+- **Área de respiro:** pelo menos a altura do "i" sem o pingo (x-height, cerca de metade da altura das letras) livre em volta. Não girar, esticar nem recolorir; não usar abaixo de 20 px de altura.
+- **Arquivos originais:** as três PNGs vieram da Lixeira (o dono as tinha movido de Downloads).
