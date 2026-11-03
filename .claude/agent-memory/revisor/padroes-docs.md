@@ -7,5 +7,7 @@ metadata:
 
 Uma doc que resume um protocolo do plano herda os erros do plano. Simule cada passo com o estado que ele cria, sem confiar no texto. Caso de 2026-11-03 (README da etapa 6 de eletronicos-e-coleta-ml): o passo "Amazon numa cópia" usava um `ACHADINHOS_FEITOS` novo e prometia "só faltam os 28 de perfumaria". Com o progresso vazio, porém, o `coletar_amazon.py` começa pela primeira chave do `buscas.json` (eletrônicos), e o teste não prova nada sobre perfumaria.
 
+Caso de 2026-11-03 (README da E8 de perfumaria-tres-lojas): o comando do Secret `read -rs S; VAR="$S" python3 ...; unset S` só limpa `S` se a lista terminar. Se o Python morrer por SIGINT fora do `try` (KeyboardInterrupt não tratado), o bash aborta a lista e `S` fica na shell. Variável não exportada não aparece em `env`/`printenv`, mas aparece em `set`. Para comando com segredo, simule a interrupção em cada ponto.
+
 **Why:** o plano e a doc diziam a mesma coisa, e por isso o erro parecia confirmado.
 **How to apply:** para cada comando da doc, pergunte o que existe antes dele (arquivo de progresso, `localStorage`, cópia migrada ou não, porta) e qual é a ordem de iteração do código. Rode os one-liners numa cópia no scratchpad. Ver [[revisao-ambiente]].

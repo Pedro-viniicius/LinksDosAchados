@@ -513,35 +513,46 @@ teste('número sem telefone: o cartão diz "Sem telefone", o cadastro sem telefo
 
 teste('contador "N itens combinam": acompanha loja, desconto mínimo e palavras (sem acento nem caixa), com o total calculado à parte', async () => {
   E.numeros.push(numeroFalso());
-  await abrir('#disparo/nova'); preencherRegra();
   const cat = CAT1();
+  // dois itens falsos da Shopee na categoria de teste (o banco real ainda não tem a loja); saem no fim do teste
+  const falsos = [1, 2].map(n => ({ id: 900000100 + n, loja: 'shopee', cat, busca: 'qa', url: 'https://s.shopee.com.br/QA' + n, data: { titulo: 'Perfume Shopee ' + n, preco: 'R$ 10,00', desconto: '' } }));
   const itens = W.eval('items');
-  const pct = d => parseInt(String(d || '').replace(/\D/g, '')) || 0;
-  const sa = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-  const esperado = (lojas, min, pal) => itens.filter(i => i.data && i.data.titulo && i.data.preco && i.cat === cat && lojas.includes(i.loja)
-    && pct(i.data.desconto) >= min && (!pal.length || pal.some(p => sa(i.data.titulo).includes(sa(p))))).length;
-  const lido = () => { const t = txt(q('#f-contador')); const m = /Cerca de ([\d.]+)/.exec(t); return m ? +m[1].replace(/\./g, '') : (/Nenhum item combina/.test(t) ? 0 : NaN); };
-  const todos = esperado(['amazon', 'ml'], 0, []);
-  afirma(todos > 5, 'a categoria de teste precisa ter itens: ' + todos);
-  igual(lido(), todos, 'sem filtro');
-  q('details.filtros summary').click();
-  digitar('#f-desc', '50');
-  const comDesc = esperado(['amazon', 'ml'], 50, []);
-  igual(lido(), comDesc, 'desconto mínimo 50');
-  afirma(comDesc < todos, 'o filtro de desconto tem que reduzir (senão o teste não prova nada)');
-  digitar('#f-desc', '0');
-  igual(lido(), todos, 'voltou');
-  const palavra = sa(itens.find(i => i.cat === cat && i.data && i.data.titulo).data.titulo).split(/\s+/).find(p => p.length > 3);
-  digitar('#f-palavras', palavra.toUpperCase());
-  igual(lido(), esperado(['amazon', 'ml'], 0, [palavra]), 'palavra ' + palavra);
-  digitar('#f-palavras', 'palavra-que-nao-existe-em-titulo');
-  igual(lido(), 0);
-  afirma(txt(q('#f-contador')).includes('Nenhum item combina'), txt(q('#f-contador')));
-  digitar('#f-palavras', '');
-  marcarChip('#f-lojas', 'amazon');
-  igual(lido(), esperado(['amazon'], 0, []), 'só Amazon');
-  marcarChip('#f-lojas', 'ml');
-  igual(lido(), esperado(['ml'], 0, []), 'só Mercado Livre');
+  itens.push(...falsos);
+  try {
+    await abrir('#disparo/nova'); preencherRegra();
+    const pct = d => parseInt(String(d || '').replace(/\D/g, '')) || 0;
+    const sa = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const esperado = (lojas, min, pal) => itens.filter(i => i.data && i.data.titulo && i.data.preco && i.cat === cat && lojas.includes(i.loja)
+      && pct(i.data.desconto) >= min && (!pal.length || pal.some(p => sa(i.data.titulo).includes(sa(p))))).length;
+    const lido = () => { const t = txt(q('#f-contador')); const m = /Cerca de ([\d.]+)/.exec(t); return m ? +m[1].replace(/\./g, '') : (/Nenhum item combina/.test(t) ? 0 : NaN); };
+    const TRES = ['amazon', 'ml', 'shopee'];
+    const todos = esperado(TRES, 0, []);
+    afirma(todos > 5, 'a categoria de teste precisa ter itens: ' + todos);
+    igual(lido(), todos, 'sem filtro');
+    q('details.filtros summary').click();
+    digitar('#f-desc', '50');
+    const comDesc = esperado(TRES, 50, []);
+    igual(lido(), comDesc, 'desconto mínimo 50');
+    afirma(comDesc < todos, 'o filtro de desconto tem que reduzir (senão o teste não prova nada)');
+    digitar('#f-desc', '0');
+    igual(lido(), todos, 'voltou');
+    const palavra = sa(itens.find(i => i.cat === cat && i.data && i.data.titulo).data.titulo).split(/\s+/).find(p => p.length > 3);
+    digitar('#f-palavras', palavra.toUpperCase());
+    igual(lido(), esperado(TRES, 0, [palavra]), 'palavra ' + palavra);
+    digitar('#f-palavras', 'palavra-que-nao-existe-em-titulo');
+    igual(lido(), 0);
+    afirma(txt(q('#f-contador')).includes('Nenhum item combina'), txt(q('#f-contador')));
+    digitar('#f-palavras', '');
+    marcarChip('#f-lojas', 'shopee', false);
+    igual(lido(), esperado(['amazon', 'ml'], 0, []), 'Amazon e Mercado Livre (sem a Shopee)');
+    marcarChip('#f-lojas', 'ml', false);
+    igual(lido(), esperado(['amazon'], 0, []), 'só Amazon');
+    marcarChip('#f-lojas', 'amazon', false); marcarChip('#f-lojas', 'ml');
+    igual(lido(), esperado(['ml'], 0, []), 'só Mercado Livre');
+    marcarChip('#f-lojas', 'ml', false); marcarChip('#f-lojas', 'shopee');
+    igual(lido(), esperado(['shopee'], 0, []), 'só Shopee');
+    igual(lido(), 2, 'os 2 itens falsos da Shopee');
+  } finally { for (const f of falsos) itens.splice(itens.indexOf(f), 1); }
 });
 
 teste('editar o número: o PUT vai para /numeros/<id> sem query, com o telefone só no corpo e só dígitos', async () => {

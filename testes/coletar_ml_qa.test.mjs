@@ -604,8 +604,8 @@ describe('QA CA13: cada termo grava a sua cat; BUSCAS e ALIAS', () => {
     const { ML } = carregar();
     assert.equal(JSON.stringify(ML.BUSCAS), JSON.stringify(BUSCAS_JSON));
     const todos = Object.values(ML.BUSCAS).flat();
-    assert.equal(todos.length, 126);
-    assert.equal(new Set(todos).size, 126);
+    assert.equal(todos.length, 140);
+    assert.equal(new Set(todos).size, 140);
     for (const t of [...todos, ...Object.keys(ML.BUSCAS)]) assert.equal(t, t.normalize('NFC'));
   });
 
@@ -619,22 +619,22 @@ describe('QA CA13: cada termo grava a sua cat; BUSCAS e ALIAS', () => {
     assert.deepEqual(js(ML.ALIAS), { 'Caixa inteligente assistente virtual': 'Smart speaker Alexa' });
   });
 
-  test('os 126 slugs são diferentes e só têm [a-z0-9-] (nenhuma busca repetida no ML)', () => {
+  test('os 140 slugs são diferentes e só têm [a-z0-9-] (nenhuma busca repetida no ML)', () => {
     const { ML } = carregar();
     const slugs = TODOS_TERMOS.map(([t]) => ML.slug(t));
     assert.equal(new Set(slugs).size, slugs.length);
     for (const s of slugs) assert.match(s, /^[a-z0-9]+(-[a-z0-9]+)*$/);
   });
 
-  test('coletar() sem termos percorre os 126 termos na ordem do arquivo, cada POST com cat e busca certas', async () => {
+  test('coletar() sem termos percorre os 140 termos na ordem do arquivo, cada POST com cat e busca certas', async () => {
     const ff = fetchFalso({ paginaDe: (slug) => pagina([polycard(TODOS_TERMOS.findIndex(([t]) => carregarSlug(t) === slug) + 1)]) });
     const { ML } = carregar({ fetch: ff.f });
     const estado = await ML.coletar({ pausa: [0, 0] });
     assert.equal(estado.erro, null);
-    assert.equal(ff.doML().length, 126);
+    assert.equal(ff.doML().length, 140);
     assert.deepEqual(ff.doML().map((c) => c.url), TODOS_TERMOS.map(([t]) => '/' + carregarSlug(t)));
     const posts = ff.doServidor().map((c) => JSON.parse(c.init.body).items);
-    assert.equal(posts.length, 126);
+    assert.equal(posts.length, 140);
     posts.forEach((itens, i) => {
       assert.equal(itens.length, 1);
       assert.equal(itens[0].cat, TODOS_TERMOS[i][1]);
@@ -1713,5 +1713,140 @@ describe('QA rodada 2, R6 e S4: gravarLink e chamadas ao servidor sem Referer', 
     assert.ok(todas.length >= 6);
     assert.ok(todas.some((c) => (c.init.method || 'GET') === 'GET') && todas.some((c) => c.init.method === 'PATCH') && todas.some((c) => c.init.method === 'POST'));
     for (const c of todas) assert.deepEqual([c.init.credentials, c.init.referrerPolicy], ['omit', 'no-referrer'], `${c.init.method || 'GET'} ${c.url}`);
+  });
+});
+
+// ------------------------------------------------------------------ CA4 e CA6 (perfumaria nas três lojas): QA da ordem e dos 42 termos
+describe('perfumaria (E3 e E6): ordem "caros", 42 termos e compatibilidade do progresso', () => {
+  const CHAVE = '__coletaML:http://localhost:8765';
+  const PERFUMES = 'Perfumes e Perfumaria';
+  const SUFIXO = '_OrderId_PRICE*DESC';
+  // os 28 termos da aba antes da E3, congelados aqui: o progresso gravado no navegador do dono usa o termo puro
+  const ANTIGOS_28 = ['Perfume masculino importado', 'Perfume feminino importado', 'Perfume masculino nacional',
+    'Perfume feminino nacional', 'Kit perfume', 'Miniatura de perfume', 'Body splash', 'Desodorante colônia',
+    'Hidratante corporal perfumado', 'Perfume árabe', 'Perfume infantil', 'Perfume Natura', 'Natura Kaiak',
+    'Natura Essencial', 'Perfume O Boticário', 'Malbec O Boticário', 'Egeo O Boticário', 'Perfume Eudora',
+    'Carolina Herrera 212 VIP', 'Carolina Herrera Good Girl', 'Paco Rabanne One Million', 'Paco Rabanne Invictus',
+    'Dior Sauvage', 'Lancôme La Vie Est Belle', 'Calvin Klein CK One', 'Jean Paul Gaultier Le Male',
+    'Azzaro Pour Homme', 'Lattafa'];
+
+  test('o bloco BUSCAS do script tem os 42 termos de perfumaria iguais ao buscas.json, em NFC e sem barra vertical', () => {
+    const { ML } = carregar();
+    assert.equal(BUSCAS_JSON[PERFUMES].length, 42);
+    assert.deepEqual(js(ML.BUSCAS[PERFUMES]), BUSCAS_JSON[PERFUMES]);
+    for (const t of ML.BUSCAS[PERFUMES]) {
+      assert.equal(t, t.normalize('NFC'));
+      assert.ok(!t.includes('|'), t);
+    }
+    for (const antigo of ANTIGOS_28) assert.ok(ML.BUSCAS[PERFUMES].includes(antigo), antigo);
+  });
+
+  test('os 42 termos dão 42 buscas diferentes na relevância e em "caros"; a URL de "caros" é a da relevância mais o sufixo', async () => {
+    const termos = BUSCAS_JSON[PERFUMES];
+    const rel = fetchFalso(), caros = fetchFalso();
+    await carregar({ fetch: rel.f }).ML.coletar({ termos, enviar: false, pausa: [0, 0] });
+    await carregar({ fetch: caros.f }).ML.coletar({ termos, enviar: false, pausa: [0, 0], ordem: 'caros' });
+    const urlsRel = rel.doML().map((c) => c.url), urlsCaros = caros.doML().map((c) => c.url);
+    assert.equal(urlsRel.length, 42);
+    assert.equal(new Set(urlsRel).size, 42, 'dois termos com o mesmo slug fariam a mesma busca duas vezes');
+    assert.deepEqual(urlsCaros, urlsRel.map((u) => u + SUFIXO));
+    assert.ok(urlsRel.every((u) => /^\/[a-z0-9]+(-[a-z0-9]+)*$/.test(u)), 'a relevância não leva sufixo nem caractere estranho');
+  });
+
+  test('a URL exata de alguns termos novos: acento, til e hífen viram o slug certo e o sufixo vai no fim', async () => {
+    const ff = fetchFalso();
+    await carregar({ fetch: ff.f }).ML.coletar({
+      termos: ['Óleo corporal perfumado', 'Loção pós-barba', 'Colônia feminina', 'Perfume árabe masculino'], enviar: false, pausa: [0, 0], ordem: 'caros' });
+    assert.deepEqual(ff.doML().map((c) => c.url), [
+      '/oleo-corporal-perfumado' + SUFIXO, '/locao-pos-barba' + SUFIXO, '/colonia-feminina' + SUFIXO, '/perfume-arabe-masculino' + SUFIXO]);
+  });
+
+  test('o progresso antigo (28 termos puros no localStorage) faz a relevância buscar só os 14 novos', async () => {
+    const ff = fetchFalso();
+    const antigo = memoria({ [CHAVE]: JSON.stringify(ANTIGOS_28) });
+    const { ML } = carregar({ fetch: ff.f, localStorage: antigo });
+    const r = await ML.coletar({ termos: BUSCAS_JSON[PERFUMES], pausa: [0, 0] });
+    assert.equal(r.erro, null);
+    assert.equal(js(r.pulados).length, 28);
+    assert.equal(js(r.feitos).length, 14);
+    assert.equal(ff.doML().length, 14);
+    const novos = BUSCAS_JSON[PERFUMES].filter((t) => !ANTIGOS_28.includes(t));
+    assert.deepEqual(js(r.feitos), novos);
+    assert.deepEqual(antigo.lista(CHAVE), [...ANTIGOS_28, ...novos], 'a relevância só acrescenta o termo puro');
+    // e "caros" ainda não foi feito para nenhum
+    const caros = await ML.coletar({ termos: BUSCAS_JSON[PERFUMES], pausa: [0, 0], ordem: 'caros' });
+    assert.equal(js(caros.feitos).length, 42);
+    assert.equal(js(caros.pulados).length, 0);
+  });
+
+  test('ordem "caros" sem lista de termos percorre os 140 do arquivo, cada um com o sufixo e a chave caros|termo', async () => {
+    const ff = fetchFalso();
+    const arm = memoria();
+    const { ML } = carregar({ fetch: ff.f, localStorage: arm });
+    const r = await ML.coletar({ ordem: 'caros', pausa: [0, 0] });
+    assert.equal(r.erro, null);
+    assert.equal(ff.doML().length, 140);
+    assert.ok(ff.doML().every((c) => c.url.endsWith(SUFIXO)));
+    assert.deepEqual(arm.lista(CHAVE), TODOS_TERMOS.map(([t]) => 'caros|' + t));
+    const n = ff.chamadas.length;
+    const de_novo = await ML.coletar({ ordem: 'caros', pausa: [0, 0] });
+    assert.equal(ff.chamadas.length, n, 'segunda volta não busca nada');
+    assert.equal(js(de_novo.pulados).length, 140);
+  });
+
+  test('cada termo de "caros" vai ao servidor com a cat e a busca do termo, loja ml e no máximo 30 itens', async () => {
+    const muitos = pagina(Array.from({ length: 45 }, (_, i) => polycard(i + 1)));
+    const ff = fetchFalso({ paginaDe: () => muitos });
+    await carregar({ fetch: ff.f }).ML.coletar({ termos: ['Perfume unissex', 'Kit sabonete perfumado'], ordem: 'caros', pausa: [0, 0] });
+    const posts = ff.doServidor().map((c) => JSON.parse(c.init.body));
+    assert.equal(posts.length, 2);
+    for (const [i, termo] of ['Perfume unissex', 'Kit sabonete perfumado'].entries()) {
+      assert.equal(posts[i].items.length, 30);
+      assert.ok(posts[i].items.every((it) => it.cat === PERFUMES && it.busca === termo && it.loja === 'ml'));
+    }
+  });
+
+  test('captcha no meio de uma volta "caros" mantém só as chaves caros| já gravadas e a retomada continua dali', async () => {
+    const arm = memoria({ [CHAVE]: JSON.stringify(['Smart TV']) });   // relevância antiga de outro termo
+    let captcha = true;
+    const ff = fetchFalso();
+    const f = async (url, init = {}) => {
+      if (captcha && url.startsWith('/body-splash')) return resposta(200, '<html>captcha</html>', 'https://www.mercadolivre.com.br/gz/account-verification');
+      return ff.f(url, init);
+    };
+    const { ML } = carregar({ fetch: f, localStorage: arm });
+    let r = await ML.coletar({ termos: ['Smart TV', 'Body splash', 'Geladeira'], ordem: 'caros', pausa: [0, 0] });
+    assert.match(r.erro, /captcha/);
+    assert.deepEqual(arm.lista(CHAVE), ['Smart TV', 'caros|Smart TV']);
+    captcha = false;
+    r = await ML.coletar({ termos: ['Smart TV', 'Body splash', 'Geladeira'], ordem: 'caros', pausa: [0, 0] });
+    assert.equal(r.erro, null);
+    assert.deepEqual(js(r.pulados), ['Smart TV']);
+    assert.deepEqual(js(r.feitos), ['Body splash', 'Geladeira']);
+    assert.deepEqual(arm.lista(CHAVE), ['Smart TV', 'caros|Smart TV', 'caros|Body splash', 'caros|Geladeira']);
+  });
+
+  for (const [nome, ordem] of [['array', ['caros']], ['String objeto', new String('caros')], ['com espaço antes', ' caros'],
+    ['com espaço depois', 'caros '], ['Relevancia maiúscula', 'Relevancia'], ['relevância com acento', 'relevância'], ['maior_preco', 'maior_preco'],
+    ['toString', 'toString'], ['hasOwnProperty', 'hasOwnProperty'], ['função', () => 'caros'], ['true', true], ['NaN', NaN]]) {
+    test(`ordem inválida (${nome}) é recusada antes de qualquer fetch, escrita ou estado rodando`, async () => {
+      const ff = fetchFalso();
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const r = await ML.coletar({ termos: ['Smart TV'], ordem });
+      assert.match(r.erro, /ordem deve ser uma destas: relevancia, caros/);
+      assert.equal(ff.chamadas.length, 0);
+      assert.equal(localStorage.escritas, 0);
+      assert.equal(r.rodando, false);
+      // e a coleta seguinte (válida) funciona: nada ficou travado
+      const ok = await ML.coletar({ termos: ['Smart TV'], ordem: 'caros', enviar: false });
+      assert.equal(ok.erro, null);
+    });
+  }
+
+  test('a coleta em "caros" só fala com o ML por GET na listagem e com o servidor por POST, sem outras rotas', async () => {
+    const ff = fetchFalso();
+    await carregar({ fetch: ff.f }).ML.coletar({ termos: ['Perfume para cabelo'], ordem: 'caros', pausa: [0, 0] });
+    assert.deepEqual(ff.doML().map((c) => [c.init.method || 'GET', c.url]), [['GET', '/perfume-para-cabelo' + SUFIXO]]);
+    assert.deepEqual(ff.doServidor().map((c) => [c.init.method, c.url]), [['POST', 'http://localhost:8765/api/items']]);
   });
 });

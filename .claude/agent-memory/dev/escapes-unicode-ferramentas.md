@@ -10,3 +10,5 @@ Em 2026-11-03, um `.replace(/[̀-ͯ]/g, '')` escrito com o Write saiu no `coleta
 **Why:** o texto do parâmetro passa por decodificação de escapes antes de ir para o arquivo.
 
 **How to apply:** quando o código precisar de `\uXXXX` (ou `\xNN`) literal, grave com um `node -e`/`node -` que monte a string com `\\u`, ou confira depois com `grep -nP "[\x{0300}-\x{036f}]" arquivo`. Escapes com barra dupla (`'\\u00'`) passaram intactos. Relacionado: [[coletar-ml-testes]].
+
+Em 2026-11-03 (E7), um `\u0085` (barra simples) num literal Python escrito pelo Write saiu intacto como escape: o comportamento não é constante. Confira sempre com `grep -nP`.

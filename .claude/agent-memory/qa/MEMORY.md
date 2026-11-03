@@ -4,3 +4,4 @@
 - [Abas e migração (Parte A)](testes-abas-migracao.md) — comandos, fluxo da cópia migrada p/ abas.test.html, mutantes e armadilhas
 - [Testes do disparo](testes-disparo.md) — suítes, paridade via node vm, armadilhas (Write converte \u, pendente expira), mutantes e fatos do banco
 - [Tela Disparo (páginas qa/integração)](testes-disparo-tela.md) — nomes sem underscore, integração com banco novo, slot de 1 s, mutantes
+- [Perfumaria em 3 lojas (Shopee, ordens, 42 termos)](testes-perfumaria-tres-lojas.md) — arquivos test_shopee_qa/test_ordens_qa, armadilhas de import e mutantes

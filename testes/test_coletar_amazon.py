@@ -9,6 +9,7 @@ coletar_amazon importa o servidor, que lê a variável ao carregar). `baixar`, `
 coleta_amazon_feitos.txt real. Qualquer saída acidental para a rede bate num proxy morto.
 Só biblioteca padrão (o coletar_amazon exige beautifulsoup4 instalado).
 """
+import io
 import json
 import os
 import shutil
@@ -87,6 +88,49 @@ class TestFeitos(Base):
 
     def test_chave_nova_e_por_termo(self):
         self.assertEqual(C.chave_busca('Smart TV'), 'busca|Smart TV')
+
+    def test_chave_da_relevancia_e_a_de_sempre(self):
+        self.assertEqual(C.chave_busca('Smart TV', 'relevancia'), 'busca|Smart TV')
+
+    def test_chave_das_outras_ordens_tem_prefixo_proprio(self):
+        self.assertEqual(C.chave_busca('Smart TV', 'vendidos'), 'ordem|vendidos|Smart TV')
+        self.assertEqual(C.chave_busca('Smart TV', 'caros'), 'ordem|caros|Smart TV')
+
+    def test_chave_ordem_sobrevive_ao_feitos_sem_virar_outro_termo(self):
+        # a armadilha: `busca|<termo>|<ordem>` seria lida como o termo "<ordem>"
+        escrever_feitos('ordem|vendidos|Smart TV', 'busca|Geladeira')
+        self.assertEqual(C.feitos(), {'ordem|vendidos|Smart TV', 'busca|Geladeira'})
+        self.assertNotIn(C.chave_busca('Smart TV'), C.feitos())
+
+    def test_ordem_desconhecida_na_chave_e_recusada(self):
+        with self.assertRaises(C.ArgInvalido):
+            C.chave_busca('Smart TV', 'baratos')
+
+
+class TestUrlEOrdens(unittest.TestCase):
+    def test_relevancia_mantem_a_url_de_hoje(self):
+        self.assertEqual(C.url_busca('Perfume Importado'), 'https://www.amazon.com.br/s?k=Perfume+Importado')
+        self.assertEqual(C.url_busca('Perfume Importado', 'relevancia'),
+                         'https://www.amazon.com.br/s?k=Perfume+Importado')
+
+    def test_outras_ordens_acrescentam_s(self):
+        base = 'https://www.amazon.com.br/s?k=Smart+TV&s='
+        self.assertEqual(C.url_busca('Smart TV', 'vendidos'), base + 'exact-aware-popularity-rank')
+        self.assertEqual(C.url_busca('Smart TV', 'avaliados'), base + 'review-rank')
+        self.assertEqual(C.url_busca('Smart TV', 'caros'), base + 'price-desc-rank')
+
+    def test_termo_com_acento_e_codificado(self):
+        self.assertEqual(C.url_busca('Água de Colônia', 'caros'),
+                         'https://www.amazon.com.br/s?k=%C3%81gua+de+Col%C3%B4nia&s=price-desc-rank')
+
+    def test_ler_ordens(self):
+        self.assertEqual(C.ler_ordens('vendidos,avaliados,caros'), ['vendidos', 'avaliados', 'caros'])
+        self.assertEqual(C.ler_ordens(' caros , caros,relevancia'), ['caros', 'relevancia'])
+
+    def test_ler_ordens_desconhecida_ou_vazia_e_recusada(self):
+        for ruim in ('baratos', 'vendidos,', '', 'vendidos,,caros', 'Vendidos'):
+            with self.subTest(ruim=ruim), self.assertRaises(C.ArgInvalido):
+                C.ler_ordens(ruim)
 
 
 class TestColetarBuscas(Base):
@@ -171,6 +215,134 @@ class TestColetarBuscas(Base):
         self.assertEqual(depois[0]['cat'], 'Aba Antiga')
         self.assertEqual(depois[0]['url'], antes['url'])
         self.assertEqual(depois[0]['titulo'], 'iPhone_17 0')  # preço/título atualizam
+
+    # --- ordens (perfumaria-tres-lojas, etapa E5) ---
+
+    def test_padrao_e_so_relevancia_com_url_e_chave_de_hoje(self):
+        C.coletar_buscas()
+        self.assertEqual(self.baixados, [
+            'https://www.amazon.com.br/s?k=iPhone+17', 'https://www.amazon.com.br/s?k=Smart+TV',
+            'https://www.amazon.com.br/s?k=Geladeira', 'https://www.amazon.com.br/s?k=Perfume+Importado+Masculino'])
+        self.assertTrue(all(l.startswith('busca|') for l in ler_feitos()))
+
+    def test_cat_com_ordens_coleta_so_os_termos_da_aba(self):
+        C.coletar_buscas('Black Friday | Eletrônicos', ['vendidos', 'avaliados', 'caros'])
+        s = 'https://www.amazon.com.br/s?k=%s&s=%s'
+        self.assertEqual(self.baixados, [
+            s % ('iPhone+17', 'exact-aware-popularity-rank'), s % ('iPhone+17', 'review-rank'),
+            s % ('iPhone+17', 'price-desc-rank'), s % ('Smart+TV', 'exact-aware-popularity-rank'),
+            s % ('Smart+TV', 'review-rank'), s % ('Smart+TV', 'price-desc-rank')])
+        self.assertEqual(ler_feitos(), [
+            'ordem|vendidos|iPhone 17', 'ordem|avaliados|iPhone 17', 'ordem|caros|iPhone 17',
+            'ordem|vendidos|Smart TV', 'ordem|avaliados|Smart TV', 'ordem|caros|Smart TV'])
+        self.assertEqual({i['cat'] for i in self.itens()}, {'Black Friday | Eletrônicos'})
+
+    def test_busca_continua_sendo_o_termo_e_a_url_e_de_afiliado(self):
+        C.coletar_buscas('Eletrodomésticos', ['caros'])
+        itens = self.itens()
+        self.assertEqual({i['busca'] for i in itens}, {'Geladeira'})
+        self.assertTrue(itens and all(i['url'].startswith('https://www.amazon.com.br/dp/')
+                                      and i['url'].endswith('?tag=' + S.TAG_AMAZON) for i in itens))
+
+    def test_progresso_antigo_da_relevancia_nao_recoleta(self):
+        escrever_feitos('busca|Black Friday|iPhone 17', 'busca|Casa Nova|Smart TV')
+        C.coletar_buscas('Black Friday | Eletrônicos', ['relevancia'])
+        self.assertEqual(self.baixados, [])
+        C.coletar_buscas('Black Friday | Eletrônicos', ['relevancia', 'vendidos'])
+        self.assertEqual([u for u in self.baixados if '&s=' not in u], [])  # só a ordem nova foi baixada
+        self.assertEqual(len(self.baixados), 2)
+
+    def test_chave_de_ordem_feita_nao_recoleta_e_a_relevancia_continua_separada(self):
+        escrever_feitos('ordem|vendidos|Geladeira')
+        C.coletar_buscas('Eletrodomésticos', ['vendidos'])
+        self.assertEqual(self.baixados, [])
+        C.coletar_buscas('Eletrodomésticos', ['vendidos', 'relevancia'])
+        self.assertEqual(self.baixados, ['https://www.amazon.com.br/s?k=Geladeira'])
+
+    def test_ordens_sem_cat_e_recusado_sem_baixar_nada(self):
+        with self.assertRaises(C.ArgInvalido):
+            C.coletar_buscas(None, ['vendidos'])
+        self.assertEqual(self.baixados, [])
+
+    def test_ordem_desconhecida_e_aba_desconhecida_sao_recusadas_sem_baixar_nada(self):
+        with self.assertRaises(C.ArgInvalido):
+            C.coletar_buscas('Eletrodomésticos', ['baratos'])
+        with self.assertRaises(C.ArgInvalido):
+            C.coletar_buscas('Aba que não existe', ['vendidos'])
+        self.assertEqual(self.baixados, [])
+
+    def test_cat_aceita_a_aba_em_nfd(self):
+        import unicodedata
+        C.coletar_buscas(unicodedata.normalize('NFD', 'Eletrodomésticos'))
+        self.assertEqual(len(self.baixados), 1)
+
+    def test_item_existente_mantem_cat_e_url_em_outra_ordem(self):
+        asin = 'BGeladeira0'
+        con = S.conectar()
+        S.upsert(con, {'loja': 'amazon', 'item_id': asin, 'cat': 'Aba Antiga', 'busca': 'antigo',
+                       'url': 'https://www.amazon.com.br/dp/%s?tag=%s' % (asin, S.TAG_AMAZON),
+                       'data': {'titulo': 'velho', 'preco': 'R$ 99,00'}})
+        con.commit(); con.close()
+        antes = [i for i in self.itens() if i['item_id'] == asin][0]
+        C.coletar_buscas('Eletrodomésticos', ['vendidos'])
+        depois = [i for i in self.itens() if i['item_id'] == asin]
+        self.assertEqual(len(depois), 1)
+        self.assertEqual((depois[0]['cat'], depois[0]['url']), ('Aba Antiga', antes['url']))
+
+
+class TestCLI(Base):
+    def setUp(self):
+        super().setUp()
+        self.chamadas = []
+        for p in (mock.patch.object(C, 'coletar_buscas', lambda *a, **k: self.chamadas.append(('buscas', a, k))),
+                  mock.patch.object(C, 'coletar_whatsapp', lambda: self.chamadas.append(('whatsapp',)))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def recusa(self, *argv):
+        with mock.patch('sys.stderr', io.StringIO()) as err, self.assertRaises(SystemExit) as r:
+            C.main(list(argv))
+        self.assertEqual(r.exception.code, 2)
+        self.assertEqual(self.chamadas, [])
+        return err.getvalue()
+
+    def roda(self, *argv):
+        with mock.patch('sys.stdout', io.StringIO()):
+            C.main(list(argv))
+
+    def test_buscas_sem_opcoes_e_so_relevancia_em_todas_as_abas(self):
+        self.roda('buscas')
+        self.assertEqual(self.chamadas, [('buscas', (None, ['relevancia']), {})])
+
+    def test_buscas_com_cat_e_ordens(self):
+        self.roda('buscas', '--cat', 'Perfumes e Perfumaria', '--ordens', 'vendidos,avaliados,caros')
+        self.assertEqual(self.chamadas, [('buscas', ('Perfumes e Perfumaria', ['vendidos', 'avaliados', 'caros']), {})])
+
+    def test_ordens_sem_cat_e_recusado(self):
+        self.assertIn('--cat', self.recusa('buscas', '--ordens', 'vendidos'))
+
+    def test_ordem_desconhecida_e_recusada(self):
+        self.assertIn('baratos', self.recusa('buscas', '--cat', 'Eletrodomésticos', '--ordens', 'baratos'))
+
+    def test_cat_ou_ordens_fora_do_modo_buscas_e_recusado(self):
+        self.recusa('whatsapp', '--cat', 'Eletrodomésticos')
+        self.recusa('tudo', '--cat', 'Eletrodomésticos', '--ordens', 'caros')
+
+    def test_modo_desconhecido_e_recusado(self):
+        self.recusa('buscar')
+
+    def test_whatsapp_e_tudo_seguem_funcionando(self):
+        self.roda('whatsapp')
+        self.assertEqual(self.chamadas, [('whatsapp',)])
+        self.chamadas.clear()
+        self.roda()  # sem argumentos = tudo
+        self.assertEqual(self.chamadas, [('whatsapp',), ('buscas', (None, ['relevancia']), {})])
+
+    def test_aba_desconhecida_sai_com_erro_2(self):
+        with mock.patch.object(C, 'coletar_buscas', side_effect=C.ArgInvalido('aba desconhecida')), \
+                mock.patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit) as r:
+            C.main(['buscas', '--cat', 'X', '--ordens', 'caros'])
+        self.assertEqual(r.exception.code, 2)
 
 
 if __name__ == '__main__':

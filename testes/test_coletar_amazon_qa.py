@@ -43,9 +43,13 @@ PLANO_CASA = [
     'Jogo de cama', 'Jogo de toalhas', 'Travesseiro', 'Edredom', 'Cortina', 'Persiana', 'Tapete',
     'Organizador de cozinha', 'Organizador de guarda-roupa']
 PLANO_PERFUMES = [
-    'Perfume masculino importado', 'Perfume feminino importado', 'Perfume masculino nacional',
-    'Perfume feminino nacional', 'Kit perfume', 'Miniatura de perfume', 'Body splash',
-    'Desodorante colônia', 'Hidratante corporal perfumado', 'Perfume árabe', 'Perfume infantil',
+    'Perfume feminino importado', 'Perfume masculino importado', 'Perfume feminino nacional',
+    'Perfume masculino nacional', 'Kit perfume com hidratante', 'Kit perfume com desodorante',
+    'Perfume árabe feminino', 'Perfume árabe masculino', 'Perfume unissex', 'Body splash feminino',
+    'Body splash masculino', 'Colônia feminina', 'Colônia masculina', 'Hidratante corporal perfumado',
+    'Óleo corporal perfumado', 'Desodorante corporal perfumado', 'Kit sabonete perfumado',
+    'Perfume para cabelo', 'Miniatura de perfume', 'Kit perfume', 'Loção pós-barba',
+    'Body splash', 'Desodorante colônia', 'Perfume árabe', 'Perfume infantil',
     'Perfume Natura', 'Natura Kaiak', 'Natura Essencial', 'Perfume O Boticário', 'Malbec O Boticário',
     'Egeo O Boticário', 'Perfume Eudora', 'Carolina Herrera 212 VIP', 'Carolina Herrera Good Girl',
     'Paco Rabanne One Million', 'Paco Rabanne Invictus', 'Dior Sauvage', 'Lancôme La Vie Est Belle',
@@ -60,10 +64,10 @@ def buscas_reais():
 class TestBuscasJson(unittest.TestCase):
     """CA7: o mapa termo -> categoria."""
 
-    def test_quatro_chaves_na_ordem_com_60_19_19_28_termos(self):
+    def test_quatro_chaves_na_ordem_com_60_19_19_42_termos(self):
         b = buscas_reais()
         self.assertEqual(list(b), [ELETRONICOS, ELETRODOMESTICOS, CASA, PERFUMES])
-        self.assertEqual([len(v) for v in b.values()], [60, 19, 19, 28])
+        self.assertEqual([len(v) for v in b.values()], [60, 19, 19, 42])
 
     def test_nenhum_termo_repete_nenhum_tem_barra_vertical_e_tudo_e_nfc(self):
         b = buscas_reais()
@@ -122,7 +126,7 @@ class BaseColeta(T.Base):
 
 
 class TestProgressoComBuscasReais(BaseColeta):
-    """CA8 com o buscas.json de verdade: o progresso antigo cobre os 98 termos e sobram os 28 de perfumaria."""
+    """CA8 com o buscas.json de verdade: o progresso antigo cobre os 98 termos e sobram os 42 de perfumaria."""
 
     def linhas_antigas(self):
         b = buscas_reais()
@@ -130,14 +134,14 @@ class TestProgressoComBuscasReais(BaseColeta):
         return ([f'busca|Black Friday|{t}' for t in eletronicos] + ['busca|Casa Nova|Smart TV'] +
                 [f'busca|Casa Nova|{t}' for t in b[ELETRODOMESTICOS] + b[CASA]])
 
-    def test_com_o_progresso_antigo_so_os_28_termos_de_perfumaria_sao_coletados(self):
+    def test_com_o_progresso_antigo_so_os_42_termos_de_perfumaria_sao_coletados(self):
         self.usar(buscas_reais())
         antigas = self.linhas_antigas()
         self.assertEqual(len(antigas), 98)
         T.escrever_feitos(*antigas, *[f'whatsapp|https://amzn.to/{i}' for i in range(3)])
         C.coletar_buscas()
         pedidos = [urllib.parse.unquote_plus(u.split('k=', 1)[1]) for u in self.baixados]
-        self.assertEqual(len(pedidos), 28)
+        self.assertEqual(len(pedidos), 42)
         self.assertEqual(set(pedidos), set(PLANO_PERFUMES))
         self.assertEqual({i['cat'] for i in self.itens()}, {PERFUMES})
         self.assertEqual({i['busca'] for i in self.itens()}, set(PLANO_PERFUMES))

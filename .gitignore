@@ -12,6 +12,7 @@ _chat.txt
 # Logs e progresso de coleta
 *.log
 coleta_amazon_feitos.txt
+coleta_shopee_feitos.txt
 
 # Python
 __pycache__/

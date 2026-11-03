@@ -699,9 +699,14 @@ class TestEscrita(ServidorTeste):
         self.assertEqual(depois['cat'], 'Teste')
 
     def test_ca7_patch_url_de_afiliado_da_200(self):
-        alvo = self.item('MLBESC1')['id']
-        for url in ('https://meli.la/abc', 'https://www.amazon.com.br/dp/B0X?tag=desejodemen01-20',
-                    'https://www.amazon.com.br/dp/B0X?th=1&tag=desejodemen01-20', 'https://meli.la/2Xyz9'):
+        # cada link vai a um item da própria loja (E1 da perfumaria: a loja fica amarrada ao host)
+        st, _, _ = self.postar([{'loja': 'amazon', 'item_id': 'B0PATCHAMZ',
+                                 'url': 'https://www.amazon.com.br/dp/B0PATCHAMZ'}])
+        self.assertEqual(st, 200)
+        do_ml, da_amazon = self.item('MLBESC1')['id'], self.item('B0PATCHAMZ')['id']
+        for alvo, url in ((do_ml, 'https://meli.la/abc'), (da_amazon, 'https://www.amazon.com.br/dp/B0X?tag=desejodemen01-20'),
+                          (da_amazon, 'https://www.amazon.com.br/dp/B0X?th=1&tag=desejodemen01-20'),
+                          (do_ml, 'https://meli.la/2Xyz9')):
             with self.subTest(url=url):
                 st, _, dados = self.pedir('PATCH', f'/api/items/{alvo}', {'url': url}, ml(ML_WWW))
                 self.assertEqual(st, 200, dados)
@@ -779,6 +784,251 @@ class TestUrlDoLote(ServidorTeste):
         st, _, dados = self.postar([{'loja': 'ml', 'item_id': 'MLBSEMURL'}, {'loja': 'ml', 'item_id': 'MLBURLVAZIA', 'url': ''}])
         self.assertEqual(st, 200, dados)
         self.assertEqual(self.json_de(dados)['inserido'], 0)
+
+
+# ================================================================ Shopee como terceira loja (perfumaria-tres-lojas, E1)
+SHOPEE_BOM = 'https://s.shopee.com.br/4AbC9xYz'
+# Formas que parecem o link curto da Shopee e não são (eh_link_afiliado tem que dar falso)
+SHOPEE_RUINS = [
+    'https://s.shopee.com.br.evil.com/abc', 'https://xs.shopee.com.br/abc', 'https://s-shopee.com.br/abc',
+    'https://shopee.com.br/abc', 'https://www.shopee.com.br/abc', 'https://shope.ee/abc',
+    'https://s.shopee.com.br/abc?x=1', 'https://s.shopee.com.br/abc?', 'https://s.shopee.com.br/abc#x',
+    'https://s.shopee.com.br/abc?utm_source=an_1', 'http://s.shopee.com.br/abc', 'HTTPS://s.shopee.com.br/abc',
+    'https://s.shopee.com.br:443/abc', 'https://s.shopee.com.br:8443/abc', 'https://s.shopee.com.br:/abc',
+    'https://s.shopee.com.br/', 'https://s.shopee.com.br', 'https://s.shopee.com.br/abc/def',
+    'https://s.shopee.com.br//abc', 'https://s.shopee.com.br/abc/', 'https://S.SHOPEE.COM.BR/abc',
+    'https://s.Shopee.com.br/abc', 'https://u@s.shopee.com.br/abc', 'https://s.shopee.com.br@evil.com/abc',
+    'https://s.shopee.com.br./abc', 'https://s.shopee.com.br/ab-c', 'https://s.shopee.com.br/ab_c',
+    'https://s.shopee.com.br/ab%41', 'https://s.shopee.com.br/\u00e1bc', 'https://s.shopee.com.br/abc\n',
+    ' https://s.shopee.com.br/abc', 'https://s.shopee.com.br/a bc', 'https://s.shopee.com.br\\@evil.com/abc',
+    'https://evil.com/?u=https://s.shopee.com.br/abc', 'javascript:alert(1)//s.shopee.com.br/abc']
+# Links de afiliado das outras lojas: valem para amazon/ml, nunca para loja shopee
+OUTRAS_LOJAS = ['https://www.amazon.com.br/dp/B0ABCDEFGH?tag=desejodemen01-20', 'https://meli.la/abc',
+                'https://www.mercadolivre.com.br/p/MLB1', 'https://amzn.to/abc']
+MSG_SHOPEE = 'url da Shopee precisa ser link de afiliado'
+
+
+class TestShopee(ServidorTeste):
+    """CA1: loja shopee só grava com o link curto de afiliado da Shopee; Amazon e ML não mudam."""
+
+    def item(self, item_id):
+        return next((i for i in self.itens() if i['item_id'] == item_id), None)
+
+    def test_ca1_post_shopee_com_link_de_afiliado_grava(self):
+        for nome, h in (('local', self.local()), ('ml', ml(ML_LISTA))):
+            with self.subTest(origem=nome):
+                item_id, url = f'111.{nome}', f'https://s.shopee.com.br/Ok{nome}9'
+                st, _, dados = self.postar([{'loja': 'shopee', 'item_id': item_id, 'cat': 'Perfumes e Perfumaria',
+                                             'busca': 'perfume', 'url': url, 'data': {'titulo': 'Perfume'}}], h)
+                self.assertEqual(st, 200, dados)
+                self.assertEqual(self.json_de(dados)['inserido'], 1)
+                it = self.item(item_id)
+                self.assertEqual((it['loja'], it['url']), ('shopee', url))
+
+    def test_ca1_post_shopee_com_url_ruim_da_400_e_nao_grava_o_lote(self):
+        for url in SHOPEE_RUINS + OUTRAS_LOJAS:
+            with self.subTest(url=url):
+                lote = [{'loja': 'ml', 'item_id': 'MLBSHPBOA', 'url': 'https://meli.la/boa'},
+                        {'loja': 'shopee', 'item_id': '1.1', 'url': SHOPEE_BOM},
+                        {'loja': 'shopee', 'item_id': '1.2', 'url': url}]
+                st, _, dados = self.postar(lote)
+                self.assertEqual(st, 400, dados)
+                self.assertIn('item 2', self.json_de(dados)['error'])
+        ids = [i['item_id'] for i in self.itens()]
+        for item_id in ('MLBSHPBOA', '1.1', '1.2'):
+            self.assertNotIn(item_id, ids)
+
+    def test_ca1_link_de_outra_loja_com_loja_shopee_da_a_mensagem_da_shopee(self):
+        for url in OUTRAS_LOJAS + ['https://s.shopee.com.br/abc?x=1', 'https://s.shopee.com.br/abc/def']:
+            with self.subTest(url=url):
+                st, _, dados = self.postar([{'loja': 'shopee', 'item_id': '2.1', 'url': url}])
+                self.assertEqual(st, 400)
+                self.assertEqual(self.json_de(dados)['error'], f'item 0: {MSG_SHOPEE}')
+        self.assertIsNone(self.item('2.1'))
+
+    def test_ca1_upsert_nao_troca_link_da_shopee(self):
+        st, _, _ = self.postar([{'loja': 'shopee', 'item_id': '3.1', 'url': 'https://s.shopee.com.br/Primeiro1'}])
+        self.assertEqual(st, 200)
+        st, _, dados = self.postar([{'loja': 'shopee', 'item_id': '3.1', 'url': 'https://s.shopee.com.br/Segundo2',
+                                     'data': {'titulo': 'Perfume', 'preco': 'R$ 99'}}])
+        self.assertEqual(st, 200, dados)
+        self.assertEqual(self.json_de(dados)['atualizado'], 1)
+        it = self.item('3.1')
+        self.assertEqual(it['url'], 'https://s.shopee.com.br/Primeiro1')
+        self.assertEqual(it['data']['preco'], 'R$ 99')
+
+    def test_ca1_upsert_direto_recusa_shopee_sem_link_de_afiliado(self):
+        # coletar_shopee.py (E7) grava por S.upsert(), sem HTTP: a regra vale lá também
+        db = os.path.join(self.dir, 'upsert-shopee.db')
+        codigo = ('import servidor as S\n'
+                  'S.criar_banco(); con = S.conectar()\n'
+                  "for url in ('https://www.amazon.com.br/dp/X?tag=desejodemen01-20', 'https://meli.la/x',\n"
+                  "            'https://s.shopee.com.br/abc?x=1', 'https://xs.shopee.com.br/abc', '', None):\n"
+                  '    try:\n'
+                  "        S.upsert(con, {'loja': 'shopee', 'item_id': 'U.1', 'url': url}); print('gravou')\n"
+                  '    except ValueError as e:\n'
+                  "        print('recusou' if str(e) == 'url da Shopee precisa ser link de afiliado' else e)\n"
+                  'try:\n'
+                  "    S.upsert(con, {'loja': 'shopee', 'item_id': 'U.2'}); print('gravou')\n"
+                  'except ValueError:\n'
+                  "    print('recusou')\n"
+                  "print(S.upsert(con, {'loja': 'shopee', 'item_id': 'U.3', 'url': 'https://s.shopee.com.br/Um1'}))\n"
+                  "print(S.upsert(con, {'loja': 'shopee', 'item_id': 'U.3', 'url': 'https://s.shopee.com.br/Dois2',\n"
+                  "                     'data': {'titulo': 'T'}}))\n"
+                  "con.commit(); print(con.execute('SELECT COUNT(*) FROM items').fetchone()[0])\n"
+                  "print(con.execute(\"SELECT url FROM items WHERE item_id='U.3'\").fetchone()[0])\n")
+        saida = subprocess.run([sys.executable, '-c', codigo], cwd=RAIZ, env=ambiente(db),
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(saida.returncode, 0, saida.stderr)
+        self.assertEqual(saida.stdout.split(), ['recusou'] * 7 + ['inserido', 'atualizado', '1',
+                                                                  'https://s.shopee.com.br/Um1'])
+
+    def test_ca1_patch_url_aceita_link_da_shopee_e_recusa_as_formas_parecidas(self):
+        st, _, _ = self.postar([{'loja': 'shopee', 'item_id': '4.1', 'url': 'https://s.shopee.com.br/Antes1'}])
+        self.assertEqual(st, 200)
+        alvo = self.item('4.1')['id']
+        for url in SHOPEE_RUINS:
+            with self.subTest(url=url):
+                st, _, dados = self.pedir('PATCH', f'/api/items/{alvo}', {'url': url}, self.local())
+                self.assertEqual(st, 400)
+                self.assertIn('s.shopee.com.br', self.json_de(dados)['error'])
+        self.assertEqual(self.item('4.1')['url'], 'https://s.shopee.com.br/Antes1')
+        for h in (self.local(), ml(ML_WWW)):
+            with self.subTest(origem=h['Origin']):
+                st, _, dados = self.pedir('PATCH', f'/api/items/{alvo}', {'url': SHOPEE_BOM}, h)
+                self.assertEqual(st, 200, dados)
+                self.assertEqual(self.json_de(dados)['url'], SHOPEE_BOM)
+
+    def test_ca1_loja_invalida_cita_as_tres_lojas(self):
+        st, _, dados = self.postar([{'loja': 'Shopee', 'item_id': '5.1', 'url': SHOPEE_BOM}])
+        self.assertEqual(st, 400)
+        self.assertEqual(self.json_de(dados)['error'], 'item 0: loja inválida (use amazon, ml ou shopee)')
+        st, _, dados = self.postar([{'loja': 'shopee', 'item_id': '5.2', 'url': 'https://evil.com/x'}])
+        self.assertEqual(st, 400)
+        self.assertIn('Shopee', self.json_de(dados)['error'])
+
+    def test_ca1_amazon_e_ml_nao_mudam(self):
+        st, _, dados = self.postar([
+            {'loja': 'amazon', 'item_id': 'B0SHPAMZ1', 'url': 'https://www.amazon.com.br/dp/B0SHPAMZ1?tag=desejodemen01-20'},
+            {'loja': 'ml', 'item_id': 'MLBSHPML1', 'url': 'https://www.mercadolivre.com.br/p/MLBSHPML1'},
+            {'loja': 'ml', 'item_id': 'MLBSHPML2', 'url': 'https://meli.la/shp2'}])
+        self.assertEqual(st, 200, dados)
+        self.assertEqual(self.json_de(dados)['inserido'], 3)
+        # o ML sem afiliado continua pendente; o upsert continua sem trocar meli.la nem a tag da Amazon
+        st, _, dados = self.pedir('GET', '/api/ml-sem-afiliado')
+        self.assertIn('MLBSHPML1', dados.decode())
+        st, _, _ = self.postar([
+            {'loja': 'amazon', 'item_id': 'B0SHPAMZ1', 'url': 'https://www.amazon.com.br/dp/B0SHPAMZ1', 'data': {'titulo': 'T'}},
+            {'loja': 'ml', 'item_id': 'MLBSHPML2', 'url': 'https://www.mercadolivre.com.br/p/MLBSHPML2', 'data': {'titulo': 'T'}}])
+        self.assertEqual(st, 200)
+        self.assertEqual(self.item('B0SHPAMZ1')['url'], 'https://www.amazon.com.br/dp/B0SHPAMZ1?tag=desejodemen01-20')
+        self.assertEqual(self.item('MLBSHPML2')['url'], 'https://meli.la/shp2')
+
+
+class TestLojaAmarradaAoHost(ServidorTeste):
+    """S1/R3 da E1: a url de um item tem de ser da própria loja, no POST, no PATCH e no upsert."""
+
+    TROCADAS = [('ml', SHOPEE_BOM), ('ml', 'https://s.shopee.com.br/?x'),
+                ('ml', 'https://www.amazon.com.br/dp/B0X?tag=desejodemen01-20'), ('ml', 'https://amzn.to/abc'),
+                ('amazon', 'https://meli.la/abc'), ('amazon', 'https://produto.mercadolivre.com.br/MLB-1'),
+                ('amazon', SHOPEE_BOM), ('shopee', 'https://meli.la/abc'),
+                ('shopee', 'https://www.amazon.com.br/dp/B0X?tag=desejodemen01-20')]
+
+    def item(self, item_id):
+        return next((i for i in self.itens() if i['item_id'] == item_id), None)
+
+    def test_s1_post_com_url_de_outra_loja_da_400_e_nao_grava_o_lote(self):
+        for loja, url in self.TROCADAS:
+            for nome, h in (('local', self.local()), ('ml', ml(ML_LISTA))):
+                with self.subTest(loja=loja, url=url, origem=nome):
+                    lote = [{'loja': 'ml', 'item_id': 'MLBTROCA0', 'url': 'https://meli.la/boa'},
+                            {'loja': loja, 'item_id': 'TROCA1', 'url': url}]
+                    st, _, dados = self.postar(lote, h)
+                    self.assertEqual(st, 400, dados)
+                    self.assertIn('item 1', self.json_de(dados)['error'])
+        ids = [i['item_id'] for i in self.itens()]
+        self.assertNotIn('MLBTROCA0', ids)
+        self.assertNotIn('TROCA1', ids)
+
+    def test_s1_mensagem_cita_a_loja_do_item(self):
+        casos = {'ml': 'item 0: url de item do Mercado Livre precisa ser do Mercado Livre (meli.la ou mercadolivre.com.br)',
+                 'amazon': 'item 0: url de item da Amazon precisa ser da Amazon (amazon.com.br ou amzn.to)',
+                 'shopee': f'item 0: {MSG_SHOPEE}'}
+        for loja, esperado in casos.items():
+            with self.subTest(loja=loja):
+                url = 'https://meli.la/abc' if loja != 'ml' else SHOPEE_BOM
+                st, _, dados = self.postar([{'loja': loja, 'item_id': 'MSG1', 'url': url}])
+                self.assertEqual(st, 400)
+                self.assertEqual(self.json_de(dados)['error'], esperado)
+
+    def test_s1_patch_com_link_de_outra_loja_da_400_e_nao_muda_nada(self):
+        st, _, _ = self.postar([
+            {'loja': 'shopee', 'item_id': '9.1', 'cat': 'Antes', 'url': 'https://s.shopee.com.br/Shp1'},
+            {'loja': 'ml', 'item_id': 'MLBPTROCA', 'cat': 'Antes', 'url': 'https://www.mercadolivre.com.br/p/MLBPTROCA'},
+            {'loja': 'amazon', 'item_id': 'B0PTROCA', 'cat': 'Antes', 'url': 'https://www.amazon.com.br/dp/B0PTROCA'}])
+        self.assertEqual(st, 200)
+        antes = {k: self.item(k) for k in ('9.1', 'MLBPTROCA', 'B0PTROCA')}
+        casos = [('9.1', 'https://meli.la/abc'), ('9.1', 'https://www.amazon.com.br/dp/X?tag=desejodemen01-20'),
+                 ('MLBPTROCA', SHOPEE_BOM), ('MLBPTROCA', 'https://www.amazon.com.br/dp/X?tag=desejodemen01-20'),
+                 ('B0PTROCA', 'https://meli.la/abc'), ('B0PTROCA', SHOPEE_BOM)]
+        for item_id, url in casos:
+            for h in (self.local(), ml(ML_WWW)):
+                with self.subTest(item=item_id, url=url, origem=h['Origin']):
+                    st, _, dados = self.pedir('PATCH', f'/api/items/{antes[item_id]["id"]}',
+                                              {'url': url, 'cat': 'Mudou'}, h)
+                    self.assertEqual(st, 400, dados)
+                    self.assertIn('loja do item', self.json_de(dados)['error'])
+        for item_id, it in antes.items():
+            self.assertEqual(self.item(item_id), it, 'o PATCH recusado mudou o item')
+
+    def test_s1_patch_com_link_da_propria_loja_continua_200(self):
+        st, _, _ = self.postar([
+            {'loja': 'shopee', 'item_id': '9.2', 'url': 'https://s.shopee.com.br/Shp2'},
+            {'loja': 'ml', 'item_id': 'MLBPOK', 'url': 'https://www.mercadolivre.com.br/p/MLBPOK'},
+            {'loja': 'amazon', 'item_id': 'B0POK', 'url': 'https://www.amazon.com.br/dp/B0POK'}])
+        self.assertEqual(st, 200)
+        for item_id, url, h in (('9.2', SHOPEE_BOM, self.local()), ('MLBPOK', 'https://meli.la/Ok1', ml(ML_WWW)),
+                                ('B0POK', 'https://www.amazon.com.br/dp/B0POK?tag=desejodemen01-20', self.local())):
+            with self.subTest(item=item_id):
+                st, _, dados = self.pedir('PATCH', f'/api/items/{self.item(item_id)["id"]}', {'url': url}, h)
+                self.assertEqual(st, 200, dados)
+                self.assertEqual(self.json_de(dados)['url'], url)
+
+    def test_s1_patch_de_url_em_item_que_nao_existe_continua_200_com_null(self):
+        # o afiliar() do coletar_ml.js trata null como "item excluído no meio do caminho"
+        st, _, dados = self.pedir('PATCH', '/api/items/999999', {'url': 'https://meli.la/abc'}, ml(ML_WWW))
+        self.assertEqual(st, 200, dados)
+        self.assertIsNone(self.json_de(dados))
+
+    def test_s1_case_do_upsert_preserva_so_o_link_da_propria_loja(self):
+        # linhas antigas gravadas direto no banco: link de afiliado de outra loja ou em maiúsculas
+        # deixa de ser preservado; o link da própria loja continua preservado
+        db = os.path.join(self.dir, 'case-loja.db')
+        codigo = ('import servidor as S\n'
+                  'S.criar_banco(); con = S.conectar()\n'
+                  'linhas = [("ml", "C1", "https://s.shopee.com.br/Velho1"), ("ml", "C2", "HTTPS://MELI.LA/Velho2"),\n'
+                  '          ("amazon", "C3", "https://meli.la/Velho3"), ("shopee", "C4", "https://meli.la/Velho4"),\n'
+                  '          ("ml", "C5", "https://meli.la/Velho5"), ("shopee", "C6", "https://s.shopee.com.br/Velho6"),\n'
+                  '          ("amazon", "C7", "https://www.amazon.com.br/dp/C7?tag=desejodemen01-20")]\n'
+                  'for n, (loja, iid, url) in enumerate(linhas):\n'
+                  '    con.execute("INSERT INTO items (loja,item_id,cat,url,posicao) VALUES (?,?,?,?,?)", (loja, iid, "T", url, n))\n'
+                  'novos = {"C1": "https://meli.la/Novo1", "C2": "https://meli.la/Novo2",\n'
+                  '         "C3": "https://www.amazon.com.br/dp/C3?tag=desejodemen01-20", "C4": "https://s.shopee.com.br/Novo4",\n'
+                  '         "C5": "https://meli.la/Novo5", "C6": "https://s.shopee.com.br/Novo6",\n'
+                  '         "C7": "https://www.amazon.com.br/dp/C7"}\n'
+                  'for loja, iid, _ in linhas:\n'
+                  '    S.upsert(con, {"loja": loja, "item_id": iid, "url": novos[iid], "data": {"titulo": "T"}})\n'
+                  'con.commit()\n'
+                  'for _, iid, _ in linhas:\n'
+                  '    print(iid, con.execute("SELECT url FROM items WHERE item_id=?", (iid,)).fetchone()[0])\n')
+        saida = subprocess.run([sys.executable, '-c', codigo], cwd=RAIZ, env=ambiente(db),
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(saida.returncode, 0, saida.stderr)
+        self.assertEqual(dict(l.split() for l in saida.stdout.splitlines()), {
+            'C1': 'https://meli.la/Novo1', 'C2': 'https://meli.la/Novo2',
+            'C3': 'https://www.amazon.com.br/dp/C3?tag=desejodemen01-20', 'C4': 'https://s.shopee.com.br/Novo4',
+            'C5': 'https://meli.la/Velho5', 'C6': 'https://s.shopee.com.br/Velho6',
+            'C7': 'https://www.amazon.com.br/dp/C7?tag=desejodemen01-20'})
 
 
 # ================================================================ etapa 5: CA8
@@ -914,6 +1164,66 @@ class TestFetchUnidade(ServidorEmProcesso):
         aberto.assert_called_once()
         self.assertEqual(aberto.call_args.args[0].full_url, 'https://amzn.to/abc')
         self.assertEqual((d['asin'], d['titulo']), ('B0ABCDEFGH', 'Produto'))
+
+
+class TestShopeeUnidade(ServidorEmProcesso):
+    """CA1: regra do link de afiliado da Shopee, direto nas funções."""
+
+    def test_ca1_lojas_e_host_numa_constante_so(self):
+        self.assertEqual(self.S.LOJAS, ('amazon', 'ml', 'shopee'))
+        self.assertEqual(self.S.HOSTS_AFILIADO_SHOPEE, ('s.shopee.com.br',))
+
+    def test_ca1_link_curto_da_shopee_e_afiliado_e_url_de_loja(self):
+        for url in (SHOPEE_BOM, 'https://s.shopee.com.br/a', 'https://s.shopee.com.br/0123456789',
+                    'https://s.shopee.com.br/ABCxyz'):
+            with self.subTest(url=url):
+                self.assertTrue(self.S.eh_link_afiliado(url))
+                self.assertTrue(self.S.eh_url_de_loja(url))
+
+    def test_ca1_formas_parecidas_nao_sao_afiliado(self):
+        for url in SHOPEE_RUINS + [None, 5, b'https://s.shopee.com.br/abc']:
+            with self.subTest(url=url):
+                self.assertFalse(self.S.eh_link_afiliado(url))
+
+    def test_ca1_loja_shopee_nao_aceita_afiliado_de_outra_loja(self):
+        self.assertTrue(self.S.eh_link_shopee(SHOPEE_BOM))
+        for url in OUTRAS_LOJAS + SHOPEE_RUINS + [None, 5]:
+            with self.subTest(url=url):
+                self.assertFalse(self.S.eh_link_shopee(url))
+
+    def test_s1_link_de_afiliado_da_loja(self):
+        bons = [('ml', 'https://meli.la/abc'), ('amazon', 'https://www.amazon.com.br/dp/X?tag=desejodemen01-20'),
+                ('shopee', SHOPEE_BOM)]
+        for loja, url in bons:
+            for outra in ('amazon', 'ml', 'shopee', 'x', None):
+                with self.subTest(loja=outra, url=url):
+                    self.assertEqual(self.S.eh_link_afiliado_da_loja(url, outra), outra == loja)
+        for url in SHOPEE_RUINS + ['https://www.mercadolivre.com.br/p/MLB1', 'https://amzn.to/abc', None]:
+            with self.subTest(url=url):
+                self.assertFalse(self.S.eh_link_afiliado_da_loja(url, 'shopee'))
+                self.assertFalse(self.S.eh_link_afiliado_da_loja(url, 'ml'))
+                self.assertFalse(self.S.eh_link_afiliado_da_loja(url, 'amazon'))
+
+    def test_ca1_amazon_e_ml_continuam_afiliado(self):
+        for url in ('https://meli.la/abc', 'https://www.amazon.com.br/dp/X?tag=desejodemen01-20'):
+            with self.subTest(url=url):
+                self.assertTrue(self.S.eh_link_afiliado(url))
+
+    def test_ca1_acrescentar_host_na_constante_basta(self):
+        """No servidor.py, um host novo da Shopee entra só pela tupla HOSTS_AFILIADO_SHOPEE.
+
+        Se o link real do dono vier em shope.ee (F3), o host tem de entrar nos TRÊS lugares:
+        servidor.py (HOSTS_AFILIADO_SHOPEE), disparo.py (HOSTS_AFILIADO_SHOPEE) e index.html
+        (HOSTS_LINK.shopee). Este teste cobre só o servidor.py.
+        """
+        self.assertFalse(self.S.eh_link_afiliado('https://shope.ee/abc'))
+        with mock.patch.object(self.S, 'HOSTS_AFILIADO_SHOPEE', ('s.shopee.com.br', 'shope.ee')):
+            self.assertTrue(self.S.eh_link_afiliado('https://shope.ee/abc'))
+            self.assertTrue(self.S.eh_url_de_loja('https://shope.ee/abc'))
+            self.assertTrue(self.S.eh_link_shopee('https://shope.ee/abc'))
+            self.assertFalse(self.S.eh_link_afiliado('https://shope.ee/abc?x=1'))
+            self.assertTrue(self.S.eh_link_afiliado_da_loja('https://shope.ee/abc', 'shopee'))
+            self.assertIn("(loja='shopee' AND url GLOB 'https://shope.ee/*')", self.S.sql_link_preservado())
 
 
 if __name__ == '__main__':

@@ -39,6 +39,11 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - `localStorage` da origem do ML: `__coletaML:<servidor>` (termos) e `__afiliarML:<servidor>` (id, mlb, motivo, codigo; só erros de elegibilidade e url sem MLB). Sem dado da conta.
 - Testes `testes/coletar_ml.test.mjs`: integração com banco em mkdtemp + porta livre + proxies mortos; fixtures sintéticas.
 
+**Shopee (plano perfumaria-tres-lojas, E1/E2/E7 revisados em 2026-11-03)**
+- `servidor.eh_link_shopee`: `re.fullmatch('https://s.shopee.com.br/[A-Za-z0-9]+')` no texto cru; `loja:'shopee'` exige isso no lote (400, lote inteiro) e no `upsert` (ValueError). Desde a rodada 2 (2026-11-03): POST amarra host à loja (`URL_DA_LOJA`), PATCH lê a loja do item (`eh_link_afiliado_da_loja`), `sql_link_preservado()` usa `GLOB` por loja. O `upsert` direto só confere host para shopee (amazon/ml confiam no script). Disparo barra por `HOSTS_LINK_LOJA`.
+- `disparo.HOSTS_FOTO` ganhou `down-br.img.susercontent.com` (vale para qualquer loja); a prévia devolve `loja` (front precisa de `esc`).
+- `coletar_shopee.py`: primeiro segredo do projeto (`ACHADINHOS_SHOPEE_SECRET`, só env, objeto `Segredo`); `URL_API` fixo; termo como variável GraphQL; `main` imprime só tipo/código; resposta até 2 MB; conferência do dono pelo `Location` (opener sem redirect) e `utm_source=an_<ID>`; `ID_AFILIADO_SHOPEE = '18328801339'` (não é segredo). API e conferência por openers sem redirect (`OPENER_API`, `OPENER_CONFERENCIA`); `credenciais()` faz `os.environ.pop` do Secret; README manda passar o Secret só no comando, sem `export`. Testes trocam `urlopen` e `OPENER_CONFERENCIA.open`; proxies mortos.
+
 **Saídas no front (`index.html`)**
 - `innerHTML` com template string; `esc()` escapa `& < > "`. "Copiar imagem": `HOSTS_FOTO` na URL pedida e no `r.url` final.
 - Botão "Abrir": só `https:` via `new URL`, com `noopener,noreferrer` (S1 corrigido em 2026-11-03). POST `/api/items` exige `eh_url_de_loja` (https, netloc == host, `HOSTS_LOJAS` + `*.mercadolivre.com.br`); PATCH segue com `eh_link_afiliado`. `coletar_amazon.py` grava por `S.upsert()` direto, sem essa validação (ramo do WhatsApp grava `https?://\S+` do chat).

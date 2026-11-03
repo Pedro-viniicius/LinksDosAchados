@@ -26,3 +26,10 @@ Vistas na etapa 3 (coletar_amazon, 2026-11-03):
 
 - `testes/test_coletar_amazon.py` põe `ACHADINHOS_DB`/`ACHADINHOS_FEITOS` num tmp e proxies mortos ANTES de `import coletar_amazon` (ele importa `servidor`, que lê `DB` ao carregar); `C.BASE` é trocado por mock para achar um `buscas.json` falso. Rode `python3 testes/test_coletar_amazon.py -v` com os proxies exportados.
 - Checagem útil sem rede: `import coletar_amazon` com `ACHADINHOS_DB` temporário e comparar `feitos()` com `buscas.json` (98 de 126 termos já feitos em 2026-11-03).
+
+Vista na E1 de perfumaria-tres-lojas (Shopee, 2026-11-03):
+
+- `eh_link_afiliado` aceita afiliado de QUALQUER loja (meli.la, Amazon com tag, Shopee). Plano que manda "recusar loja X sem `eh_link_afiliado`" deixa passar link de outra loja: a regra por loja usa `eh_link_shopee`. Teste sempre "loja shopee + link da Amazon/meli.la".
+- `urlsplit` baixa a caixa do host e esconde `?`/`#`/`:` vazios: regra estrita de link compara o texto inteiro (`re.fullmatch`), não os campos do `urlsplit`.
+- Rodada 2 da E1: a loja fica amarrada ao host (`URL_DA_LOJA` no lote, `eh_link_afiliado_da_loja` no PATCH, `GLOB` por loja no `CASE`). PATCH em id inexistente TEM de seguir 200 com `null`: o `afiliar()` do `coletar_ml.js` lê isso como "item excluído no meio". Antes de endurecer regra de loja, conte no banco real em `file:achadinhos.db?mode=ro` (em 2026-11-03: só amazon→www.amazon.com.br e ml→meli.la).
+- `testes/test_shopee_qa.py` (do qa) importa o `test_servidor.py` como `TS` e herda `TS.ServidorTeste`: mudar a base `ServidorTeste` afeta o arquivo do qa.

@@ -300,7 +300,7 @@ class ValidarRegra(Base):
             {'ativa': 2}, {'ativa': False},
             {'cats': []}, {'cats': [f'c{i}' for i in range(51)]}, {'cats': [1]}, {'cats': ['']},
             {'cats': ['c' * 101]}, {'cats': ['a', 'a']}, {'cats': 'Eletrônicos'},
-            {'lojas': []}, {'lojas': ['shopee']}, {'lojas': ['amazon', 'amazon']}, {'lojas': 'amazon'},
+            {'lojas': []}, {'lojas': ['outra']}, {'lojas': ['amazon', 'amazon']}, {'lojas': 'amazon'},
             {'palavras': ['p'] * 21}, {'palavras': ['p' * 41]}, {'palavras': ['']}, {'palavras': ['  ']},
             {'palavras': [3]}, {'palavras': None},
             {'desconto_min': -1}, {'desconto_min': 96}, {'desconto_min': True}, {'desconto_min': 10.5},
@@ -724,7 +724,7 @@ class Previa(Base):
         antes, mudancas = self.contagens(), self.con.total_changes
         p = D.previa(self.con, self.dados_regra(self.nid, ordem='desconto'), 2, SEGUNDA, AFILIADO)
         self.assertEqual([x['titulo'] for x in p], ['Produto 2', 'Produto 3'])
-        self.assertEqual(set(p[0]), {'item_pk', 'titulo', 'mensagem', 'imagem'})
+        self.assertEqual(set(p[0]), {'item_pk', 'loja', 'titulo', 'mensagem', 'imagem'})
         self.assertIn(url_amz(2), p[0]['mensagem'])
         self.assertTrue(p[0]['imagem'].startswith('https://m.media-amazon.com/'))
         self.assertEqual((self.contagens(), self.con.total_changes), (antes, mudancas))
@@ -1478,6 +1478,224 @@ class Ambiente(unittest.TestCase):
         self.assertEqual(D.proximo_horario(r, datetime(2026, 11, 4, 9, 0)), '2026-11-04T09:00')
         self.assertEqual(D.proximo_horario(r, datetime(2026, 11, 4, 18, 0, 1)), '2026-11-11T09:00')
         self.assertIsNone(D.proximo_horario({**r, 'ativa': 0}, SEGUNDA))
+
+
+# ================================================================ Shopee como terceira loja
+# Plano docs/produto/planos/perfumaria-tres-lojas.md, etapa E2 (CA2). O AFILIADO é o eh_link_afiliado
+# do servidor, que aceita o link curto da Shopee desde a E1.
+URL_SHOPEE = 'https://s.shopee.com.br/7AbCdEf12'
+FOTO_SHOPEE = 'https://down-br.img.susercontent.com/file/br-11134207-7r98o-teste'
+# Links que um item da Shopee nunca pode mandar: comum da loja, de outra loja (inclusive de afiliado,
+# que o eh_link_afiliado aprova) e de host parecido.
+LINKS_SHOPEE_RUINS = (
+    'https://shopee.com.br/Perfume-Teste-i.123456.7890123',   # link comum do produto
+    'https://www.shopee.com.br/Perfume-i.1.2',
+    url_amz(900),                                              # afiliado, mas da Amazon
+    'https://meli.la/1AbCdEf',                                 # afiliado, mas do ML
+    'https://s.shopee.com.br.golpe.com/7AbCdEf12',
+    'https://s-shopee.com.br/7AbCdEf12',
+    'https://xs.shopee.com.br/7AbCdEf12',
+    'https://s.shopee.com/7AbCdEf12',
+    'https://shope.ee/7AbCdEf12',                              # só entra se o link real do dono usar (F3)
+    'https://golpe.com/s.shopee.com.br/7AbCdEf12',
+    'https://golpe.com@s.shopee.com.br/7AbCdEf12',
+    'http://s.shopee.com.br/7AbCdEf12',
+    'https://s.shopee.com.br:8443/7AbCdEf12',
+    'https://s.shopee.com.br/7AbCdEf12?utm_source=outro',
+    'https://s.shopee.com.br/',
+)
+
+
+def aceita_tudo(url):
+    """eh_afiliado permissivo: prova que a checagem de host do próprio disparo segura o link de outra loja."""
+    return True
+
+
+class Shopee(Base):
+    """CA2: a regra pode ter a Shopee, e item da Shopee só sai com o link curto de afiliado dela."""
+
+    def setUp(self):
+        super().setUp()
+        self.nid = self.numero()['id']
+
+    def shopee(self, url=URL_SHOPEE, imagem=FOTO_SHOPEE, **campos):
+        return self.item(loja='shopee', url=url, imagem=imagem, **campos)
+
+    def regra_shopee(self, **kw):
+        return D.criar_regra(self.con, self.dados_regra(self.nid, **{'lojas': ['shopee'], **kw}))
+
+    def ids(self, regra, eh_afiliado=AFILIADO):
+        return sorted(it['id'] for it in D.elegiveis(self.con, regra, SEGUNDA, eh_afiliado))
+
+    def test_constantes_iguais_as_do_servidor(self):
+        self.assertEqual(D.LOJAS, S.LOJAS)
+        self.assertEqual(D.HOSTS_AFILIADO_SHOPEE, S.HOSTS_AFILIADO_SHOPEE)
+        self.assertEqual(D.HOSTS_LINK_LOJA['shopee'], S.HOSTS_AFILIADO_SHOPEE)
+        self.assertIn(D.HOST_FOTO_SHOPEE, D.HOSTS_FOTO)
+        self.assertEqual(D.NOMES_LOJA['shopee'], 'Shopee')
+
+    def test_regra_aceita_shopee_e_normaliza_a_ordem(self):
+        for lojas, esperado in ((['shopee'], ['shopee']), (['shopee', 'ml'], ['ml', 'shopee']),
+                                (['shopee', 'amazon', 'ml'], ['amazon', 'ml', 'shopee'])):
+            with self.subTest(lojas=lojas):
+                v = D.validar_regra(self.con, {**D.PADRAO_REGRA, **self.dados_regra(self.nid, lojas=lojas)})
+                self.assertEqual(v['lojas'], esperado)
+        r = self.regra_shopee()
+        self.assertEqual(D.obter_regra(self.con, r['id'])['lojas'], ['shopee'])
+        cru = self.con.execute('SELECT lojas FROM regras WHERE id=?', (r['id'],)).fetchone()[0]
+        self.assertEqual(json.loads(cru), ['shopee'])
+        r = D.atualizar_regra(self.con, r['id'], {'lojas': ['ml', 'shopee', 'amazon']})
+        self.assertEqual(r['lojas'], ['amazon', 'ml', 'shopee'])
+
+    def test_regra_com_loja_invalida_ou_repetida_e_recusada(self):
+        base = {**D.PADRAO_REGRA, **self.dados_regra(self.nid)}
+        for lojas in (['outra'], ['Shopee'], ['shopee '], ['shopee', 'shopee'], ['amazon', 'shopee', 'shopee'],
+                      [None], ['shopee', 1]):
+            with self.subTest(lojas=lojas):
+                with self.assertRaises(D.ErroDisparo) as cm:
+                    D.validar_regra(self.con, {**base, 'lojas': lojas})
+                self.assertEqual((cm.exception.codigo, cm.exception.msg),
+                                 (400, 'lojas deve ter amazon, ml e/ou shopee, sem repetir'))
+        with self.assertRaises(D.ErroDisparo) as cm:   # 4 itens: passa do tamanho da lista
+            D.validar_regra(self.con, {**base, 'lojas': ['amazon', 'ml', 'shopee', 'outra']})
+        self.assertEqual(cm.exception.msg, 'lojas precisa ter de 1 a 3 itens')
+
+    def test_padrao_das_regras_continua_amazon_e_ml(self):
+        self.assertEqual(D.PADRAO_REGRA['lojas'], ['amazon', 'ml'])
+        r = D.criar_regra(self.con, {'nome': 'R', 'numero_id': self.nid, 'cats': ['Eletrônicos'],
+                                     'template': 'Template 2', 'horarios': ['10:00']})
+        self.assertEqual(r['lojas'], ['amazon', 'ml'])
+        with self.con:   # o DEFAULT do esquema, para linha gravada sem a coluna
+            cur = self.con.execute("INSERT INTO regras (nome, numero_id, cats, template, horarios) "
+                                   "VALUES ('R', ?, '[]', 'Template 2', '[]')", (self.nid,))
+        cru = self.con.execute('SELECT lojas FROM regras WHERE id=?', (cur.lastrowid,)).fetchone()[0]
+        self.assertEqual(json.loads(cru), ['amazon', 'ml'])
+
+    def test_link_da_loja_ok_por_host(self):
+        for eh_afiliado in (AFILIADO, aceita_tudo):
+            with self.subTest(eh_afiliado=eh_afiliado.__name__):
+                self.assertTrue(D.link_da_loja_ok('shopee', URL_SHOPEE, eh_afiliado))
+                self.assertTrue(D.link_da_loja_ok('amazon', url_amz(1), eh_afiliado))
+                self.assertTrue(D.link_da_loja_ok('ml', 'https://meli.la/1AbCdEf', eh_afiliado))
+                for loja in ('amazon', 'ml', 'outra', '', None):   # link da Shopee só serve à Shopee
+                    self.assertFalse(D.link_da_loja_ok(loja, URL_SHOPEE, eh_afiliado), loja)
+        # com o eh_afiliado do servidor, nenhum link ruim passa; com o permissivo, a checagem de host
+        # do disparo segura sozinha os de outro host
+        outro_host = ('https://shopee.com.br/', 'https://www.shopee.com.br/', url_amz(900), 'https://meli.la/',
+                      'https://s.shopee.com.br.golpe.com/', 'https://s-shopee.com.br/', 'https://xs.shopee.com.br/',
+                      'https://s.shopee.com/', 'https://shope.ee/', 'https://golpe.com/')
+        for url in LINKS_SHOPEE_RUINS:
+            with self.subTest(url=url):
+                self.assertFalse(D.link_da_loja_ok('shopee', url, AFILIADO))
+                if url.startswith(outro_host):
+                    self.assertFalse(D.link_da_loja_ok('shopee', url, aceita_tudo))
+        self.assertFalse(D.link_da_loja_ok('shopee', URL_SHOPEE, lambda u: False))
+
+    def test_item_da_shopee_so_sai_com_link_de_afiliado_da_shopee(self):
+        bom = self.shopee()
+        for url in LINKS_SHOPEE_RUINS:
+            self.shopee(url=url)
+        self.item(loja='amazon', url=URL_SHOPEE)   # Amazon com link da Shopee
+        self.item(loja='ml', url=URL_SHOPEE)       # ML com link da Shopee
+        so_shopee = self.regra_shopee()
+        self.assertEqual(self.ids(so_shopee), [bom])
+        tres = D.atualizar_regra(self.con, so_shopee['id'], {'lojas': ['amazon', 'ml', 'shopee']})
+        self.assertEqual(self.ids(tres), [bom])
+        duas = D.atualizar_regra(self.con, so_shopee['id'], {'lojas': ['amazon', 'ml']})
+        self.assertEqual(self.ids(duas), [], 'regra sem a Shopee não pega item da Shopee')
+
+    def test_foto_so_do_cdn_da_shopee_e_fora_dele_sai_sem_foto(self):
+        ruins = ('https://down-br.img.susercontent.com.golpe.com/file/x', 'http://down-br.img.susercontent.com/x',
+                 'https://down-br.img.susercontent.com:8443/x', 'https://u@down-br.img.susercontent.com/x',
+                 'https://cf.shopee.com.br/file/x', 'https://down-sg.img.susercontent.com/file/x',
+                 'https://evil.com/down-br.img.susercontent.com/x.jpg')
+        self.assertTrue(D.imagem_permitida(FOTO_SHOPEE))
+        for img in ruins:
+            with self.subTest(img=img):
+                self.assertFalse(D.imagem_permitida(img))
+        self.shopee()
+        for img in ruins:
+            self.shopee(imagem=img)
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=['shopee']), 20, SEGUNDA, AFILIADO)
+        self.assertEqual(len(p), 1 + len(ruins), 'foto fora do CDN não impede o item de sair')
+        self.assertEqual(sorted(x['imagem'] for x in p), [''] * len(ruins) + [FOTO_SHOPEE])
+
+    def test_q1_foto_so_do_cdn_da_loja_do_proprio_item(self):
+        """Q1: foto de CDN de outra loja faz o item sair sem foto (o item não é bloqueado)."""
+        fotos = {'amazon': 'https://m.media-amazon.com/images/I/q1.jpg', 'ml': 'https://http2.mlstatic.com/D_q1.jpg',
+                 'shopee': FOTO_SHOPEE}
+        links = {'amazon': None, 'ml': None, 'shopee': URL_SHOPEE}   # None: o padrão do self.item
+        esperado = {}
+        for loja in fotos:
+            for loja_foto, foto in fotos.items():
+                pk = self.item(loja=loja, url=links[loja], imagem=foto)
+                esperado[pk] = (loja, foto if loja == loja_foto else '')
+                with self.subTest(loja=loja, foto=loja_foto):
+                    self.assertEqual(D.imagem_permitida(foto, loja), loja == loja_foto)
+                    self.assertFalse(D.imagem_permitida(foto, 'outra'))
+                    self.assertTrue(D.imagem_permitida(foto), 'sem loja vale a união (HOSTS_FOTO)')
+        self.assertEqual(D.HOSTS_FOTO, tuple(fotos[l].split('/')[2] for l in ('amazon', 'ml', 'shopee')))
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=['amazon', 'ml', 'shopee']), 20, SEGUNDA, AFILIADO)
+        self.assertEqual({x['item_pk']: (x['loja'], x['imagem']) for x in p}, esperado)
+        sem_foto = D.previa(self.con, self.dados_regra(self.nid, lojas=['amazon', 'ml', 'shopee'], com_foto=0), 20,
+                            SEGUNDA, AFILIADO)
+        self.assertEqual({x['item_pk']: x['imagem'] for x in sem_foto}, dict.fromkeys(esperado, ''))
+        t = Gravador()
+        self.regra_shopee(lojas=['amazon', 'ml', 'shopee'], por_disparo=10)
+        self.assertEqual(self.tick(SEGUNDA.replace(hour=9), t)['criados'], 9)
+        com_foto = sorted(c[2] for c in t.chamadas if c[2])
+        self.assertEqual(com_foto, sorted(fotos.values()))
+        self.assertEqual(sum(c[2] is None for c in t.chamadas), 6)
+
+    def test_previa_devolve_a_loja_de_cada_item(self):
+        a, m, s = self.item(desconto='-30%'), self.item(loja='ml', desconto='-20%'), self.shopee(desconto='-10%')
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=['amazon', 'ml', 'shopee'], ordem='desconto'),
+                     5, SEGUNDA, AFILIADO)
+        self.assertEqual([(x['item_pk'], x['loja']) for x in p], [(a, 'amazon'), (m, 'ml'), (s, 'shopee')])
+        self.assertIn(URL_SHOPEE, p[2]['mensagem'])
+        self.assertEqual(p[2]['imagem'], FOTO_SHOPEE)
+
+    def test_loja_vira_shopee_na_mensagem(self):
+        it = {'loja': 'shopee', 'url': URL_SHOPEE, 'data': {'titulo': 'Perfume'}}
+        self.assertEqual(D.montar_mensagem(it, '{LOJA}: {TITULO_PRODUTO} {LINK}'), f'Shopee: Perfume {URL_SHOPEE}')
+        self.assertEqual(D.montar_mensagem({**it, 'loja': 'outra'}, '{LOJA}\n{LINK}'), URL_SHOPEE)
+
+    def test_deteccao_de_links_aceita_o_link_curto_do_proprio_item(self):
+        self.assertEqual(D.urls_da_mensagem(f'Compre: *{URL_SHOPEE}*.'), [URL_SHOPEE])
+        cheio = {'titulo': 'Perfume Importado 100ml EDP', 'preco': 'R$ 1.249,90', 'preco_antigo': 'R$ 1.999,00',
+                 'desconto': '-37%', 'avaliacao': '4.9', 'num_avaliacoes': '27,6 mil', 'vendas': '2,3 mil vendidos',
+                 'frete': 'Frete grátis', 'cupom': 'PERFUME10', 'imagem': FOTO_SHOPEE}
+        for nome, tpl in {**DEFAULT_TEMPLATES, 'Com loja': '{LOJA} {TITULO_PRODUTO}\n{LINK}'}.items():
+            with self.subTest(template=nome):
+                msg = D.montar_mensagem({'loja': 'shopee', 'url': URL_SHOPEE, 'data': cheio}, tpl)
+                self.assertTrue(D.mensagem_so_com_afiliado(msg, AFILIADO, URL_SHOPEE), msg)
+        ok = f'Perfume\n🛒 {URL_SHOPEE}'
+        for borda in (f'*{URL_SHOPEE}*', f'_{URL_SHOPEE}_', f'({URL_SHOPEE}).', f'Link:{URL_SHOPEE}', f'{URL_SHOPEE}!!'):
+            with self.subTest(borda=borda):
+                self.assertTrue(D.mensagem_so_com_afiliado('Oferta ' + borda, AFILIADO, URL_SHOPEE))
+        for extra in ('https://s.shopee.com.br/OUTRO1', 's.shopee.com.br/7AbCdEf12', 'shopee.com.br',
+                      'https://shopee.com.br/Perfume-i.1.2', f'{URL_SHOPEE}?x=1', f'{URL_SHOPEE}/a',
+                      'xhttps://s.shopee.com.br/7AbCdEf12', url_amz(1), 'https://meli.la/1AbCdEf'):
+            with self.subTest(extra=extra):
+                self.assertFalse(D.mensagem_so_com_afiliado(ok + '\n' + extra, AFILIADO, URL_SHOPEE))
+        # link curto da Shopee num item de outra loja: não é o link do item, então não sai
+        self.assertFalse(D.mensagem_so_com_afiliado(f'{url_amz(1)}\n{URL_SHOPEE}', AFILIADO, url_amz(1)))
+
+    def test_disparo_manda_o_item_da_shopee_com_link_e_foto(self):
+        self.shopee(titulo='Perfume Shopee', desconto='-90%')
+        for url in LINKS_SHOPEE_RUINS:
+            self.shopee(url=url, desconto='-95%')
+        self.item(desconto='-50%')
+        r = self.regra_shopee(por_disparo=10, ordem='desconto')
+        t = Gravador()
+        self.assertEqual(self.tick(SEGUNDA.replace(hour=9), t)['criados'], 1)
+        self.assertEqual(len(t.chamadas), 1)
+        _, texto, imagem = t.chamadas[0]
+        self.assertIn('Perfume Shopee', texto)
+        self.assertIn(URL_SHOPEE, texto)
+        self.assertEqual(imagem, FOTO_SHOPEE)
+        self.assertEqual([(e['regra_id'], e['status']) for e in self.envios()], [(r['id'], 'enviado')])
+
 
 if __name__ == '__main__':
     logging.getLogger('disparo').setLevel(logging.INFO)

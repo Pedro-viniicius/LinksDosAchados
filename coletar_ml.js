@@ -9,6 +9,7 @@
  *        await ColetaML.coletar({termos: ['Body splash'], enviar: false})  // só monta os itens, não grava nada
  *        await ColetaML.coletar({termos: ['Body splash'], servidor: 'http://localhost:8766'})  // servidor de teste
  *        await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria']})
+ *        await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})  // maior preço
  *        ColetaML.parar()                                                  // para depois do termo (ou lote) atual
  *   4. Depois, numa aba em https://www.mercadolivre.com.br/afiliados/linkbuilder, cole o arquivo e rode:
  *        await ColetaML.afiliar({enviar: false, itens: ['https://produto.mercadolivre.com.br/MLB-…']})
@@ -21,6 +22,8 @@
  *
  * Cada termo vira um POST em <servidor>/api/items com cat = chave de buscas.json e busca = termo.
  * O progresso fica no localStorage da aba, por servidor: termo já enviado não é coletado de novo.
+ * ordem: 'relevancia' (padrão, a listagem de sempre) ou 'caros' (a mesma listagem por maior preço). O progresso da
+ * relevância é o termo puro; o das outras ordens é "<ordem>|<termo>", então cada ordem coleta uma vez por termo.
  * afiliar() só manda PATCH com url https://meli.la/<código>, casando a resposta pelo código MLB.
  * Plano: docs/produto/planos/eletronicos-e-coleta-ml.md. Testes: node --test testes/coletar_ml.test.mjs
  *
@@ -43,6 +46,8 @@
   const RX_CAPTCHA = /captcha|account-verification|gz\//;
   const PREFIXO_PROGRESSO = '__coletaML:';
   const MAX_POR_BUSCA = 30;
+  // sufixo da URL da listagem por ordem; o ML só oferece relevância, menor e maior preço (sem "mais vendidos")
+  const ORDENS_ML = { relevancia: '', caros: '_OrderId_PRICE*DESC' };
   const PAUSA_PADRAO = [2500, 5000];   // ms entre um termo e outro, sorteado no intervalo
   const PRAZO_MS = 60000;              // cada requisição desiste depois disso
   const CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
@@ -156,15 +161,29 @@
       "Organizador de guarda-roupa"
     ],
     "Perfumes e Perfumaria": [
-      "Perfume masculino importado",
       "Perfume feminino importado",
-      "Perfume masculino nacional",
+      "Perfume masculino importado",
       "Perfume feminino nacional",
-      "Kit perfume",
+      "Perfume masculino nacional",
+      "Kit perfume com hidratante",
+      "Kit perfume com desodorante",
+      "Perfume árabe feminino",
+      "Perfume árabe masculino",
+      "Perfume unissex",
+      "Body splash feminino",
+      "Body splash masculino",
+      "Colônia feminina",
+      "Colônia masculina",
+      "Hidratante corporal perfumado",
+      "Óleo corporal perfumado",
+      "Desodorante corporal perfumado",
+      "Kit sabonete perfumado",
+      "Perfume para cabelo",
       "Miniatura de perfume",
+      "Kit perfume",
+      "Loção pós-barba",
       "Body splash",
       "Desodorante colônia",
-      "Hidratante corporal perfumado",
       "Perfume árabe",
       "Perfume infantil",
       "Perfume Natura",
@@ -486,17 +505,21 @@
     if (!Array.isArray(termos) || !termos.length || !termos.every((t) => typeof t === 'string')) {
       return { erro: 'termos deve ser uma lista de textos, por exemplo ["Body splash"]' };
     }
+    const ordem = o.ordem === undefined ? 'relevancia' : o.ordem;
+    if (typeof ordem !== 'string' || !Object.prototype.hasOwnProperty.call(ORDENS_ML, ordem)) {
+      return { erro: 'ordem deve ser uma destas: ' + Object.keys(ORDENS_ML).join(', ') };
+    }
     termos = [...new Set(termos.map((t) => t.normalize('NFC').trim()))];
     const desconhecidos = termos.filter((t) => categoriaDe(t) === null);
     if (desconhecidos.length) {
       return { erro: 'termos fora de buscas.json (e do ALIAS): ' + JSON.stringify(desconhecidos) };
     }
-    return { ...comuns, porBusca, termos };
+    return { ...comuns, porBusca, termos, ordem };
   }
 
   /**
    * Coleta os termos na própria aba do ML e, com enviar:true, grava cada termo no servidor.
-   * Devolve o estado: {rodando, servidor, enviar, feitos, pulados, itens, inserido, atualizado, parado, erro}.
+   * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, parado, erro}.
    * Com enviar:false não fala com o servidor nem usa o progresso: só monta os itens em estado.itens.
    */
   async function coletar(opcoes = {}) {
@@ -505,7 +528,7 @@
       return ultimoEstado;
     }
     const estado = {
-      rodando: false, servidor: null, enviar: null, termoAtual: null, feitos: [], pulados: [], itens: [],
+      rodando: false, servidor: null, enviar: null, ordem: null, termoAtual: null, feitos: [], pulados: [], itens: [],
       inserido: 0, atualizado: 0, parado: false, erro: null,
     };
     ultimoEstado = estado;
@@ -516,17 +539,19 @@
     }
     const cfg = conferirOpcoes(opcoes);
     if (cfg.erro) return falhar(estado, cfg.erro + '. Nada foi feito.');
-    const { servidor, enviar, porBusca, pausa, termos, arm, f } = cfg;
-    Object.assign(estado, { rodando: true, servidor, enviar });
+    const { servidor, enviar, porBusca, pausa, termos, ordem, arm, f } = cfg;
+    Object.assign(estado, { rodando: true, servidor, enviar, ordem });
     execucao = { parar: false, acordar: null };
     const feitosAntes = enviar ? lerProgresso(arm, servidor) : new Set();
     const feitos = new Set(feitosAntes);
     let buscou = false;
+    // chave do progresso: o termo puro na relevância (igual ao que já está no localStorage) e <ordem>|<termo> nas outras
+    const chaveDe = (termo) => (ordem === 'relevancia' ? termo : ordem + '|' + termo);
     try {
       for (let n = 0; n < termos.length; n++) {
         const termo = termos[n];
         if (execucao.parar) break;
-        if (feitosAntes.has(termo)) { estado.pulados.push(termo); continue; }
+        if (feitosAntes.has(chaveDe(termo))) { estado.pulados.push(termo); continue; }
         if (buscou) {
           await pausar(pausa[0] + Math.random() * (pausa[1] - pausa[0]));
           if (execucao.parar) break;
@@ -537,7 +562,7 @@
 
         let pagina;
         try {
-          pagina = await pedir(f, '/' + slug(termo), { credentials: 'include' }, 'text');
+          pagina = await pedir(f, '/' + slug(termo) + ORDENS_ML[ordem], { credentials: 'include' }, 'text');
         } catch (e) {
           return falhar(estado, `não consegui abrir a busca "${termo}" no ML (${nomeErro(e)}). Nada foi enviado deste termo.`);
         }
@@ -577,12 +602,12 @@
           }
           estado.inserido += c.inserido;
           estado.atualizado += c.atualizado;
-          feitos.add(termo);
+          feitos.add(chaveDe(termo));
           gravarProgresso(arm, servidor, feitos);
           resumo = ` (inserido ${c.inserido}, atualizado ${c.atualizado})`;
         }
         estado.feitos.push(termo);
-        log(`${n + 1}/${termos.length} "${termo}" → ${cat}: ${itens.length} itens${resumo}`);
+        log(`${n + 1}/${termos.length} "${termo}"${ordem === 'relevancia' ? '' : ' (' + ordem + ')'} → ${cat}: ${itens.length} itens${resumo}`);
       }
       if (execucao.parar) {
         estado.parado = true;

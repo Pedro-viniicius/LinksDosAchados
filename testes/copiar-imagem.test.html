@@ -361,8 +361,8 @@ teste('CA1+CA2 (rede real): WEBP do Mercado Livre vira image/png, sem reescrever
 });
 
 // ================================================================ CA2
-teste('CA2: HOSTS_FOTO tem exatamente os dois CDNs', async () => {
-  igual(Array.from(W.eval('HOSTS_FOTO')), ['m.media-amazon.com', 'http2.mlstatic.com']);
+teste('CA2: HOSTS_FOTO tem exatamente os três CDNs (Amazon, Mercado Livre e Shopee)', async () => {
+  igual(Array.from(W.eval('HOSTS_FOTO')), ['m.media-amazon.com', 'http2.mlstatic.com', 'down-br.img.susercontent.com']);
 });
 
 const TABELA_URL = [

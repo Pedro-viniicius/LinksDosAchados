@@ -155,7 +155,7 @@ teste('CA2: criar a regra pelo formulário (nasce pausada), com os campos certos
   digitar('#f-nome', 'Regra A');
   digitar('#f-numero', String(NUM.id));
   marcar('#f-cats', CAT);
-  marcar('#f-lojas', 'amazon');
+  marcar('#f-lojas', 'ml', false); marcar('#f-lojas', 'shopee', false);   // regra nova abre com as três lojas: fica só a Amazon
   marcar('#f-ordem', 'desconto');
   digitar('#f-por', '2'); digitar('#f-max', '3'); digitar('#f-rep', '7');
   const h = q('input[name="horario"]'); digitar(h, '09:00');
@@ -220,6 +220,7 @@ teste('CA8/CA9: cada cartão da fila traz a mensagem do servidor, igual ao build
     afirma(!e.mensagem.includes(FONE) && !e.mensagem.includes(GID), 'sem dado pessoal');
     igual(e.status, 'pendente'); igual(e.transporte, 'manual');
     igual(e.titulo, it.data.titulo);
+    afirma(txt(c.querySelector('.fsub .busca')).startsWith('Amazon · Grupo: '), 'a fila mostra a loja antes do grupo: ' + txt(c.querySelector('.fsub .busca')));
   }
   const bruto = [(await api('disparo/fila')).texto, (await api('disparo/regras')).texto, (await api('disparo/envios')).texto].join('\n');
   afirma(!bruto.includes(FONE) && !bruto.includes('363012345678901'), 'fila, regras e histórico do servidor não devolvem telefone nem grupo');
@@ -265,10 +266,13 @@ teste('CA6: o limite diário do número (3) vale para todas as regras dele; "pul
 teste('CA2: editar a regra pela tela grava no servidor (PUT) e preserva o estado ativa', async () => {
   await abrir('#disparo/regra/' + REGRA.id);
   digitar('#f-nome', 'Regra A renomeada');
+  igual(qa('#f-lojas input:checked').map(i => i.value), ['amazon'], 'a regra abre com a loja que já tinha');
+  marcar('#f-lojas', 'shopee');   // o servidor real aceita a Shopee em lojas
   clicar('#btnSalvar');
   await esperar(() => W.location.hash === '#disparo', 'salvou');
   const r = (await api('disparo/regras')).dados.find(x => x.id === REGRA.id);
-  igual([r.nome, r.ativa, r.por_disparo, r.max_por_dia], ['Regra A renomeada', 0, 2, 3]);
+  igual([r.nome, r.ativa, r.por_disparo, r.max_por_dia, r.lojas], ['Regra A renomeada', 0, 2, 3, ['amazon', 'shopee']]);
+  afirma(txt(q('[data-regra]')).includes('Amazon e Shopee'), 'o cartão resume as lojas: ' + txt(q('[data-regra]')));
 });
 
 teste('CA10: o histórico mostra os 4 envios com status em texto, filtra por status e cita a regra', async () => {
@@ -277,6 +281,7 @@ teste('CA10: o histórico mostra os 4 envios com status em texto, filtra por sta
   const t = txt(q('#dspHist'));
   afirma(t.includes('Enviado') && t.includes('Pulado') && t.includes('Na fila'), t);
   afirma(t.includes('Regra A renomeada') && t.includes('Regra B'), 'nome das regras');
+  afirma(qa('#dspHist tbody tr td:nth-child(2)').every(c => /· Amazon/.test(txt(c))), 'o histórico cita a loja do item: ' + t);
   const st = q('#hStatus'); st.value = 'enviado'; st.dispatchEvent(new W.Event('change'));
   await esperar(() => qa('#dspHist tbody tr').length === 1, 'filtro enviado');
   afirma(LOG.some(l => /envios\?.*status=enviado/.test(l.url)), 'o filtro vai ao servidor');

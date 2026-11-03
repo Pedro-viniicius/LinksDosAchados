@@ -53,6 +53,7 @@
   h1 .logo{display:block;height:28px;width:auto;overflow:visible}
   h1 .logo .tag{fill:var(--etiqueta)}
   .muted{color:var(--mudo);font:var(--t-legenda)}
+  .nb{white-space:nowrap}
   select,input,button,textarea{font:inherit}
   select,input[type=text],input[type=search]{background:var(--superficie);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:0 var(--s3);min-height:var(--alvo)}
   select{max-width:100%}
@@ -275,7 +276,7 @@
         <label class="lbl">Categoria <select id="addCat"></select></label>
         <input type="text" id="addCatNew" placeholder="ou nova categoria" aria-label="Nova categoria">
       </div>
-      <textarea id="addLinks" aria-label="Links de afiliado" placeholder="Cole links de afiliado aqui, um por linha (Amazon ou Mercado Livre)"></textarea>
+      <textarea id="addLinks" aria-label="Links de afiliado" placeholder="Cole links de afiliado aqui, um por linha (Amazon, Mercado Livre ou Shopee)"></textarea>
       <div class="actions"><button id="saveLinks">Adicionar</button></div>
     </div>
   </div>
@@ -297,7 +298,7 @@
 <div id="telaOfertas">
   <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
   <div class="row filters">
-    <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option><option value="amazon">Amazon</option><option value="ml">Mercado Livre</option></select>
+    <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option></select>
     <select id="fBusca" aria-label="Filtrar por busca"><option value="">Todas as buscas</option></select>
     <select id="fOrdem" aria-label="Ordenar por"><option value="">Ordem de coleta</option><option value="desc">Maior desconto</option><option value="preco">Menor preço</option></select>
     <input type="search" id="fTexto" aria-label="Filtrar pelo título" placeholder="Filtrar pelo título">
@@ -314,7 +315,19 @@
 
 <script>
 const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
-const LOJA = {amazon:'Amazon', ml:'Mercado Livre'};
+// Lojas na ordem fixa do app (filtro, contador, resumo da regra). Nome exibido; a Shopee é rótulo neutro, sem cor.
+const LOJA = {amazon:'Amazon', ml:'Mercado Livre', shopee:'Shopee'};
+// Hosts dos links por loja, espelho do servidor.py (HOSTS_LOJAS e HOSTS_AFILIADO_SHOPEE); o ML também aceita só os subdomínios de SUFIXO_ML
+// (o domínio nu mercadolivre.com.br o servidor recusa). Cada constante fica numa linha só: testes/test_front_constantes.py lê estas linhas e confere com o servidor.
+// O host final da Shopee será confirmado com um link real do dono: é só trocar aqui e no servidor.py.
+const HOSTS_LINK = {amazon:['amazon.com.br','www.amazon.com.br','amzn.to'], ml:['meli.la'], shopee:['s.shopee.com.br']};
+const SUFIXO_ML = '.mercadolivre.com.br';
+const lojaDoLink = u=>{
+  let h; try { h = new URL(u).hostname.toLowerCase(); } catch (e) { return null; }
+  if (h.endsWith(SUFIXO_ML)) return 'ml';
+  return Object.keys(HOSTS_LINK).find(k=>HOSTS_LINK[k].includes(h)) || null;
+};
+const TXT_ADD = {linkDesconhecido:'Link não reconhecido: use um link de afiliado da Amazon, do Mercado Livre ou da Shopee.'};
 // Textos do botão "Copiar imagem" (usados em copiarImagem)
 const TXT_IMG = {
   botao:'Copiar imagem',
@@ -336,6 +349,8 @@ let toastTimer;
 const toast = (m, erro=false)=>{const t=$(erro?'#toastErro':'#toast');$(erro?'#toast':'#toastErro').classList.remove('show');t.textContent=m;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),Math.max(1300,String(m).length*50));};
 const api = async(path, method='GET', body)=>{ const r=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); };
 
+// o filtro de loja segue o LOJA (mesma ordem em todo o app); "Todas as lojas" fica primeiro
+$('#fLoja').insertAdjacentHTML('beforeend', Object.entries(LOJA).map(([k,t])=>`<option value="${esc(k)}">${esc(t)}</option>`).join(''));
 let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
 let activeCat = localStorage.getItem('activeCat') || '';
 let page=1;
@@ -376,7 +391,8 @@ async function fetchItem(it, card){
 
 // "Copiar imagem": baixa a foto do CDN da loja (CORS, sem cookies), converte para PNG e põe na área de transferência.
 // Só aceita os hosts abaixo, para uma URL forjada no banco não virar requisição a outro lugar.
-const HOSTS_FOTO = ['m.media-amazon.com', 'http2.mlstatic.com'];
+const HOST_FOTO_SHOPEE = 'down-br.img.susercontent.com';   // CDN da foto da Shopee (a confirmar com um link real do dono; o mesmo valor está em disparo.py)
+const HOSTS_FOTO = ['m.media-amazon.com', 'http2.mlstatic.com', HOST_FOTO_SHOPEE];
 const falhaFoto = motivo=>Object.assign(new Error(motivo), {motivo});
 
 // Amazon: pede a versão de até 1000 px trocando o sufixo `._<mods>_.<ext>`. Outros hosts ficam como estão.
@@ -474,7 +490,7 @@ function renderCard(card, it){
       ${d&&d.imagem
         ? `<button type="button" class="secondary copyimg"${rotImg}>${TXT_IMG.botao}</button>`
         : `<button type="button" class="secondary copyimg" aria-disabled="true" aria-describedby="semfoto-${esc(it.id)}"${rotImg}>${TXT_IMG.botao}</button><span class="sr" id="semfoto-${esc(it.id)}">${TXT_IMG.semFoto}</span>`}
-      <button class="ghost open">Abrir na loja</button>
+      <button class="ghost open"${LOJA[it.loja] ? ` aria-label="Abrir na loja ${esc(LOJA[it.loja])}"` : ''}>Abrir na loja</button>
       <details class="more">
         <summary>Mais ações</summary>
         <div class="rare">
@@ -516,7 +532,9 @@ function render(){
   const bsel=$('#fBusca'), bval=bsel.value;
   bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+buscas.map(b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`).join('');
   const list = filtrada();
-  $('#count').textContent = items.length+' itens no total · '+items.filter(i=>i.loja==='amazon').length+' Amazon · '+items.filter(i=>i.loja==='ml').length+' Mercado Livre';
+  // loja sem item some do contador; cada trecho leva o "·" final no mesmo nowrap, para o separador nunca abrir a 2ª linha
+  const partes = [items.length+' itens no total'].concat(Object.keys(LOJA).map(k=>[k, items.filter(i=>i.loja===k).length]).filter(x=>x[1] > 0).map(([k,n])=>n+' '+LOJA[k]));
+  $('#count').innerHTML = partes.map((t,i)=>`<span class="nb">${esc(t)}${i < partes.length-1 ? ' ·' : ''}</span>`).join(' ');
   const PAGE=24, pages=Math.max(1,Math.ceil(list.length/PAGE));
   if(page>pages) page=pages; if(page<1) page=1;
   const pagerHtml = pages>1 ? `<button class="secondary pg" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : `<span class="muted">${list.length} itens</span>`;
@@ -547,7 +565,10 @@ $('#saveLinks').onclick=async()=>{
   const found=achados.filter(u=>/^https:\/\//i.test(u)), ignorados=achados.filter(u=>!/^https:\/\//i.test(u));
   const aviso=ignorados.length ? ' ('+ignorados.length+' sem https ignorados; ficaram na caixa)' : '';
   if(!found.length && ignorados.length){ toast('Nenhum link adicionado'+aviso); return; }
-  const novos=found.map(u=>({url:u, cat, loja:/mercadoli|meli\.la/.test(u)?'ml':'amazon', item_id:u}));
+  // a loja vem do domínio do link; domínio desconhecido não vira "amazon" em silêncio: nada é enviado e a caixa fica como está
+  const desconhecido=found.find(u=>!lojaDoLink(u));
+  if(desconhecido){ toast(TXT_ADD.linkDesconhecido+' '+(desconhecido.length > 80 ? desconhecido.slice(0,79)+'…' : desconhecido)+aviso); return; }
+  const novos=found.map(u=>({url:u, cat, loja:lojaDoLink(u), item_id:u}));
   const r=await api('items','POST',{items:novos});
   if(r && r.error){   // mantém a caixa para corrigir; o "item N" do servidor conta sobre found, então mostra o link
     const m=/item (\d+)/.exec(r.error), recusado=m && found[+m[1]];
@@ -656,7 +677,12 @@ function textoDias(dias){
   if (d.join() === '5,6') return 'sáb e dom';
   return listaTexto(d.map(i=>n[i]));
 }
-const textoLojas = l=>l.length === 2 ? 'Amazon e Mercado Livre' : (LOJA[l[0]] || l[0] || '');
+// 1 loja: o nome; 2: "A e B" na ordem fixa de LOJA; todas: "Todas as lojas"
+const textoLojas = l=>{
+  const k = Object.keys(LOJA).filter(x=>l.includes(x));
+  if (k.length && k.length === Object.keys(LOJA).length) return 'Todas as lojas';
+  return k.length ? listaTexto(k.map(x=>LOJA[x])) : (l[0] || '');
+};
 const textoCats = c=>c.slice(0,3).join(', ')+(c.length > 3 ? ' +'+(c.length-3) : '');
 const horariosOrdenados = h=>[...h].sort();
 const fmtNum = n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
@@ -881,6 +907,11 @@ function itemDaFila(e){
   const base = items.find(i=>i.id === e.item_pk);
   return {...(base || {id:e.item_pk}), data:{...(base && base.data || {}), titulo:e.titulo || (base && base.data && base.data.titulo) || '', imagem:e.imagem || ''}};
 }
+// Nome da loja do item de um envio (pelo item_pk); item excluído = sem rótulo
+function lojaDoEnvio(e){
+  const it = items.find(i=>i.id === e.item_pk);
+  return it && LOJA[it.loja] || '';
+}
 function criarCardFila(e){
   const r = (disp.regras||[]).find(x=>x.id === e.regra_id), n = (disp.numeros||[]).find(x=>x.id === e.numero_id);
   const inc = e.status === 'incerto', t = e.titulo ? esc(e.titulo) : '';
@@ -889,7 +920,7 @@ function criarCardFila(e){
   const el = document.createElement('article');
   el.className = 'dcard'; el.dataset.envio = e.id; el.dataset.status = e.status;
   el.setAttribute('aria-labelledby', 'ft-'+e.id);
-  el.innerHTML = `<div class="fhead"><span class="badge fnome" title="${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}">${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}</span><div class="fsub"><span class="busca">${n ? 'Grupo: '+esc(n.grupo_nome) : ''}</span><span class="estado ${inc ? 'ruim' : ''}">${inc ? 'Incerto' : 'Na fila'}</span></div></div>
+  el.innerHTML = `<div class="fhead"><span class="badge fnome" title="${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}">${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}</span><div class="fsub"><span class="busca">${esc([lojaDoEnvio(e), n ? 'Grupo: '+n.grupo_nome : ''].filter(Boolean).join(' · '))}</span><span class="estado ${inc ? 'ruim' : ''}">${inc ? 'Incerto' : 'Na fila'}</span></div></div>
     <div class="info">${e.imagem ? `<img loading="lazy" alt="" src="${esc(e.imagem)}">` : ''}<div class="t"><h3 class="name" id="ft-${e.id}" title="${esc(e.titulo)}">${esc(e.titulo)}</h3><div class="meta">${esc(quando(e.criado_em))}</div></div></div>
     ${inc ? `<p class="aviso">${esc(TXT_DISPARO.filaIncerto)}</p>` : ''}
     <textarea${rot('Mensagem para copiar', ' de ')}></textarea>
@@ -1043,9 +1074,9 @@ function desenharHistorico(){
   if (!histLista.length){ box.innerHTML = `<div class="vazio"><p>Nenhum envio neste período.</p></div>`; return; }
   const nomeRegra = id=>{ const r = (disp.regras||[]).find(x=>x.id === id); return r ? r.nome : TXT_DISPARO.regraExcluida; };
   const linhas = histLista.slice(0, histMostrar).map(e=>{
-    const [rot, cls] = TXT_DISPARO.status[e.status] || [e.status, ''];
+    const [rot, cls] = TXT_DISPARO.status[e.status] || [e.status, ''], loja = lojaDoEnvio(e);
     return `<tr role="row"><td role="cell" class="quando mono" data-rot="Data e hora">${esc(quando(e.criado_em))}</td>
-      <td role="cell" data-rot="Item"><span>${esc(e.titulo)}</span>${e.motivo ? `<div class="motivo">${esc(e.motivo)}</div>` : ''}</td>
+      <td role="cell" data-rot="Item"><span>${esc(e.titulo)}</span>${loja ? ` <span class="muted">· ${esc(loja)}</span>` : ''}${e.motivo ? `<div class="motivo">${esc(e.motivo)}</div>` : ''}</td>
       <td role="cell" data-rot="Regra">${esc(nomeRegra(e.regra_id))}</td>
       <td role="cell" data-rot="Status"><span class="estado ${cls}">${esc(rot)}</span></td></tr>`;
   }).join('');
@@ -1128,7 +1159,7 @@ function focarCampo(id){
 // ---------------------------------------------------------------- tela: formulário da regra
 function regraPadrao(){
   const n = disp.numeros;
-  return {nome:'', numero_id: n.length === 1 ? n[0].id : null, cats:[], lojas:['amazon','ml'], palavras:[], desconto_min:0,
+  return {nome:'', numero_id: n.length === 1 ? n[0].id : null, cats:[], lojas:Object.keys(LOJA), palavras:[], desconto_min:0,
     ordem:'relevancia', template: templates[current] ? current : Object.keys(templates)[0], com_foto:1,
     dias:[0,1,2,3,4,5,6], horarios:['09:00'], por_disparo:1, max_por_dia:10, repetir_apos_dias:7, intervalo_seg:60};
 }
@@ -1141,7 +1172,6 @@ function htmlHorarios(lista){
 }
 function htmlFormRegra(v){
   const todas = cats(), extras = v.cats.filter(c=>!todas.includes(c));
-  const lojasSel = v.lojas.length === 2 ? 'ambas' : v.lojas[0];
   const nums = disp.numeros;
   const tpls = Object.keys(templates), tplFalta = v.template && !tpls.includes(v.template);
   return `<form id="frmRegra" novalidate>
@@ -1154,8 +1184,8 @@ function htmlFormRegra(v){
     <div class="campo"><span class="rot" id="rotCats">Categorias</span>
       <div class="chips cats" id="f-cats" role="group" aria-labelledby="rotCats" aria-describedby="e-cats">${todas.map(c=>htmlChip('checkbox','cat',c,v.cats.includes(c),`${esc(c)} <span class="num">${items.filter(i=>i.cat === c).length}</span>`)).join('')}${extras.map(c=>htmlChip('checkbox','cat',c,true,`${esc(c)} <span class="num">sem itens</span>`)).join('')}</div>
       <div class="atalhos"><button type="button" class="linklike" data-acao="cats-todas">Marcar todas</button><button type="button" class="linklike" data-acao="cats-limpar">Limpar</button></div>${campoErro('cats')}</div>
-    <div class="campo"><span class="rot" id="rotLojas">Loja</span>
-      <div class="chips seg" id="f-lojas" role="radiogroup" aria-labelledby="rotLojas">${[['amazon','Amazon'],['ml','Mercado Livre'],['ambas','Ambas']].map(([k,t])=>htmlChip('radio','lojas',k,k === lojasSel,esc(t))).join('')}</div></div>
+    <div class="campo"><span class="rot" id="rotLojas">Lojas</span><p class="ajuda" id="a-lojas">A regra só envia itens das lojas marcadas.</p>
+      <div class="chips" id="f-lojas" role="group" aria-labelledby="rotLojas" aria-describedby="a-lojas e-lojas">${Object.entries(LOJA).map(([k,t])=>htmlChip('checkbox','lojas',k,v.lojas.includes(k),esc(t))).join('')}</div>${campoErro('lojas')}</div>
     <div class="campo"><span class="rot" id="rotOrdem">Ordem de envio</span>
       <div class="chips seg" id="f-ordem" role="radiogroup" aria-labelledby="rotOrdem">${TXT_DISPARO.ordens.map(([k,t])=>htmlChip('radio','ordem',k,k === v.ordem,esc(t))).join('')}</div></div>
     <details class="filtros"${v.palavras.length || v.desconto_min ? ' open' : ''}><summary>Filtros (opcional)</summary>
@@ -1193,13 +1223,12 @@ function htmlFormRegra(v){
 // Lê o formulário no formato da API (campos numéricos inválidos viram NaN e a validação aponta)
 function lerFormRegra(){
   const f = $('#frmRegra'), marcados = n=>[...f.querySelectorAll(`input[name="${n}"]:checked`)];
-  const lj = (f.querySelector('input[name="lojas"]:checked')||{}).value;
   const pal = [...new Set($('#f-palavras').value.split(',').map(p=>p.trim()).filter(Boolean))];
   return {
     nome: $('#f-nome').value.trim(),
     numero_id: $('#f-numero').value ? +$('#f-numero').value : null,
     cats: marcados('cat').map(i=>i.value),
-    lojas: lj === 'ambas' ? ['amazon','ml'] : lj ? [lj] : [],
+    lojas: marcados('lojas').map(i=>i.value),
     palavras: pal,
     desconto_min: lerInt($('#f-desc')),
     ordem: (f.querySelector('input[name="ordem"]:checked')||{}).value,
@@ -1218,6 +1247,7 @@ function validarRegra(v){
   if (!v.nome || v.nome.length > 80) e.push({id:'nome', msg:'Dê um nome à regra, de 1 a 80 letras.'});
   if (!v.numero_id) e.push({id:'numero', msg:'Escolha o número que envia.'});
   if (!v.cats.length) e.push({id:'cats', msg:'Escolha ao menos uma categoria.'});
+  if (!v.lojas.length) e.push({id:'lojas', msg:'Escolha ao menos uma loja.'});
   if (v.palavras.length > 20 || v.palavras.some(p=>p.length > 40)) e.push({id:'palavras', msg:'Use até 20 palavras, de até 40 letras cada.'});
   if (!intEm(v.desconto_min, 0, 95)) e.push({id:'desc', msg:'Informe um desconto mínimo de 0 a 95.'});
   if (!v.dias.length) e.push({id:'dias', msg:'Escolha ao menos um dia.'});
@@ -1257,6 +1287,7 @@ function desenharPrevia(){
   }
   const a = previaLista[previaIdx % previaLista.length];
   box.innerHTML = `<p class="muted">Assim a mensagem chega no grupo. Usa o template escolhido acima.</p>
+    ${LOJA[a.loja] ? `<p class="muted" id="dspPreviaLoja">Loja: ${esc(LOJA[a.loja])}</p>` : ''}
     <div class="corpo">${a.imagem ? `<img class="foto" alt="Foto do item da prévia" src="${esc(a.imagem)}">` : `<div class="sem-foto">Sem foto</div>`}<pre class="msg">${esc(a.mensagem)}</pre></div>
     ${previaLista.length > 1 ? `<div><button type="button" class="secondary" data-acao="outra-previa">Ver outro item (${previaIdx % previaLista.length + 1} de ${previaLista.length})</button></div>` : ''}`;
 }

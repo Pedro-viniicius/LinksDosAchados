@@ -541,6 +541,130 @@ describe('coletar(): envio, progresso e parar (CA13, CA14, CA17)', () => {
   });
 });
 
+// ------------------------------------------------------------------ coletar(): ordem da listagem (CA6)
+describe('coletar(): ordem da listagem (CA6)', () => {
+  const CHAVE = '__coletaML:http://localhost:8765';
+
+  for (const [nome, ordem] of [['desconhecida', 'vendidos'], ['mais vendidos', 'mais_vendidos'], ['maiúscula', 'Caros'],
+    ['de protótipo', 'constructor'], ['__proto__', '__proto__'], ['número', 7], ['nula', null], ['vazia', ''],
+    ['objeto', { caros: true }]]) {
+    test(`ordem ${nome} é recusada antes de qualquer fetch ou escrita`, async () => {
+      const ff = fetchFalso();
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.coletar({ termos: ['Smart TV'], ordem });
+      assert.match(estado.erro, /ordem deve ser uma destas: relevancia, caros\. Nada foi feito\./);
+      assert.equal(ff.chamadas.length, 0);
+      assert.equal(localStorage.escritas, 0);
+      assert.equal(estado.rodando, false);
+    });
+  }
+
+  test('sem ordem (ou "relevancia") a URL é a de sempre e o progresso é o termo puro', async () => {
+    for (const opcoes of [{}, { ordem: 'relevancia' }, { ordem: undefined }]) {
+      const ff = fetchFalso();
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.coletar({ termos: ['Máquina de lavar'], ...opcoes });
+      assert.equal(estado.erro, null);
+      assert.equal(estado.ordem, 'relevancia');
+      assert.deepEqual(ff.doML().map((c) => c.url), ['/maquina-de-lavar']);
+      assert.deepEqual(localStorage.lista(CHAVE), ['Máquina de lavar']);
+    }
+  });
+
+  test("ordem 'caros' busca a listagem com o sufixo de maior preço e grava a mesma cat e busca", async () => {
+    const ff = fetchFalso();
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Body splash'], ordem: 'caros' });
+    assert.equal(estado.erro, null);
+    assert.equal(estado.ordem, 'caros');
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/body-splash_OrderId_PRICE*DESC']);
+    assert.equal(ff.doML()[0].init.credentials, 'include');
+    const corpo = JSON.parse(ff.doServidor()[0].init.body);
+    assert.ok(corpo.items.length > 0);
+    for (const i of corpo.items) {
+      assert.equal(i.cat, 'Perfumes e Perfumaria');
+      assert.equal(i.busca, 'Body splash');
+      assert.equal(i.loja, 'ml');
+    }
+  });
+
+  test('o progresso antigo (termo puro) vale para a relevância e não pula a ordem "caros"', async () => {
+    const ff = fetchFalso();
+    const antigo = memoria({ [CHAVE]: JSON.stringify(['Body splash', 'Smart TV']) });
+    const { ML } = carregar({ fetch: ff.f, localStorage: antigo });
+
+    const rel = await ML.coletar({ termos: ['Body splash', 'Smart TV'] });
+    assert.deepEqual(js(rel.pulados), ['Body splash', 'Smart TV']);
+    assert.deepEqual(js(rel.feitos), []);
+    assert.equal(ff.chamadas.length, 0, 'o progresso antigo tem de valer sem recoletar');
+    assert.equal(antigo.escritas, 0);
+
+    const caros = await ML.coletar({ termos: ['Body splash', 'Smart TV'], ordem: 'caros', pausa: [0, 0] });
+    assert.deepEqual(js(caros.pulados), []);
+    assert.deepEqual(js(caros.feitos), ['Body splash', 'Smart TV']);
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/body-splash_OrderId_PRICE*DESC', '/smart-tv_OrderId_PRICE*DESC']);
+    // os termos puros antigos continuam lá, e as chaves das outras ordens vêm depois
+    assert.deepEqual(antigo.lista(CHAVE),
+      ['Body splash', 'Smart TV', 'caros|Body splash', 'caros|Smart TV']);
+  });
+
+  test('o progresso de cada ordem é separado: caros feito não pula a relevância e vice-versa', async () => {
+    const ff = fetchFalso();
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    await ML.coletar({ termos: ['Smart TV'], ordem: 'caros' });
+    assert.deepEqual(localStorage.lista(CHAVE), ['caros|Smart TV']);
+
+    const n = ff.chamadas.length;
+    const denovo = await ML.coletar({ termos: ['Smart TV'], ordem: 'caros' });
+    assert.equal(ff.chamadas.length, n, 'termo já feito em "caros" não pode ser buscado de novo');
+    assert.deepEqual(js(denovo.pulados), ['Smart TV']);
+
+    const rel = await ML.coletar({ termos: ['Smart TV'] });
+    assert.deepEqual(js(rel.feitos), ['Smart TV']);
+    assert.deepEqual(js(rel.pulados), []);
+    assert.deepEqual(localStorage.lista(CHAVE), ['caros|Smart TV', 'Smart TV']);
+    assert.deepEqual(ff.doML().map((c) => c.url).slice(-1), ['/smart-tv']);
+  });
+
+  test("com enviar:false e ordem 'caros' busca a listagem ordenada sem tocar no progresso", async () => {
+    const ff = fetchFalso();
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'], ordem: 'caros', enviar: false });
+    assert.equal(estado.erro, null);
+    assert.ok(estado.itens.length > 0);
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/smart-tv_OrderId_PRICE*DESC']);
+    assert.equal(ff.doServidor().length, 0);
+    assert.equal(localStorage.escritas, 0);
+  });
+
+  test("estado, parar() e zerar() continuam funcionando com ordem 'caros'", async () => {
+    let ML;
+    const ff = fetchFalso({ aoBuscar: () => ML.parar() });
+    let localStorage;
+    ({ ML, localStorage } = carregar({ fetch: ff.f }));
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], ordem: 'caros', pausa: [10000, 10000] });
+    assert.equal(estado.parado, true);
+    assert.equal(estado.erro, null);
+    assert.equal(estado.rodando, false);
+    assert.equal(estado.termoAtual, null);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    assert.equal(ff.doML().length, 1);
+    assert.equal(ML.estado, estado);
+    assert.deepEqual(localStorage.lista(CHAVE), ['caros|Smart TV']);
+
+    assert.equal(ML.zerar('http://localhost:8765', localStorage), true);
+    assert.equal(localStorage.lista(CHAVE), null);
+  });
+
+  test("falha na busca ordenada não marca o termo e a mensagem cita o termo", async () => {
+    const ff = fetchFalso({ statusML: 500 });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'], ordem: 'caros' });
+    assert.match(estado.erro, /o ML respondeu 500 na busca "Smart TV"/);
+    assert.equal(localStorage.escritas, 0);
+  });
+});
+
 // ------------------------------------------------------------------ integração com o servidor.py
 function portaLivre() {
   return new Promise((resolve, reject) => {

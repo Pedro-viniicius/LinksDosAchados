@@ -173,9 +173,9 @@ function falso(url, opcoes) {
   }
   if (r === 'previa' && metodo === 'POST') {
     return json(E.previa || [
-      { item_pk: 1, titulo: 'Item A', mensagem: '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA', imagem: URL_ML },
-      { item_pk: 2, titulo: 'Item B', mensagem: '*Item B*\n🛒 https://meli.la/BBB', imagem: '' },
-      { item_pk: 3, titulo: 'Item C', mensagem: '*Item C*\n🛒 https://meli.la/CCC', imagem: URL_ML }]);
+      { item_pk: 1, loja: 'ml', titulo: 'Item A', mensagem: '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA', imagem: URL_ML },
+      { item_pk: 2, loja: 'amazon', titulo: 'Item B', mensagem: '*Item B*\n🛒 https://meli.la/BBB', imagem: '' },
+      { item_pk: 3, loja: 'shopee', titulo: 'Item C', mensagem: '*Item C*\n🛒 https://meli.la/CCC', imagem: URL_ML }]);
   }
   if (r === 'fila' && metodo === 'GET') return json(E.envios.filter(e => e.status === 'pendente' || e.status === 'incerto').sort((a, b) => a.criado_em < b.criado_em ? -1 : a.criado_em > b.criado_em ? 1 : a.id - b.id));
   if ((m = /^envios\/(\d+)$/.exec(r)) && metodo === 'PATCH') {
@@ -566,9 +566,12 @@ teste('CA2: o formulário tem as 5 seções, chips de categorias vindos de cats(
   const contagens = qa('#f-cats .chip .num').map(txt);
   igual(contagens, reais.map(c => String(W.eval('items.filter(i=>i.cat===' + JSON.stringify(c) + ').length'))), 'contagem de itens por categoria');
   igual(qa('#f-cats input:checked').length, 0, 'nenhuma marcada');
-  igual(qa('#f-lojas input').map(i => i.value), ['amazon', 'ml', 'ambas']);
-  igual(qa('#f-lojas .chip').map(txt), ['Amazon', 'Mercado Livre', 'Ambas']);
-  igual(q('#f-lojas input:checked').value, 'ambas');
+  igual(qa('#f-lojas input').map(i => i.value), ['amazon', 'ml', 'shopee']);
+  igual(qa('#f-lojas .chip').map(txt), ['Amazon', 'Mercado Livre', 'Shopee']);
+  igual(qa('#f-lojas input:checked').map(i => i.value), ['amazon', 'ml', 'shopee'], 'regra nova: as três lojas marcadas');
+  igual(txt(q('#rotLojas')), 'Lojas');
+  igual(txt(q('#a-lojas')), 'A regra só envia itens das lojas marcadas.');
+  afirma(!/Ambas/.test(txt(q('#frmRegra'))), 'o rádio "Ambas" saiu');
   igual(qa('#f-ordem input').map(i => i.value), ['relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes', 'aleatoria']);
   igual(qa('#f-ordem .chip').map(txt), ['Mais relevantes', 'Maiores descontos', 'Mais baratos', 'Mais caros', 'Com cupom primeiro', 'Mais recentes', 'Aleatória']);
   igual(qa('#f-dias .chip').map(txt), ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom']);
@@ -673,7 +676,8 @@ teste('CA2: criar regra envia os campos do plano, nasce pausada (ativa:0), vira 
   const cat = CAT1();
   digitar('#f-nome', '  Eletrônicos de manhã  ');
   marcarChip('#f-cats', cat);
-  marcarChip('#f-lojas', 'ml');
+  marcarChip('#f-lojas', 'amazon', false);   // regra nova abre com as três; fica só o Mercado Livre
+  marcarChip('#f-lojas', 'shopee', false);
   marcarChip('#f-ordem', 'cupom');
   q('details.filtros').open = true;
   digitar('#f-palavras', 'fone,  Bluetooth , fone ,');
@@ -746,7 +750,7 @@ teste('CA2: editar regra carrega os valores, mostra categoria que não existe ma
   igual(q('#f-nome').value, 'Velha');
   igual(qa('#f-cats input:checked').map(i => i.value), [CAT1(), 'Categoria que sumiu']);
   afirma(txt(chip('#f-cats', 'Categoria que sumiu').closest('.chip')).includes('sem itens'), 'categoria sem itens fica visível');
-  igual(q('#f-lojas input:checked').value, 'amazon');
+  igual(qa('#f-lojas input:checked').map(i => i.value), ['amazon']);
   igual(q('#f-ordem input:checked').value, 'recentes');
   igual(q('#f-palavras').value, 'tv, monitor');
   afirma(q('details.filtros').open, 'filtros abrem quando há valor');
@@ -790,8 +794,16 @@ teste('CA10: a prévia mostra a mensagem do servidor, troca de item e usa o corp
   igual(q('#dspPrevia pre.msg').textContent, '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA');
   afirma(q('#dspPrevia img.foto'), 'foto do item A');
   afirma(txt(q('[data-acao="outra-previa"]')).includes('1 de 3'), txt(q('[data-acao="outra-previa"]')));
+  igual(txt(q('#dspPreviaLoja')), 'Loja: Mercado Livre', 'CA-V9: a prévia diz a loja do item (texto, sem selo colorido)');
+  afirma(q('#dspPreviaLoja').classList.contains('muted'), 'Legenda Mudo');
+  afirma(q('#dspPreviaLoja').compareDocumentPosition(q('#dspPrevia .corpo')) & 4, 'a linha da loja fica acima do corpo');
   clicar('[data-acao="outra-previa"]');
   afirma(q('#dspPrevia pre.msg').textContent.startsWith('*Item B*'), 'item B');
+  igual(txt(q('#dspPreviaLoja')), 'Loja: Amazon');
+  clicar('[data-acao="outra-previa"]');
+  igual(txt(q('#dspPreviaLoja')), 'Loja: Shopee');
+  clicar('[data-acao="outra-previa"]');
+  clicar('[data-acao="outra-previa"]');
   afirma(!q('#dspPrevia img.foto') && txt(q('#dspPrevia .sem-foto')) === 'Sem foto', 'item sem foto mostra "Sem foto"');
   igual(q('#dspPrevia').getAttribute('aria-live'), 'polite');
   igual(reqs('POST', /disparo\/regras/).length, 0, 'a prévia não grava nada');
@@ -827,6 +839,75 @@ teste('CA10: a mensagem da prévia e os textos vindos da API passam por esc (nad
   igual(W.__xss, undefined, 'o onerror não rodou');
 });
 
+teste('CA-V6/CA-V7/CA-V8: regra sem loja é bloqueada com erro inline e no resumo; regra antiga abre sem a Shopee; resumo "Todas as lojas"/"X e Y"', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  preencherRegra();
+  for (const k of ['amazon', 'ml', 'shopee']) marcarChip('#f-lojas', k, false);
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#dspErros')).includes('Corrija este campo'), 'resumo de erros');
+  igual(txt(q('#e-lojas')), 'Escolha ao menos uma loja.');
+  igual(txt(q('#dspErros li')), 'Escolha ao menos uma loja.', 'o erro também está no resumo');
+  afirma(qa('#f-lojas input').every(i => i.getAttribute('aria-invalid') === 'true'), 'aria-invalid nos chips');
+  afirma(q('#f-lojas').getAttribute('aria-describedby').includes('e-lojas'), 'aria-describedby aponta o erro');
+  igual(W.document.activeElement, q('#dspErros'), 'o foco vai ao resumo');
+  igual(reqs('POST', /disparo\/regras$/).length, 0, 'nada vai ao servidor');
+  clicar('#dspErros [data-acao="foco"]');
+  igual(W.document.activeElement, q('#f-lojas input'), 'o link do resumo leva ao primeiro chip');
+  marcarChip('#f-lojas', 'shopee');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvar com uma loja');
+  igual(reqs('POST', /disparo\/regras$/)[0].corpo.lojas, ['shopee']);
+});
+
+teste('CA-V7/CA-V8: regra antiga (Amazon + ML) abre com a Shopee desmarcada e o cartão resume as lojas na ordem fixa', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Antiga', lojas: ['amazon', 'ml'] }), regraFalsa({ nome: 'Tres', lojas: ['shopee', 'ml', 'amazon'] }),
+    regraFalsa({ nome: 'MlShopee', lojas: ['shopee', 'ml'] }), regraFalsa({ nome: 'AmShopee', lojas: ['shopee', 'amazon'] }), regraFalsa({ nome: 'Uma', lojas: ['shopee'] }));
+  await abrir('#disparo');
+  const resumo = n => txt([...qa('[data-regra]')].find(c => txt(c.querySelector('h3')) === n).querySelector('.meta'));
+  afirma(resumo('Antiga').includes('Amazon e Mercado Livre'), resumo('Antiga'));
+  afirma(resumo('Tres').includes('Todas as lojas'), resumo('Tres'));
+  afirma(resumo('MlShopee').includes('Mercado Livre e Shopee'), resumo('MlShopee'));
+  afirma(resumo('AmShopee').includes('Amazon e Shopee'), resumo('AmShopee'));
+  afirma(resumo('Uma').includes('· Shopee ·'), resumo('Uma'));
+  afirma(!/\bML\b/.test(textoTela()), 'sem "ML" abreviado');
+  clicar(acao('editar', E.regras[0].id));
+  await esperar(() => W.location.hash === '#disparo/regra/' + E.regras[0].id && q('#f-nome'), 'abrir a edição');
+  igual(qa('#f-lojas input:checked').map(i => i.value), ['amazon', 'ml'], 'a regra antiga abre como está gravada');
+  igual(chip('#f-lojas', 'shopee').checked, false);
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvar');
+  igual(reqs('PUT', /disparo\/regras\/\d+$/)[0].corpo.lojas, ['amazon', 'ml'], 'salvar sem mexer não inclui a Shopee');
+});
+
+teste('CA-V9: a fila e o histórico mostram a loja do item (por item_pk); item excluído fica sem o rótulo', async () => {
+  E.numeros.push(numeroFalso({ grupo_nome: 'Achadinhos' })); E.regras.push(regraFalsa());
+  const fake = { id: 900000001, loja: 'shopee', cat: 'QA', busca: 'qa', url: 'https://s.shopee.com.br/QA1', data: { titulo: 'Perfume QA', preco: 'R$ 10,00' } };
+  W.eval('items.push(' + JSON.stringify(fake) + ')');
+  try {
+    E.envios.push(envioFalso({ item_pk: fake.id, titulo: 'Perfume QA', status: 'pendente' }),
+      envioFalso({ item_pk: 900000999, titulo: 'Sem item', status: 'pendente' }),
+      envioFalso({ item_pk: fake.id, titulo: 'Perfume QA', status: 'enviado' }));
+    await abrir('#disparo');
+    const cards = qa('#dspFilaLista article');
+    igual(cards.length, 2);
+    const por = t => cards.find(c => txt(c.querySelector('h3')) === t);
+    igual(txt(por('Perfume QA').querySelector('.fsub .busca')), 'Shopee · Grupo: Achadinhos');
+    igual(txt(por('Sem item').querySelector('.fsub .busca')), 'Grupo: Achadinhos', 'item excluído: só o grupo');
+    afirma(por('Perfume QA').querySelector('.fsub .busca').classList.contains('busca'), 'mesma classe .busca (Mudo, trunca)');
+    afirma(!!por('Perfume QA').querySelector('.fsub .estado'), 'o selo de estado continua à direita');
+    await abrir('#historico');
+    const linhas = qa('table.htab tbody tr');
+    const cel = t => txt([...linhas].find(l => txt(l.querySelector('td:nth-child(2)')).startsWith(t)).querySelector('td:nth-child(2)'));
+    igual(cel('Perfume QA'), 'Perfume QA · Shopee');
+    igual(cel('Sem item'), 'Sem item');
+    igual(linhas[0].querySelectorAll('td').length, 4, 'sem coluna nova');
+  } finally {
+    W.eval('items.splice(items.findIndex(i => i.id === ' + fake.id + '), 1)');
+  }
+});
+
 teste('CA2: cartão da regra ativa: Ativa, próximo horário, resumo da agenda, último envio, na fila e ações', async () => {
   E.numeros.push(numeroFalso());
   E.regras.push(regraFalsa({ cats: [CAT1(), 'B', 'C', 'D'] }));
@@ -836,7 +917,7 @@ teste('CA2: cartão da regra ativa: Ativa, próximo horário, resumo da agenda, 
   igual(txt(c.querySelector('.estado')), 'Ativa');
   const t = txt(c);
   afirma(t.includes(CAT1() + ', B, C +1'), 'até 3 categorias e "+N": ' + t);
-  afirma(t.includes('Amazon e Mercado Livre · Maiores descontos'), t);
+  afirma(t.includes('Amazon e Mercado Livre · Maiores descontos'), t);   // regraFalsa() tem lojas amazon e ml: o resumo não inclui a Shopee
   afirma(t.includes('seg a sex, 09:00 e 12:00 · 1 por horário · máx. 20/dia'), t);
   afirma(/Último envio: hoje \d\d:\d\d/.test(t) || /Último envio: ontem \d\d:\d\d/.test(t), t);
   afirma(/Próximo: amanhã 09:00/.test(t) || /Próximo: Sem itens para enviar/.test(t), t);
@@ -1239,7 +1320,8 @@ teste('a11y: chips são input nativo (checkbox/radio) com foco visível no span 
   E.numeros.push(numeroFalso());
   await abrir('#disparo/nova');
   for (const i of qa('#f-cats input')) igual(i.type, 'checkbox');
-  for (const i of qa('#f-ordem input, #f-lojas input')) igual(i.type, 'radio');
+  for (const i of qa('#f-lojas input')) igual(i.type, 'checkbox');
+  for (const i of qa('#f-ordem input')) igual(i.type, 'radio');
   const ordem = qa('#f-ordem input');
   igual(new Set(ordem.map(i => i.name)).size, 1, 'rádios do mesmo grupo (setas trocam a opção)');
   const alvo = W.eval('parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--alvo"))');
@@ -1270,7 +1352,8 @@ teste('D1: o cartão da fila não estoura em 320 px (nome longo da regra) e o gr
   igual(W.getComputedStyle(nome).whiteSpace, 'normal', 'o nome da regra pode quebrar');
   afirma(nome.getBoundingClientRect().height <= 2 * 16 + 4, 'o nome ocupa no máximo 2 linhas: ' + nome.getBoundingClientRect().height);
   const g = c.querySelector('.busca');
-  afirma(!/…$/.test(txt(g)) && txt(g) === 'Grupo: Achadinhos da Desejo de Menina', 'o grupo aparece inteiro no texto: ' + txt(g));
+  const lojaItem = W.eval('LOJA[items[0].loja]');
+  afirma(!/…$/.test(txt(g)) && txt(g) === lojaItem + ' · Grupo: Achadinhos da Desejo de Menina', 'a loja e o grupo aparecem inteiros no texto: ' + txt(g));
   afirma(g.scrollWidth <= g.clientWidth + 1, 'o grupo não é cortado (ellipsis)');
   igual(c.querySelector('.fsub .estado') !== null, true, 'o estado fica na linha de baixo, com o grupo');
   afirma(!c.querySelector('[style]'), 'sem style inline no cabeçalho');

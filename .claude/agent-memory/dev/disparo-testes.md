@@ -29,4 +29,10 @@ Vistas na rodada 2 (S1/S2 do seguranca):
 - `$\`` e `$'` no porte do `replaceAll` multiplicam o texto a cada campo (1,5 GB em 0,2 s com campos no teto): a montagem soma o tamanho **antes** de fatiar e aborta com `MensagemGrande`. Teste de bug com risco de OOM: rode o "antes" com `ulimit -v 1500000` num subshell.
 - Telefone em teste: use `5500000000001` (fictício); o seguranca recusa número com DDD real no git.
 
+Vistas no E2 do plano perfumaria-tres-lojas (Shopee no disparo, 2026-11-03):
+
+- Os testes da Shopee em `test_disparo.py` usam o `S.eh_link_afiliado` real e conferem `D.HOSTS_AFILIADO_SHOPEE == S.HOSTS_AFILIADO_SHOPEE`: dependem do E1 (servidor). Para provar que a checagem de host do `link_da_loja_ok` segura sozinha, passe um `eh_afiliado` permissivo (`lambda u: True`); `http://` e `user@host` só caem no `eh_afiliado` do servidor.
+- Linha com placeholder vazio some inteira no `montar_mensagem`: `'{LOJA}|{LINK}'` com loja desconhecida dá `''`, não `'|link'`. Teste o `{LOJA}` vazio em linha separada.
+- Cópia para mutantes do `test_disparo.py` precisa também de `testes/mensagens.test.html`, senão dá 4 ERROR fixos (FileNotFoundError) em toda execução.
+
 **How to apply:** ao mexer em `disparo.py`, `buildMsg` ou nos testes deles. Relacionado: [[escapes-unicode-ferramentas]], [[chrome-headless-testes]], [[servidor-testes]].

@@ -236,6 +236,116 @@ teste('S1: caixa só com http: nenhum POST, toast avisa e a caixa não muda', as
   igual(VIOL, []);
 });
 
+// ================================================================ (d) Shopee como terceira loja (E4 do plano perfumaria-tres-lojas)
+const itemDaLoja = (loja, url, cat = 'QA Shopee') => { const n = ++seq; return { id: 900000000 + n, loja, cat, busca: 'qa', url,
+  data: { titulo: 'Perfume ' + loja + ' ' + n, preco: 'R$ 99,90', imagem: '' } }; };
+const trocarItens = lista => { W.__lista = lista; W.eval('items = window.__lista; render()'); };
+
+teste('CA-V1/CA-V2/CA-V12: cartão da Shopee tem o selo "Shopee", "Abrir na loja Shopee" e nenhum "Atualizar preço"', async () => {
+  const sh = montarCard(itemDaLoja('shopee', 'https://s.shopee.com.br/7AbCdEf12'));
+  igual(sh.card.querySelector('.badge').textContent, 'Shopee');
+  igual(sh.btn.getAttribute('aria-label'), 'Abrir na loja Shopee');
+  igual(sh.btn.textContent, 'Abrir na loja', 'o texto visível não muda e está contido no nome acessível');
+  igual(sh.card.querySelector('.fetch'), null, 'sem "Atualizar preço" na Shopee');
+  igual(sh.card.querySelector('.rare').textContent.includes('Atualizar preço'), false);
+  igual(montarCard(itemDaLoja('amazon', 'https://www.amazon.com.br/dp/B0TESTE0003?tag=desejodemen01-20')).btn.getAttribute('aria-label'), 'Abrir na loja Amazon');
+  const am = montarCard(itemDaLoja('amazon', 'https://www.amazon.com.br/dp/B0TESTE0004?tag=desejodemen01-20'));
+  afirma(am.card.querySelector('.fetch'), 'a Amazon continua com "Atualizar preço"');
+  igual(montarCard(itemDaLoja('ml', 'https://meli.la/abc')).btn.getAttribute('aria-label'), 'Abrir na loja Mercado Livre');
+  sh.btn.click();
+  igual(OPENS, [['https://s.shopee.com.br/7AbCdEf12', '_blank', 'noopener,noreferrer']]);
+  igual(W.getComputedStyle(sh.card.querySelector('.badge')).backgroundColor, 'rgba(0, 0, 0, 0)', 'selo sem fundo: nenhuma cor de loja');
+});
+
+teste('CA-V3/CA-V4: #fLoja lista as três lojas e filtra só a Shopee; o contador mostra "S Shopee" e omite lojas com zero', async () => {
+  const salvos = W.eval('items');
+  try {
+    igual([...W.document.querySelectorAll('#fLoja option')].map(o => o.textContent), ['Todas as lojas', 'Amazon', 'Mercado Livre', 'Shopee']);
+    igual(W.document.getElementById('fLoja').getAttribute('aria-label'), 'Filtrar por loja');
+    trocarItens([itemDaLoja('amazon', 'https://www.amazon.com.br/dp/B0TESTE0005?tag=desejodemen01-20'), itemDaLoja('shopee', 'https://s.shopee.com.br/AAA111'),
+      itemDaLoja('shopee', 'https://s.shopee.com.br/BBB222')]);
+    const cont = () => W.document.getElementById('count');
+    igual(cont().textContent, '3 itens no total · 1 Amazon · 2 Shopee', 'Mercado Livre com zero some');
+    afirma(!/ 0 /.test(cont().textContent), 'sem zero no contador');
+    // o separador acompanha o trecho anterior: nenhum trecho começa por "·"
+    igual([...cont().querySelectorAll('.nb')].map(e => e.textContent), ['3 itens no total ·', '1 Amazon ·', '2 Shopee']);
+    const sel = W.document.getElementById('fLoja');
+    sel.value = 'shopee'; sel.dispatchEvent(new W.Event('change'));
+    igual([...W.document.querySelectorAll('#grid .card .badge')].map(b => b.textContent), ['Shopee', 'Shopee']);
+    igual(W.document.querySelectorAll('#grid .card .fetch').length, 0);
+    sel.value = 'ml'; sel.dispatchEvent(new W.Event('change'));
+    igual(W.document.querySelectorAll('#grid .card').length, 0, 'loja sem item na aba usa o vazio do grid');
+    trocarItens([itemDaLoja('ml', 'https://meli.la/zzz')]);
+    igual(cont().textContent, '1 itens no total · 1 Mercado Livre', 'sem Amazon e sem Shopee');
+  } finally {
+    W.document.getElementById('fLoja').value = '';
+    W.__lista = salvos; W.eval('items = window.__lista; render()');
+  }
+  afirma(W.document.querySelectorAll('#grid .card').length > 0, 'a lista real voltou');
+});
+
+teste('CA-V4/CA-V10: em 320 px o contador com as três lojas quebra em até 2 linhas, sem "·" no começo da linha e sem rolagem horizontal', async () => {
+  const salvos = W.eval('items'), f = document.getElementById('app');
+  try {
+    f.style.width = '320px';
+    const mk = (l, n) => Array.from({ length: n }, (_, i) => itemDaLoja(l, 'https://x.invalid/' + l + i));
+    trocarItens([...mk('amazon', 600), ...mk('ml', 400), ...mk('shopee', 240)]);
+    await dormir(100);
+    const c = W.document.getElementById('count'), doc = W.document.documentElement;
+    igual(c.textContent, '1240 itens no total · 600 Amazon · 400 Mercado Livre · 240 Shopee');
+    const alturaLinha = parseFloat(W.getComputedStyle(c).lineHeight);
+    afirma(c.getBoundingClientRect().height <= 2 * alturaLinha + 1, 'mais de 2 linhas: ' + c.getBoundingClientRect().height + ' / ' + alturaLinha);
+    afirma(doc.scrollWidth <= doc.clientWidth + 1, 'rolagem horizontal: ' + doc.scrollWidth + ' > ' + doc.clientWidth);
+    // cada "·" fica dentro do trecho anterior (nowrap): o separador nunca abre uma linha
+    igual([...c.querySelectorAll('.nb')].map(e => e.textContent.endsWith(' ·')), [true, true, true, false]);
+  } finally {
+    f.style.width = '';
+    W.__lista = salvos; W.eval('items = window.__lista; render()');
+  }
+});
+
+teste('CA3: a loja vem do domínio do link (Shopee, Mercado Livre, Amazon) e o placeholder cita as três lojas', async () => {
+  igual(caixa().placeholder, 'Cole links de afiliado aqui, um por linha (Amazon, Mercado Livre ou Shopee)');
+  IMPL_POST = () => json({ inserido: 5, atualizado: 0 });
+  const links = ['https://s.shopee.com.br/7AbCdEf12', 'https://meli.la/ok1', 'https://www.mercadolivre.com.br/afiliados/x', 'https://www.amazon.com.br/dp/B0TESTE0006?tag=desejodemen01-20', 'https://amzn.to/3abc'];
+  adicionar(links.join('\n'), 'QA teste');
+  await esperar(() => /links adicionados/.test(toastTxt()), 'toast de sucesso');
+  igual(POSTS.length, 1);
+  igual(POSTS[0].corpo.items.map(i => [i.url, i.loja]), [[links[0], 'shopee'], [links[1], 'ml'], [links[2], 'ml'], [links[3], 'amazon'], [links[4], 'amazon']]);
+});
+
+for (const ruim of ['https://exemplo.com/produto', 'https://www.amazon.com/dp/B0TESTE0007', 'https://shopee.com.br/Perfume-i.1.2', 'https://amazon.com.br.golpe.com/x', 'https://golpe.com/s.shopee.com.br/AAA', 'https://shope.ee/AAA', 'https://golpe.example/mercadoli-meli.la']) {
+  teste('CA3: domínio desconhecido (' + ruim + ') não vira "amazon": toast da spec, nada enviado e a caixa fica como está', async () => {
+    IMPL_POST = () => json({ inserido: 99 });
+    const texto = 'https://s.shopee.com.br/7AbCdEf12\n' + ruim;
+    adicionar(texto);
+    await esperar(() => toastTxt().startsWith('Link não reconhecido'), 'toast de link desconhecido');
+    igual(toastTxt(), 'Link não reconhecido: use um link de afiliado da Amazon, do Mercado Livre ou da Shopee. ' + ruim, 'o toast diz qual link foi recusado');
+    await dormir(100);
+    igual(POSTS.length, 0, 'houve POST');
+    igual(caixa().value, texto, 'a caixa deve ficar como estava');
+    igual(VIOL, []);
+  });
+}
+
+teste('R2: o toast cita só o primeiro link recusado, truncado em 80 caracteres, e mantém o aviso dos links sem https', async () => {
+  IMPL_POST = () => json({ inserido: 99 });
+  const longo = 'https://exemplo.com/' + 'a'.repeat(120), outro = 'https://outro.example/b';
+  const texto = 'http://exemplo.com/sem-https\nhttps://s.shopee.com.br/7AbCdEf12\n' + longo + '\n' + outro;
+  adicionar(texto);
+  await esperar(() => toastTxt().startsWith('Link não reconhecido'), 'toast de link desconhecido');
+  const esperado = 'Link não reconhecido: use um link de afiliado da Amazon, do Mercado Livre ou da Shopee. ' + longo.slice(0, 79) + '…' + ' (1 sem https ignorados; ficaram na caixa)';
+  igual(toastTxt(), esperado);
+  afirma(!toastTxt().includes('outro.example'), 'só o primeiro link recusado');
+  igual(POSTS.length, 0);
+  igual(caixa().value, texto);
+});
+
+teste('R4: as opções de #fLoja saem do LOJA, com "Todas as lojas" primeiro', async () => {
+  igual([...W.document.querySelectorAll('#fLoja option')].map(o => [o.value, o.textContent]),
+    [['', 'Todas as lojas'], ...Object.entries(W.eval('LOJA'))]);
+});
+
 // ================================================================ fecho
 teste('nenhuma escrita chegou à API real e /api/items ficou idêntico ao do início', async () => {
   const depois = await (await FETCH_ORIG('/api/items')).text();

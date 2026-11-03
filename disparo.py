@@ -48,15 +48,26 @@ ESQUEMA_V1 = (
 )
 
 ORDENS = ('relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes', 'aleatoria')
-LOJAS = ('amazon', 'ml')
+LOJAS = ('amazon', 'ml', 'shopee')
 STATUS = ('pendente', 'enviando', 'enviado', 'incerto', 'erro', 'pulado', 'expirado')
 # Status que contam como "já mandado" para não repetir (CA5) e para os limites do dia (CA6).
 STATUS_OCUPA = ('enviado', 'pendente', 'enviando', 'incerto')
 TOLERANCIA = timedelta(minutes=10)   # horário perdido há mais que isso é pulado (CA6)
 MAX_PREVIA = 20
 LIMITE_HISTORICO = 500
-# Mesma allowlist do HOSTS_FOTO do index.html: a foto só segue para o transporte se vier do CDN da loja.
-HOSTS_FOTO = ('m.media-amazon.com', 'http2.mlstatic.com')
+# Host do link de afiliado de cada loja (link_da_loja_ok). O formato do link (tag, código) quem confere é o
+# eh_afiliado do servidor; aqui se exige só que o host seja o da loja do item.
+# Shopee: host do link curto do painel de afiliados, a confirmar com um link real do dono (F3 do plano
+# docs/produto/planos/perfumaria-tres-lojas.md). Mesmo valor do HOSTS_AFILIADO_SHOPEE do servidor.py.
+HOSTS_AFILIADO_SHOPEE = ('s.shopee.com.br',)
+HOSTS_LINK_LOJA = {'amazon': ('www.amazon.com.br',), 'ml': ('meli.la',), 'shopee': HOSTS_AFILIADO_SHOPEE}
+# CDN das fotos da Shopee Brasil, a confirmar com o imageUrl da Open API (F4 do mesmo plano).
+HOST_FOTO_SHOPEE = 'down-br.img.susercontent.com'
+# CDN das fotos de cada loja: no disparo, a foto só segue para o transporte se vier do CDN da loja do
+# próprio item (foto de CDN de outra loja faz o item sair sem foto).
+HOSTS_FOTO_LOJA = {'amazon': ('m.media-amazon.com',), 'ml': ('http2.mlstatic.com',), 'shopee': (HOST_FOTO_SHOPEE,)}
+# A união dos CDNs: mesma allowlist do HOSTS_FOTO do index.html.
+HOSTS_FOTO = tuple(h for hosts in HOSTS_FOTO_LOJA.values() for h in hosts)
 # Colunas de dados do item (as mesmas de CAMPOS no servidor.py; repetidas para não importar o servidor).
 CAMPOS_ITEM = ('titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
                'vendas', 'frete', 'cupom', 'imagem')
@@ -224,7 +235,7 @@ def validar_regra(con, dados, conferir_template=True):
 
     lojas = _lista(dados, 'lojas', 'lojas', 1, len(LOJAS))
     if not all(isinstance(l, str) and l in LOJAS for l in lojas) or len(set(lojas)) != len(lojas):
-        raise _invalido('lojas deve ter amazon e/ou ml, sem repetir')
+        raise _invalido('lojas deve ter amazon, ml e/ou shopee, sem repetir')
 
     palavras = _lista(dados, 'palavras', 'palavras', 0, 20)
     if not all(isinstance(p, str) and _utf8_ok(p) and 1 <= len(p.strip()) <= 40 for p in palavras):
@@ -392,7 +403,8 @@ def excluir_regra(con, regra_id):
 
 
 # ---------------------------------------------------------------- mensagem (etapa 2)
-NOMES_LOJA = {'amazon': 'Amazon', 'ml': 'Mercado Livre'}   # o LOJA do index.html
+# O LOJA do index.html (lá a Shopee entra no E4 do plano perfumaria-tres-lojas, com o caso de paridade).
+NOMES_LOJA = {'amazon': 'Amazon', 'ml': 'Mercado Livre', 'shopee': 'Shopee'}
 # String.prototype.trim do JS: WhiteSpace + LineTerminator. Inclui U+FEFF (o str.strip() não tira)
 # e não inclui U+200B nem U+0085 e U+001C..U+001F (o str.strip() tira).
 _ESPACOS_JS = ('\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008'
@@ -626,20 +638,24 @@ def _host(url):
 
 
 def link_da_loja_ok(loja, url, eh_afiliado):
-    """Afiliado e da loja do item: ML só sai com meli.la, Amazon só com www.amazon.com.br + tag."""
+    """Afiliado e da loja do item: ML só sai com meli.la, Amazon só com www.amazon.com.br + tag e Shopee
+    só com o link curto de afiliado (HOSTS_AFILIADO_SHOPEE). Loja desconhecida nunca sai."""
     if not eh_afiliado(url):
         return False
-    return _host(url) == {'ml': 'meli.la', 'amazon': 'www.amazon.com.br'}.get(loja)
+    return _host(url) in HOSTS_LINK_LOJA.get(loja, ())
 
 
-def imagem_permitida(url):
+def imagem_permitida(url, loja=None):
+    """https, sem usuário nem porta, num CDN de foto. Com `loja`, só o CDN dessa loja (loja desconhecida: nenhum);
+    sem `loja`, qualquer um do HOSTS_FOTO."""
     if not isinstance(url, str) or not url:
         return False
     try:
         p = urllib.parse.urlsplit(url)
     except ValueError:
         return False
-    return p.scheme == 'https' and p.netloc.lower() == (p.hostname or '') and p.hostname in HOSTS_FOTO
+    hosts = HOSTS_FOTO if loja is None else HOSTS_FOTO_LOJA.get(loja, ())
+    return p.scheme == 'https' and p.netloc.lower() == (p.hostname or '') and p.hostname in hosts
 
 
 def _sem_acento(s):
@@ -780,7 +796,7 @@ def _escolher(con, regra, texto_tpl, agora, eh_afiliado, quantos, rng=None):
         if it['url'] not in msg or not mensagem_so_com_afiliado(msg, eh_afiliado, it['url']):
             recusados += 1
             continue
-        img = it['data']['imagem'] if regra['com_foto'] and imagem_permitida(it['data']['imagem']) else ''
+        img = it['data']['imagem'] if regra['com_foto'] and imagem_permitida(it['data']['imagem'], it['loja']) else ''
         saida.append((it, msg, img))
     info['recusados'] = recusados
     return saida, info
@@ -798,7 +814,7 @@ def previa(con, regra, n, agora, eh_afiliado, rng=None, info=None):
     escolhidos, dados = _escolher(con, v, texto_tpl, agora, eh_afiliado, n, rng)
     if info is not None:
         info['recusados'] = dados['recusados']
-    return [{'item_pk': it['id'], 'titulo': it['data']['titulo'], 'mensagem': msg, 'imagem': img}
+    return [{'item_pk': it['id'], 'loja': it['loja'], 'titulo': it['data']['titulo'], 'mensagem': msg, 'imagem': img}
             for it, msg, img in escolhidos]
 
 

@@ -19,3 +19,7 @@ Vistas em 2026-11-03, na etapa 4 do plano eletronicos-e-coleta-ml:
 - Sem prova real: `fetch` do ML, captcha de verdade e o formato atual do polycard só são provados na etapa 9, pelo dono.
 
 **How to apply:** ao mexer no `coletar_ml.js` (etapa 5, `afiliar()`) ou em testes node com `vm`. Relacionado: [[servidor-testes]].
+
+**Contagem de termos (2026-11-03, E3 perfumaria):** ao mudar o número de termos de `buscas.json`, além do bloco `BUSCAS` do `coletar_ml.js` e de `test_coletar_amazon_qa.py`, o `testes/coletar_ml_qa.test.mjs` tem o total de termos fixo (hoje 140, linhas ~607-637). O bloco se regenera com o mesmo `blocoBuscas` do teste (JSON.stringify indent 2, linhas seguintes com 2 espaços). `buscas.json` não termina com `\n`: preserve.
+
+**Ordem no ML (E6, 2026-11-03):** `coletar({ordem})` valida com `hasOwnProperty` em `ORDENS_ML` (senão `'constructor'` passa). Objetos de `init` do fetch falso vêm do realm do vm: `assert.deepEqual` contra literal falha, compare campo a campo. Mutantes da E6 (sufixo, chave `ordem|termo`, `in` no lugar de `hasOwnProperty`, `feitos.add`/`feitosAntes.has` sem chave) morrem na suíte `coletar_ml.test.mjs`.

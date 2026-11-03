@@ -58,6 +58,7 @@ process.stdout.write(JSON.stringify(saida));
 '''
 
 URL_AMZ = 'https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20'
+URL_SHOPEE = 'https://s.shopee.com.br/4AbC9xYz'
 DADOS_BASE = {'titulo': 'Fone', 'preco': 'R$ 10,00', 'preco_antigo': 'R$ 20,00', 'desconto': '-50%',
               'avaliacao': '4,7 de 5 estrelas', 'num_avaliacoes': '(135)', 'vendas': 'Mais de 1 mil compras',
               'frete': 'Frete GRÁTIS', 'cupom': 'CUPOM10', 'imagem': ''}
@@ -87,7 +88,11 @@ ADVERSARIAIS = [
     caso('template com CRLF', '{TITULO_PRODUTO}\r\n{LINK}\r\n', titulo='T'),
     caso('$ de substituição em todos os campos', '{TITULO_PRODUTO} {PRECO_PRODUTO} {LINK}',
          titulo="$$ $& $` $' $1 $<x>", preco='$&$&'),
-    caso('loja desconhecida e link vazio', '{LOJA}|{LINK}|{TITULO_PRODUTO}', loja='shopee', url=''),
+    caso('loja desconhecida e link vazio', '{LOJA}|{LINK}|{TITULO_PRODUTO}', loja='outra', url=''),
+    caso('loja shopee com o link curto de afiliado: {LOJA} vira Shopee', '*{TITULO_PRODUTO}* na {LOJA}\n{PRECO_PRODUTO}\n{LINK}',
+         loja='shopee', url=URL_SHOPEE),
+    caso('loja shopee com campos vazios, $ e espaços Unicode', '\u00a0{LOJA}\u2003\n{CUPOM}\n{TITULO_PRODUTO}\n{FRETE}\n{LINK}\u00a0',
+         loja='shopee', url=URL_SHOPEE, titulo="$& \ufeff", cupom='', frete='\u200b'),
 ]
 
 _POOL = ['', ' ', '0', '-', '--5%', '-43%', '43%', '\ufeff', '\u200b', 'a\u0085', '\u00a0x\u00a0', '\u2028', '\u3000',
@@ -108,9 +113,9 @@ def casos_fuzz(n, semente=20261103):
         dados = {c: rng.choice(_POOL) for c in DADOS_BASE if c != 'imagem'}
         dados['imagem'] = ''
         data = rng.choice([dados, dados, dados, None, {}])
-        url = rng.choice([URL_AMZ, 'https://meli.la/AbC', '', '$&x'])
+        url = rng.choice([URL_AMZ, 'https://meli.la/AbC', URL_SHOPEE, '', '$&x'])
         saida.append({'nome': f'fuzz {i}', 'template': '\n'.join(linhas),
-                      'item': {'loja': rng.choice(['amazon', 'ml', 'outra']), 'url': url, 'data': data}})
+                      'item': {'loja': rng.choice(['amazon', 'ml', 'shopee', 'outra']), 'url': url, 'data': data}})
     return saida
 
 
@@ -149,6 +154,9 @@ class ParidadeComOBuildMsg(unittest.TestCase):
         self.assertEqual(msg(1), '*\u200b*\n\u200b\n' + URL_AMZ)             # U+200B mantido
         self.assertEqual(msg(2), '12% 3 R$ 10,00\n' + URL_AMZ)               # só o 1º hífen sai
         self.assertEqual(msg(3), URL_AMZ)                                    # desconto "-": linha some
+        self.assertEqual(msg(12), '*Fone* na Shopee\nR$ 10,00\n' + URL_SHOPEE)
+        # "$&" no título volta o próprio placeholder (replace do JS); cupom vazio some; U+200B em frete fica
+        self.assertEqual(msg(13), 'Shopee\u2003\n{TITULO_PRODUTO} \ufeff\n\u200b\n' + URL_SHOPEE)
 
     def test_ca8_fuzz_com_semente_fixa_bate_com_o_buildmsg(self):
         self.confere(casos_fuzz(600))
@@ -355,8 +363,9 @@ class Selecao(T.Base):
                    'porta': 'https://m.media-amazon.com:444/a.jpg', 'usuario': 'https://x@m.media-amazon.com/a.jpg',
                    'javascript': 'javascript:alert(1)', 'boa': 'https://m.media-amazon.com/images/I/b.jpg',
                    'boa ml': 'https://http2.mlstatic.com/D_NQ_NP_1-F.jpg'}
+        lojas = {'boa ml': 'ml'}   # a foto do CDN do ML só vale em item ml; as demais são amazon (padrão)
         for nome, img in imagens.items():
-            self.item(titulo=nome, imagem=img)
+            self.item(loja=lojas.get(nome, 'amazon'), titulo=nome, imagem=img)
         r = self.regra(self.n['id'], por_disparo=10, max_por_dia=200, horarios=['09:00'], com_foto=1)
         g = T.Gravador()
         self.tick(self.slot(), transporte=g)
@@ -366,6 +375,21 @@ class Selecao(T.Base):
             self.assertEqual(e['imagem'], esperado, e['titulo'])
         self.assertEqual(sorted(c[2] for c in g.chamadas if c[2]), sorted(imagens[k] for k in ('boa', 'boa ml')))
         self.assertEqual(sum(1 for c in g.chamadas if c[2] is None), len(imagens) - 2, 'sem foto vai None, nunca ""')
+
+    def test_ca8_foto_de_cdn_de_outra_loja_sai_sem_foto(self):
+        casos = {'amazon com foto do ml': ('amazon', 'https://http2.mlstatic.com/D_NQ_NP_2-F.jpg'),
+                 'ml com foto da amazon': ('ml', 'https://m.media-amazon.com/images/I/c.jpg'),
+                 'amazon com foto da shopee': ('amazon', 'https://down-br.img.susercontent.com/file/a'),
+                 'ml com foto propria': ('ml', 'https://http2.mlstatic.com/D_NQ_NP_3-F.jpg')}
+        for nome, (loja, img) in casos.items():
+            self.item(loja=loja, titulo=nome, imagem=img)
+        self.regra(self.n['id'], por_disparo=10, max_por_dia=200, horarios=['09:00'], com_foto=1)
+        g = T.Gravador()
+        self.tick(self.slot(), transporte=g)
+        fotos = {e['titulo']: e['imagem'] for e in self.envios()}
+        self.assertEqual(fotos, {'amazon com foto do ml': '', 'ml com foto da amazon': '',
+                                 'amazon com foto da shopee': '', 'ml com foto propria': casos['ml com foto propria'][1]})
+        self.assertEqual(len(g.chamadas), 4, 'o item sai mesmo sem a foto')
 
     def test_ca8_com_foto_zero_nunca_manda_foto(self):
         self.item()
@@ -903,7 +927,7 @@ class QaRotas(TD.ServidorDisparo):
                  {'dias': [True]}, {'dias': ['1']}, {'por_disparo': 0}, {'por_disparo': 11}, {'por_disparo': True},
                  {'max_por_dia': 0}, {'max_por_dia': 201}, {'repetir_apos_dias': 0}, {'repetir_apos_dias': 366},
                  {'repetir_apos_dias': '7'}, {'intervalo_seg': 29}, {'intervalo_seg': 3601}, {'desconto_min': 96},
-                 {'desconto_min': -1}, {'ordem': 'aleatória'}, {'ordem': None}, {'lojas': []}, {'lojas': ['shopee']},
+                 {'desconto_min': -1}, {'ordem': 'aleatória'}, {'ordem': None}, {'lojas': []}, {'lojas': ['outra']},
                  {'lojas': ['ml', 'ml']}, {'palavras': ['x'] * 21}, {'palavras': ['y' * 41]}, {'palavras': ['  ']},
                  {'cats': []}, {'cats': ['a'] * 51}, {'cats': [1]}, {'template': 'Fantasma'}, {'template': None},
                  {'numero_id': 9999}, {'numero_id': True}, {'numero_id': '1'}, {'ativa': True}, {'com_foto': 2},
@@ -1022,6 +1046,29 @@ class QaRotas(TD.ServidorDisparo):
         self.assertSemDadoPessoal(self.saida())
         with open(self.jsonl, encoding='utf-8') as f:
             self.assertSemDadoPessoal(f.read())
+
+    # --- Shopee como terceira loja (plano perfumaria-tres-lojas, E2: CA2)
+    def test_e2_regra_com_shopee_pela_rede_previa_com_loja_e_envio_so_com_link_curto(self):
+        st, _, d = self.postar([{'loja': 'shopee', 'item_id': '123.456', 'cat': 'Eletrônicos', 'url': T.URL_SHOPEE,
+                                 'data': {'titulo': 'Perfume Shopee', 'preco': 'R$ 99,00', 'desconto': '-90%',
+                                          'imagem': T.FOTO_SHOPEE}}], self.local())
+        self.assertEqual(st, 200, d)
+        n = self.numero()
+        r = self.regra(n['id'], lojas=['shopee', 'amazon'], por_disparo=10, ordem='desconto')
+        self.assertEqual(r['lojas'], ['amazon', 'shopee'])
+        st, j = self.api('POST', 'regras', {'nome': 'R', 'numero_id': n['id'], 'cats': ['Eletrônicos'],
+                                            'template': 'Template 2', 'horarios': ['03:33'], 'lojas': ['outra']})
+        self.assertEqual((st, j), (400, {'error': 'lojas deve ter amazon, ml e/ou shopee, sem repetir'}))
+        p = self.ok('POST', 'previa', {**{k: r[k] for k in ('nome', 'numero_id', 'cats', 'template', 'horarios',
+                                                            'lojas', 'ordem')}, 'n': 5})
+        self.assertEqual([x['loja'] for x in p], ['shopee', 'amazon', 'amazon', 'amazon'])
+        self.assertIn(T.URL_SHOPEE, p[0]['mensagem'])
+        self.assertEqual(p[0]['imagem'], T.FOTO_SHOPEE)
+        self.ok('POST', f'regras/{r["id"]}/agora', {})
+        linhas = self.linhas_jsonl()
+        self.assertEqual(len(linhas), 4)
+        shopee = [l for l in linhas if T.URL_SHOPEE in l['texto']]
+        self.assertEqual([l['imagem_url'] for l in shopee], [T.FOTO_SHOPEE])
 
 
 # ================================================================ servidor: partida, variáveis e reinício

@@ -22,7 +22,11 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get('ACHADINHOS_DB') or os.path.join(BASE, 'achadinhos.db')
 PORT = int(os.environ.get('ACHADINHOS_PORTA') or 8765)
 TAG_AMAZON = 'desejodemen01-20'
-LOJAS = ('amazon', 'ml')
+LOJAS = ('amazon', 'ml', 'shopee')
+# Link curto de afiliado da Shopee (docs/produto/planos/perfumaria-tres-lojas.md). O host ainda será
+# confirmado com um link real do dono. Para aceitar outro host (ex.: shope.ee), acrescente-o nos TRÊS
+# lugares: aqui, no HOSTS_AFILIADO_SHOPEE do disparo.py e no HOSTS_LINK.shopee do index.html.
+HOSTS_AFILIADO_SHOPEE = ('s.shopee.com.br',)
 MAX_CORPO = 5 * 1024 * 1024   # bytes; acima disso a escrita recebe 413 sem ler o corpo
 CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
           'vendas', 'frete', 'cupom', 'imagem']
@@ -56,7 +60,7 @@ def criar_banco():
     con.executescript(f'''
     CREATE TABLE IF NOT EXISTS items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      loja TEXT NOT NULL,            -- amazon | ml
+      loja TEXT NOT NULL,            -- amazon | ml | shopee
       item_id TEXT NOT NULL,         -- ASIN, código MLB ou a própria url
       cat TEXT NOT NULL,             -- aba no site
       busca TEXT DEFAULT '',         -- termo pesquisado / subcategoria
@@ -87,7 +91,8 @@ def linha_para_item(r):
 
 
 def eh_link_afiliado(url):
-    """Regra do dono: https://meli.la/<código> ou URL https://www.amazon.com.br com tag de afiliado."""
+    """Regra do dono: https://meli.la/<código>, URL https://www.amazon.com.br com tag de afiliado ou
+    https://s.shopee.com.br/<código alfanumérico> (link curto da Shopee, sem porta, query nem fragmento)."""
     if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
         return False
     try:
@@ -101,10 +106,49 @@ def eh_link_afiliado(url):
         return len(p.path) > 1
     if p.hostname == 'www.amazon.com.br':
         return urllib.parse.parse_qs(p.query).get('tag') == [TAG_AMAZON]   # uma tag só, a do dono
+    if p.hostname in HOSTS_AFILIADO_SHOPEE:
+        return eh_link_shopee(url)
     return False
 
 
-HOSTS_LOJAS = ('meli.la', 'www.amazon.com.br', 'amazon.com.br', 'amzn.to')   # mais *.mercadolivre.com.br
+def eh_link_shopee(url):
+    """Link curto de afiliado da Shopee: https://<host de HOSTS_AFILIADO_SHOPEE>/<código alfanumérico>.
+
+    Host exato e em minúsculas, sem usuário, porta, query nem fragmento. Compara o texto inteiro:
+    o urlsplit baixa a caixa do host e esconde "?" e ":" vazios. É a regra de um item com loja shopee,
+    que não aceita link de afiliado das outras lojas.
+    """
+    return isinstance(url, str) and any(
+        re.fullmatch('https://' + re.escape(h) + '/[A-Za-z0-9]+', url) for h in HOSTS_AFILIADO_SHOPEE)
+
+
+def eh_link_afiliado_da_loja(url, loja):
+    """Link de afiliado que pode substituir a url de um item dessa loja (PATCH).
+
+    A loja fica amarrada ao host: meli.la só em item ml, Amazon com tag só em item amazon e o link
+    curto da Shopee só em item shopee. Loja fora de LOJAS não aceita nenhum link.
+    """
+    hosts = {'amazon': ('www.amazon.com.br',), 'ml': ('meli.la',), 'shopee': HOSTS_AFILIADO_SHOPEE}.get(loja, ())
+    return eh_link_afiliado(url) and _host(url) in hosts
+
+
+def sql_link_preservado():
+    """Condição SQL de url que o upsert nunca troca: link de afiliado já gravado, amarrado à loja da linha.
+
+    GLOB diferencia maiúsculas (o LIKE não). Montada a partir de constantes do módulo (nada vem da
+    requisição).
+    """
+    return ' OR '.join(["(loja='ml' AND url GLOB 'https://meli.la/*')",
+                        f"(loja='amazon' AND url GLOB '*tag={TAG_AMAZON}*')"]
+                       + [f"(loja='shopee' AND url GLOB 'https://{h}/*')" for h in HOSTS_AFILIADO_SHOPEE])
+
+
+def _host(url):
+    """Host da url em minúsculas ('' se não houver). Só para url já conferida como texto."""
+    return urllib.parse.urlsplit(url).hostname or ''
+
+
+HOSTS_LOJAS = ('meli.la', 'www.amazon.com.br', 'amazon.com.br', 'amzn.to')   # mais *.mercadolivre.com.br e a Shopee
 HOST_VALIDO = re.compile(r'\A[a-z0-9.-]+\Z')
 
 
@@ -123,7 +167,25 @@ def eh_url_de_loja(url):
     # netloc igual ao host recusa usuário (@), porta (inclusive ":" vazio) e barra invertida
     if p.scheme != 'https' or p.netloc.lower() != host or not HOST_VALIDO.match(host):
         return False
-    return host in HOSTS_LOJAS or host.endswith('.mercadolivre.com.br')
+    return host in HOSTS_LOJAS or host in HOSTS_AFILIADO_SHOPEE or host.endswith('.mercadolivre.com.br')
+
+
+def url_da_amazon(url):
+    return _host(url) in HOSTS_AMAZON
+
+
+def url_do_ml(url):
+    host = _host(url)
+    return host == 'meli.la' or host.endswith('.mercadolivre.com.br')
+
+
+# Url que um item de cada loja aceita no POST, depois do eh_url_de_loja: a loja fica amarrada ao host.
+# Valor: (validador, mensagem de erro). A Shopee só aceita o link curto de afiliado.
+URL_DA_LOJA = {
+    'amazon': (url_da_amazon, 'url de item da Amazon precisa ser da Amazon (amazon.com.br ou amzn.to)'),
+    'ml': (url_do_ml, 'url de item do Mercado Livre precisa ser do Mercado Livre (meli.la ou mercadolivre.com.br)'),
+    'shopee': (eh_link_shopee, 'url da Shopee precisa ser link de afiliado'),
+}
 
 
 class ErroCliente(Exception):
@@ -167,11 +229,16 @@ def itens_do_lote(body):
     for i, it in enumerate(lista):
         if not isinstance(it, dict):
             raise ErroCliente(400, f'item {i}: deve ser um objeto')
-        if (it.get('loja') or 'amazon') not in LOJAS:
-            raise ErroCliente(400, f'item {i}: loja inválida (use amazon ou ml)')
+        loja = it.get('loja') or 'amazon'
+        if loja not in LOJAS:
+            raise ErroCliente(400, f'item {i}: loja inválida (use amazon, ml ou shopee)')
         conferir_tipos(it, ('url', 'item_id', 'cat', 'busca'), f'item {i}: ')
         if it.get('url') and not eh_url_de_loja(it['url']):
-            raise ErroCliente(400, f'item {i}: url precisa ser https da Amazon ou do Mercado Livre')
+            raise ErroCliente(400, f'item {i}: url precisa ser https da Amazon, do Mercado Livre ou da Shopee')
+        # item sem url é ignorado no POST; com url, ela tem que ser da própria loja do item
+        valida, msg = URL_DA_LOJA[loja]
+        if it.get('url') and not valida(it['url']):
+            raise ErroCliente(400, f'item {i}: {msg}')
     return lista
 
 
@@ -179,7 +246,9 @@ def upsert(con, it):
     """Insere ou atualiza um item. Mantém a categoria original se já existir."""
     loja = it.get('loja') or 'amazon'
     if loja not in LOJAS:
-        raise ValueError('loja inválida (use amazon ou ml)')
+        raise ValueError('loja inválida (use amazon, ml ou shopee)')
+    if loja == 'shopee' and not eh_link_shopee(it.get('url')):
+        raise ValueError('url da Shopee precisa ser link de afiliado')
     item_id = it.get('item_id') or it['url']
     d = it.get('data') or {}
     vals = {c: (d.get(c) or '') for c in CAMPOS}
@@ -202,7 +271,7 @@ def upsert(con, it):
         sets = ', '.join(f'{c}=?' for c in CAMPOS)
         # atualiza preços/dados, mas nunca troca um link de afiliado já gerado
         con.execute(f'''UPDATE items SET {sets}, tem_dados=1, atualizado_em=?,
-                        url=CASE WHEN url LIKE 'https://meli.la/%' OR url LIKE '%tag={TAG_AMAZON}%' THEN url ELSE ? END
+                        url=CASE WHEN {sql_link_preservado()} THEN url ELSE ? END
                         WHERE id=?''',
                     [vals[c] for c in CAMPOS] + [agora(), it['url'], cur['id']])
     return 'atualizado'
@@ -486,10 +555,16 @@ class Handler(SimpleHTTPRequestHandler):
                 conferir_tipos(body, ())
             # regra do dono: só link de afiliado substitui a url (nunca um link comum)
             if body.get('url') and not eh_link_afiliado(body['url']):
-                raise ErroCliente(400, 'url precisa ser link de afiliado (https://meli.la/... ou Amazon com tag)')
+                raise ErroCliente(400, 'url precisa ser link de afiliado (https://meli.la/..., Amazon com tag ou https://s.shopee.com.br/...)')
         except ErroCliente as e:
             return self.json({'error': e.msg}, e.codigo)
         con = conectar(); iid = int(m.group(1))
+        if body.get('url'):
+            row = con.execute('SELECT loja FROM items WHERE id=?', (iid,)).fetchone()
+            # item que não existe (excluído no meio do afiliar() do ML) segue sem erro e devolve null
+            if row and not eh_link_afiliado_da_loja(body['url'], row['loja']):
+                con.close()   # antes de qualquer UPDATE: nem a cat do mesmo pedido muda
+                return self.json({'error': f'url precisa ser link de afiliado da loja do item ({row["loja"]})'}, 400)
         for campo in ('cat', 'url'):
             if body.get(campo):
                 con.execute(f'UPDATE items SET {campo}=?, atualizado_em=? WHERE id=?', (body[campo], agora(), iid))
