@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mensagens Amazon</title>
+<style>
+  :root{--bg:#0f1115;--card:#171a21;--border:#262a33;--text:#e6e6e6;--muted:#8b919c;--accent:#22c55e;--accent2:#16a34a;--blue:#3b82f6;--red:#ef4444}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--border);padding:12px 16px;z-index:5}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;max-width:1200px;margin:0 auto}
+  h1{font-size:18px;margin:0 8px 0 0}
+  select,input,button,textarea{font:inherit}
+  select,input[type=text]{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+  button{background:var(--accent);color:#06240f;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+  button:hover{filter:brightness(1.1)}
+  button.secondary{background:var(--card);color:var(--text);border:1px solid var(--border)}
+  button.blue{background:var(--blue);color:#fff}
+  button.danger{background:transparent;color:var(--red);border:1px solid var(--border)}
+  button:disabled{opacity:.5;cursor:wait}
+  .muted{color:var(--muted);font-size:13px}
+  main{max-width:1200px;margin:0 auto;padding:16px}
+  .tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .tab{padding:7px 14px;border-radius:999px;border:1px solid var(--border);background:var(--card);cursor:pointer;font-size:14px}
+  .tab.active{background:var(--accent);color:#06240f;border-color:var(--accent);font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}
+  .card.done{border-color:var(--accent)}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+  .top a{color:#60a5fa;text-decoration:none;word-break:break-all}
+  .info{display:flex;gap:10px;align-items:flex-start;font-size:13px}
+  .info img{width:64px;height:64px;object-fit:contain;background:#fff;border-radius:6px}
+  .info .t{flex:1;color:var(--muted)}
+  .info b{color:var(--text)}
+  textarea{width:100%;min-height:220px;resize:vertical;background:#0b0d11;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;white-space:pre-wrap;line-height:1.4}
+  .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .box{display:none;max-width:1200px;margin:10px auto 0;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
+  .box.open{display:block}
+  .box textarea{min-height:140px}
+  .status{font-size:12px;color:var(--muted)}
+  .status.err{color:var(--red)}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--accent);color:#06240f;padding:10px 18px;border-radius:999px;font-weight:600;opacity:0;transition:.2s;pointer-events:none;z-index:9}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>Mensagens Amazon</h1>
+    <label>Template: <select id="tplSelect"></select></label>
+    <button class="secondary" id="btnTpl">Templates</button>
+    <button class="secondary" id="btnAdd">+ Adicionar links</button>
+    <button class="blue" id="btnFetchAll">Buscar dados pendentes (um por um)</button>
+    <button class="secondary" id="btnCopyAll">Copiar todas da categoria</button>
+    <button class="secondary" id="btnHelp">Coletar pelo navegador</button>
+    <span class="muted" id="count"></span>
+  </div>
+
+  <div class="box" id="addBox">
+    <div class="row" style="margin-bottom:8px">
+      <label>Categoria: <select id="addCat"></select></label>
+      <input type="text" id="addCatNew" placeholder="ou nova categoria...">
+      <label class="muted">ou carregar _chat.txt <input type="file" id="fileInput" accept=".txt"></label>
+    </div>
+    <textarea id="addLinks" placeholder="Cole os links aqui, um por linha (ou qualquer texto com links)"></textarea>
+    <div class="actions" style="margin-top:8px"><button id="saveLinks">Adicionar</button></div>
+  </div>
+
+  <div class="box" id="helpBox">
+    <p style="margin:0 0 8px"><b>Coleta pelo seu navegador (sem captcha):</b></p>
+    <ol class="muted" style="margin:0 0 10px 18px;line-height:1.6">
+      <li>Arraste este botão para a barra de favoritos: <a href="javascript:(function(){var q=function(s){var e=document.querySelector(s);return e?e.textContent.trim():''};var a=function(s,at){var e=document.querySelector(s);return e?(e.getAttribute(at)||''):''};var d={asin:(location.href.match(/\/dp\/([A-Z0-9]{10})/)||[])[1]||'',titulo:q('#productTitle'),preco:q('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen')||q('#corePrice_feature_div .a-price .a-offscreen')||q('.a-price .a-offscreen'),preco_antigo:q('.basisPrice .a-offscreen')||q('.a-price.a-text-price .a-offscreen'),desconto:q('.savingsPercentage'),avaliacao:a('#acrPopover','title'),num_avaliacoes:q('#acrCustomerReviewText'),vendas:q('#social-proofing-faceout-title-tk_bought span'),cupom:q('[id^=couponText]')||q('label[for^=checkbox]'),frete:a('[id^=mir-layout-DELIVERY_BLOCK]','data-csa-c-delivery-price')||(document.body.innerText.indexOf('Frete GRÁTIS')>-1?'Frete GRÁTIS':''),imagem:a('#landingImage','src')};location.href='https://white-hornet-181851.hostingersite.com/mensagens.html#d='+encodeURIComponent(JSON.stringify(d));})();" style="background:var(--blue);color:#fff;padding:5px 10px;border-radius:6px;text-decoration:none" onclick="return false">📥 Pegar dados Amazon</a></li>
+      <li>Se arrastar não funcionar: clique em <button class="secondary" id="btnCopyBm" type="button">Copiar código do favorito</button>, depois aperte <b>Ctrl+Shift+O</b> (gerenciador de favoritos), clique nos três pontos → <b>Adicionar novo favorito</b>, nome <b>Pegar dados Amazon</b> e no campo URL cole o código (Ctrl+V).</li>
+      <li>No cartão, clique em <b>Abrir na Amazon</b>. A página do produto abre em outra aba.</li>
+      <li>Nessa aba, clique no favorito <b>Pegar dados Amazon</b>. Os dados voltam sozinhos para o cartão.</li>
+    </ol>
+    <p style="margin:0"><button class="blue" id="btnSeq">▶ Coletar em sequência (categoria atual)</button> <span class="muted">Abre o primeiro pendente; a cada clique no favorito, a mesma aba já pula para o próximo. Para parar, feche a aba.</span></p>
+  </div>
+  <div class="box" id="tplBox">
+    <input type="text" id="tplName" placeholder="Nome do template" style="width:100%;margin-bottom:6px">
+    <textarea id="tplText"></textarea>
+    <div class="actions" style="margin-top:6px">
+      <button id="saveTpl">Salvar template</button>
+      <button class="danger" id="delTpl">Excluir</button>
+      <span class="muted">Campos: {TITULO_PRODUTO} {PRECO_PRODUTO} {PRECO_ANTIGO} {DESCONTO_PRODUTO} {NUMERO_VENDAS} {FRETE} {CUPOM} {LINK}</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div class="pager row" style="margin-bottom:12px;align-items:center;gap:8px"></div>
+  <div class="grid" id="grid"></div>
+  <div class="pager row" style="margin-top:14px;align-items:center;gap:8px"></div>
+</main>
+<div class="toast" id="toast">Copiado!</div>
+
+<script>
+const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
+const SEED = [{"url": "https://link.amazon/B08oG5uBs", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0h6itKhl", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B095F7WUY", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0aBKL4Vk", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B01zpXiTK", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bYiZzAk", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0cMi8c8t", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B04fCfXiT", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B04LKKr3q", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0iuTY5j7", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B01H7RGkY", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B063bAxRl", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B03bKRXrR", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0irJoNLo", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B04LEkRfK", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06pAXjp3", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08oO8eCC", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0hrlBmfl", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08EvxbDM", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B07npPG4I", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B024WSWYT", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0aKgpnNy", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0gOvRk9X", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B03Eml5Yy", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0cwBKgCv", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bhIUkKr", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B004oF8Ba", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0foac2Lx", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06gZBPUA", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B07NpH6Or", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0j4dMzOV", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0hrcomeU", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B02Iymai8", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B04Br4AJd", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B01QFmznG", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0cmYBRnx", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B013E99XB", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bsCH7LV", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B05M7tqKN", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B036CgwYK", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B018WSnEc", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B03aiEeU2", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06iWsDrL", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B09Vi3T5C", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08jtRr8P", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0e08BKEK", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B01lCiIyi", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0fbX6eJN", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0fsRB4K8", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0epN1Pos", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0d7sTJJj", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bPdjQ2B", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08w30xzu", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0avyMdFh", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06rdiTI3", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B05iwiutg", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B009fYGI8", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bT2Wak0", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0hvshtgB", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0gL9p8zv", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06YtbCz8", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0hvvfqRx", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08iCxmb1", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B06BR9eEZ", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B02ZnbemJ", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B04FFPc7V", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0afXMQC6", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0i2wpBSB", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B08huPVSC", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0ctnCMKy", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0a4zvSAX", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0hPw3TIX", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B01HYAWWA", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0gRCM5S7", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B078tUDef", "cat": "Eletrônicos", "data": null}, {"url": "https://www.amazon.com.br/Processador-AMD-Ryzen-7700-100100000592BOX/dp/B0BMQHSCVF?pf_rd_r=M3M0HJZRAXQZ5W7T0A7Z&pf_rd_p=05c8d3f9-8e5e-4589-b6de-8efa528a08ea&sbo=RZvfv%2F%2FHxDF%2BO5021pAnSA%3D%3D&linkCode=ll2&tag=desejodemen01-20&linkId=86bdf5cb63ec0b02affd33f13ad732ef&ref_=as_li_ss_tl", "cat": "Eletrônicos", "data": null}, {"url": "https://link.amazon/B0bQE7JGR", "cat": "Eletrônicos", "data": null}, {"url": "https://www.amazon.com.br/Processador-AMD-Ryzen-7700-100100000592BOX/dp/B0BMQHSCVF?pf_rd_r=M3M0HJZRAXQZ5W7T0A7Z&pf_rd_p=05c8d3f9-8e5e-4589-b6de-8efa528a08ea&sbo=RZvfv%2F%2FHxDF%2BO5021pAnSA%3D%3D&linkCode=sl2&tag=desejodemen01-20&linkId=ea207b9857fb44d5dde615bcb1aef94b&ref_=as_li_ss_tl_btn_assoc_p-other_o-1_srctok-53226db32d449e61_ht-t&ascsubtag=srctok-53226db32d449e61&btn_type=ss&btn_ref=srctok-53226db32d449e61", "cat": "Eletrônicos", "data": null}, {"url": "https://www.amazon.com.br/dp/B0F3GD15CJ?tag=desejodemen01-20", "cat": "Eletrônicos", "data": null}, {"url": "https://www.amazon.com.br/dp/B0FG2MD49G", "cat": "Eletrônicos", "data": null}];
+const PROXY = 'amazon.php?url=';
+
+let templates = JSON.parse(localStorage.getItem('templates')||'null') || DEFAULT_TEMPLATES;
+let current   = localStorage.getItem('currentTpl') || Object.keys(templates)[0];
+let items     = JSON.parse(localStorage.getItem('items')||'null') || SEED;
+let activeCat = localStorage.getItem('activeCat') || 'Eletrônicos';
+
+const $ = s=>document.querySelector(s);
+const save = ()=>localStorage.setItem('items', JSON.stringify(items));
+const toast = m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1300);};
+const cats = ()=>[...new Set(items.map(i=>i.cat))];
+
+function buildMsg(it){
+  const d = it.data || {};
+  const map = {
+    '{LINK}': it.url,
+    '{TITULO_PRODUTO}': d.titulo || '{TITULO_PRODUTO}',
+    '{PRECO_PRODUTO}': d.preco || '{PRECO_PRODUTO}',
+    '{PRECO_ANTIGO}': d.preco_antigo || '{PRECO_ANTIGO}',
+    '{DESCONTO_PRODUTO}': d.desconto ? d.desconto.replace('-','') : '{DESCONTO_PRODUTO}',
+    '{NUMERO_VENDAS}': d.vendas || d.num_avaliacoes || '{NUMERO_VENDAS}',
+    '{FRETE}': d.frete || '{FRETE}',
+    '{CUPOM}': d.cupom || '{CUPOM}',
+  };
+  let s = templates[current];
+  for (const [k,v] of Object.entries(map)) s = s.replaceAll(k, v);
+  return s;
+}
+
+async function fetchItem(it, card){
+  const st = card.querySelector('.status'); const btn = card.querySelector('.fetch');
+  btn.disabled = true; st.className='status'; st.textContent='Buscando na Amazon...';
+  try{
+    const r = await fetch(PROXY + encodeURIComponent(it.url));
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (d.captcha || !d.titulo) throw new Error('Amazon bloqueou (captcha) ou não achou o título. Tente de novo mais tarde.');
+    it.data = d; save();
+    renderCard(card, it);
+    toast('Dados carregados');
+  }catch(e){
+    if(it.data){ renderCard(card, it); return; }
+    st.className='status err'; st.textContent='Erro: '+e.message;
+  }
+  btn.disabled=false;
+}
+
+function renderCard(card, it){
+  const i = items.indexOf(it);
+  const d = it.data;
+  card.innerHTML = `
+    <div class="top"><span>#${i+1}</span><a href="${it.url}" target="_blank" rel="noopener">${it.url}</a></div>
+    ${d ? `<div class="info">${d.imagem?`<img src="${d.imagem}">`:''}<div class="t"><b>${d.titulo}</b><br>${d.preco||''} ${d.preco_antigo?'<s>'+d.preco_antigo+'</s>':''} ${d.desconto||''}<br>${d.avaliacao||''} ${d.num_avaliacoes?'· '+d.num_avaliacoes:''} ${d.vendas?'· '+d.vendas:''}</div></div>` : ''}
+    <textarea></textarea>
+    <div class="status"></div>
+    <div class="actions">
+      <button class="copy">Copiar</button>
+      <button class="blue open">Abrir na Amazon</button>
+      <button class="secondary fetch">${d?'Atualizar (servidor)':'Buscar (servidor)'}</button>
+      <button class="secondary reset">Recarregar</button>
+      <select class="mv" title="Mover para categoria">${cats().map(c=>`<option ${c===it.cat?'selected':''}>${c}</option>`).join('')}<option value="__new">+ nova...</option></select>
+      <button class="danger del">Excluir</button>
+    </div>`;
+  const ta = card.querySelector('textarea'); ta.value = buildMsg(it);
+  card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast('Mensagem #'+(i+1)+' copiada!'); };
+  card.querySelector('.fetch').onclick = ()=>fetchItem(it, card);
+  card.querySelector('.open').onclick = ()=>{ localStorage.setItem('pendingUrl', it.url); window.open(it.url, 'amz'); };
+  card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };
+  card.querySelector('.del').onclick = ()=>{ items.splice(items.indexOf(it),1); save(); render(); };
+  card.querySelector('.mv').onchange = e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } it.cat=c.trim(); save(); render(); };
+}
+
+let page=1;
+function render(){
+  const cs = cats(); if(!cs.includes(activeCat)) activeCat = cs[0] || '';
+  localStorage.setItem('activeCat', activeCat);
+  $('#tabs').innerHTML = cs.map(c=>`<div class="tab ${c===activeCat?'active':''}" data-c="${c}">${c} <span class="muted">(${items.filter(i=>i.cat===c).length})</span></div>`).join('');
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{activeCat=t.dataset.c; page=1; render();});
+  const grid=$('#grid'); grid.innerHTML='';
+  const list = items.filter(i=>i.cat===activeCat);
+  $('#count').textContent = items.length+' links no total';
+  const PAGE=25, pages=Math.max(1,Math.ceil(list.length/PAGE));
+  if(page>pages) page=pages; if(page<1) page=1;
+  const pagerHtml = pages>1 ? `<button class="secondary pg" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : (list.length?`<span class="muted">${list.length} itens</span>`:'');
+  document.querySelectorAll('.pager').forEach(el=>{ el.innerHTML=pagerHtml; el.querySelectorAll('.pg').forEach(b=>b.onclick=()=>{page=+b.dataset.p; render(); window.scrollTo({top:0,behavior:'smooth'});}); });
+  list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; c.dataset.url=it.url; renderCard(c,it); grid.appendChild(c); });
+  $('#addCat').innerHTML = cs.map(c=>`<option ${c===activeCat?'selected':''}>${c}</option>`).join('');
+}
+
+function fillSelect(){
+  const sel=$('#tplSelect'); sel.innerHTML='';
+  for(const n of Object.keys(templates)){const o=document.createElement('option');o.value=o.textContent=n;sel.appendChild(o);}
+  if(!templates[current]) current=Object.keys(templates)[0]; sel.value=current;
+}
+
+$('#tplSelect').onchange=e=>{current=e.target.value;localStorage.setItem('currentTpl',current);render();};
+$('#btnTpl').onclick=()=>{$('#addBox').classList.remove('open');$('#tplBox').classList.toggle('open');$('#tplName').value=current;$('#tplText').value=templates[current];};
+$('#btnCopyBm').onclick=async()=>{ await navigator.clipboard.writeText(document.querySelector('#helpBox a[href^="javascript:"]').getAttribute('href')); toast('Código copiado! Agora crie o favorito e cole no campo URL.'); };
+$('#btnSeq').onclick=()=>{
+  const next=items.find(i=>i.cat===activeCat && !i.data);
+  if(!next){ toast('Nenhum pendente nesta categoria'); return; }
+  localStorage.setItem('seqCat', activeCat); localStorage.setItem('pendingUrl', next.url);
+  window.open(next.url,'amz');
+};
+$('#btnHelp').onclick=()=>{$('#tplBox').classList.remove('open');$('#addBox').classList.remove('open');$('#helpBox').classList.toggle('open');};
+$('#btnAdd').onclick=()=>{$('#tplBox').classList.remove('open');$('#addBox').classList.toggle('open');};
+$('#saveTpl').onclick=()=>{const n=$('#tplName').value.trim();if(!n)return;templates[n]=$('#tplText').value;current=n;localStorage.setItem('templates',JSON.stringify(templates));localStorage.setItem('currentTpl',n);fillSelect();render();toast('Template salvo');};
+$('#delTpl').onclick=()=>{const n=$('#tplName').value.trim();if(Object.keys(templates).length<=1)return;delete templates[n];localStorage.setItem('templates',JSON.stringify(templates));fillSelect();render();$('#tplBox').classList.remove('open');};
+
+function addLinksFromText(text){
+  const cat = ($('#addCatNew').value.trim() || $('#addCat').value || 'Geral');
+  const found=[...text.matchAll(/https?:\/\/\S+/g)].map(m=>m[0].replace(/[.,);]+$/,''));
+  let n=0; for(const u of found){ if(!items.some(i=>i.url===u)){ items.push({url:u,cat,data:null}); n++; } }
+  save(); activeCat=cat; $('#addLinks').value=''; $('#addCatNew').value=''; render(); toast(n+' links adicionados em "'+cat+'"');
+}
+$('#saveLinks').onclick=()=>addLinksFromText($('#addLinks').value);
+$('#fileInput').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>addLinksFromText(r.result);r.readAsText(f);};
+
+$('#btnFetchAll').onclick=async()=>{
+  const btn=$('#btnFetchAll'); btn.disabled=true;
+  const list=items.filter(i=>i.cat===activeCat);
+  for(let k=0;k<list.length;k++){
+    if(list[k].data) continue;
+    btn.textContent=`Buscando ${k+1}/${list.length}...`;
+    const card=document.querySelector('.card[data-url="'+CSS.escape(list[k].url)+'"]');
+    if(!card) continue;
+    await fetchItem(list[k], card);
+    await new Promise(r=>setTimeout(r, 4000 + Math.random()*3000));
+  }
+  btn.disabled=false; btn.textContent='Buscar dados pendentes (um por um)';
+};
+$('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.card textarea')].map(t=>t.value).join('\n\n----------\n\n');await navigator.clipboard.writeText(all);toast('Copiadas!');};
+
+
+(function importFromHash(){
+  const m = location.hash.match(/^#d=(.+)$/); if(!m) return;
+  try{
+    const d = JSON.parse(decodeURIComponent(m[1]));
+    const pu = localStorage.getItem('pendingUrl');
+    let it = items.find(i=>i.url===pu) || items.find(i=>i.data && i.data.asin===d.asin);
+    if(!it && pu){ it={url:pu,cat:activeCat||'Geral',data:null}; items.push(it); }
+    if(it){ it.data=d; save(); localStorage.removeItem('pendingUrl'); }
+    history.replaceState(null,'',location.pathname);
+    const seqCat = localStorage.getItem('seqCat');
+    const next = seqCat ? items.find(i=>i.cat===seqCat && !i.data) : null;
+    if(next){
+      const rest = items.filter(i=>i.cat===seqCat && !i.data).length;
+      localStorage.setItem('pendingUrl', next.url);
+      document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:18px">✅ <b>'+(d.titulo||d.asin)+'</b> importado.<br><span class="muted">Indo para o próximo ('+rest+' pendentes). Clique no favorito de novo quando a página abrir.</span></div>';
+      setTimeout(()=>{ location.href = next.url; }, 1200);
+    } else {
+      localStorage.removeItem('seqCat');
+      document.body.innerHTML = '<div style="padding:40px;text-align:center;font-size:18px">✅ Dados de <b>'+(d.titulo||d.asin)+'</b> importados.<br><span class="muted">Nada mais pendente nesta categoria. Volte para a aba das mensagens. Esta aba fecha sozinha.</span></div>';
+      setTimeout(()=>window.close(), 1500);
+    }
+    throw 'imported';
+  }catch(e){ if(e==='imported') throw e; }
+})();
+window.addEventListener('storage', e=>{ if(e.key==='items'){ items=JSON.parse(e.newValue||'[]'); render(); toast('Dados recebidos'); } });
+fillSelect(); render();
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+- [Ambiente de revisão](revisao-ambiente.md) — sem git (diff contra a cópia do scratchpad), servidor no banco real só com GET, Chrome headless para capturas
+- [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea quebrando resize

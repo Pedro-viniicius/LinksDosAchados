@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mensagens Achadinhos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Tokens da identidade visual (Papel, Superfície, Linha, Mudo, Tinta, Etiqueta) */
+  :root{
+    color-scheme:light dark;
+    --papel:#F7F7F5;--superficie:#FFFFFF;--linha:#E4E4E0;--linha-campo:#6B6B66;--sobre-etiqueta:#111110;--fundo-imagem:#FFFFFF;--mudo:#6B6B66;--tinta:#111110;
+    --etiqueta:#FF5B14;--etiqueta-escura:#C2410C;--etiqueta-clara:#FFEDE3;
+    --enviado:#15803D;--falhou:#B91C1C;
+    --sobre-tinta:#F7F7F5;      /* texto sobre botão Tinta */
+    --foco:#C2410C;             /* anel de foco (Etiqueta escura: 4,8:1 sobre Papel) */
+    --sombra:0 8px 24px rgba(17,17,16,.18);
+    --font:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    /* escala tipográfica */
+    --t-titulo:600 24px/32px var(--font);
+    --t-subtitulo:500 17px/24px var(--font);
+    --t-corpo:400 15px/22px var(--font);
+    --t-legenda:400 13px/18px var(--font);
+    --t-rotulo:500 12px/16px var(--font);
+    --t-valor:500 28px/32px var(--mono);--t-valor-letra:-.02em;--t-mono-p:400 13px/18px var(--mono);--t-mono-m:500 14px/20px var(--mono);
+    /* escala de espaçamento */
+    --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px;
+    --r-sm:6px;--r:10px;--r-lg:14px;--r-pill:999px;
+    --alvo:36px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --papel:#121211;--superficie:#1B1B19;--linha:#2C2C29;--linha-campo:#9A9A94;--mudo:#9A9A94;--tinta:#EDEDEA;
+      --etiqueta:#FF6A2B;--etiqueta-escura:#FF6A2B;--etiqueta-clara:#3A2216;
+      --enviado:#3FB86A;--falhou:#F0625F;
+      --sobre-tinta:#121211;--foco:#FF6A2B;--sombra:0 8px 24px rgba(0,0,0,.5);
+    }
+  }
+  @media (pointer:coarse){:root{--alvo:44px}}
+  *{box-sizing:border-box}
+  body{margin:0;font:var(--t-corpo);background:var(--papel);color:var(--tinta);-webkit-font-smoothing:antialiased}
+  :focus-visible{outline:2px solid var(--foco);outline-offset:2px}
+  header{position:sticky;top:0;background:var(--papel);border-bottom:1px solid var(--linha);padding:var(--s3) var(--s4);z-index:5;max-height:100dvh;overflow:auto}
+  .row{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;max-width:1200px;margin:0 auto}
+  .bar{justify-content:space-between}
+  .bar .grp{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+  h1{font:var(--t-subtitulo);font-weight:600;margin:0}
+  .muted{color:var(--mudo);font:var(--t-legenda)}
+  select,input,button,textarea{font:inherit}
+  select,input[type=text],input[type=search]{background:var(--superficie);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:0 var(--s3);min-height:var(--alvo)}
+  select{max-width:100%}
+  input::placeholder,textarea::placeholder{color:var(--mudo);opacity:1}
+  .lbl{display:flex;align-items:center;gap:var(--s2);font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
+  .lbl select{font:var(--t-corpo);letter-spacing:0;text-transform:none;color:var(--tinta)}
+  /* Botões: padrão = Tinta; .cta = Etiqueta (única ação principal); .secondary = contorno; .ghost = discreto */
+  button{background:var(--tinta);color:var(--sobre-tinta);border:1px solid transparent;border-radius:var(--r);padding:0 var(--s4);min-height:var(--alvo);font-weight:500;cursor:pointer;transition:background .15s,border-color .15s}
+  button:hover:not(:disabled){opacity:.88}
+  button.cta{background:var(--etiqueta);color:var(--sobre-etiqueta);font-weight:600}
+  button.secondary{background:transparent;color:var(--tinta);border-color:var(--linha)}
+  button.secondary:hover:not(:disabled){opacity:1;border-color:var(--mudo)}
+  button.ghost{background:transparent;color:var(--tinta)}
+  button.ghost:hover:not(:disabled){opacity:1;background:var(--linha)}
+  button.danger{background:transparent;color:var(--falhou)}
+  button.danger:hover:not(:disabled){opacity:1;background:var(--linha)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  main{max-width:1200px;margin:0 auto;padding:var(--s5) var(--s4) var(--s7)}
+  .tabs{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s4)}
+  .tab{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--alvo);padding:0 var(--s4);border-radius:var(--r-pill);border:1px solid var(--linha);background:var(--superficie);color:var(--tinta);font-weight:400}
+  .tab:hover:not(:disabled){opacity:1;border-color:var(--mudo)}
+  .tab .muted{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .tab.active{background:var(--etiqueta-clara);border-color:var(--etiqueta-escura);font-weight:600}
+  .tab.active .muted{color:var(--tinta)}
+  .filters{margin-bottom:var(--s4);gap:var(--s2)}
+  .filters input{flex:1;min-width:180px}
+  .pager{gap:var(--s2);margin-bottom:var(--s4)}
+  .pager.bottom{margin:var(--s5) auto 0}
+  .pager button{min-height:32px;padding:0 var(--s3);font:var(--t-legenda);font-weight:500}
+  .pager .muted{padding:0 var(--s2);font-variant-numeric:tabular-nums}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));gap:var(--s4)}
+  .card{background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3);min-width:0}
+  .card.done{border-color:var(--enviado)}
+  .top{display:flex;align-items:center;gap:var(--s2);min-width:0}
+  .badge{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo);white-space:nowrap}
+  .busca{font:var(--t-legenda);color:var(--mudo);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .feito{display:none;margin-left:auto;font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--enviado);white-space:nowrap}
+  .card.done .feito{display:inline}
+  .info{display:flex;gap:var(--s3);align-items:flex-start}
+  .info img{width:72px;height:72px;flex:none;object-fit:contain;background:var(--fundo-imagem);border:1px solid var(--linha);border-radius:var(--r-sm)}
+  .info .t{flex:1;min-width:0}
+  .name{font:var(--t-subtitulo);margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+  .price{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s1) var(--s2);margin-top:var(--s1);font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .price .now{font:var(--t-valor);letter-spacing:var(--t-valor-letra);font-variant-numeric:tabular-nums}
+  .price .old{color:var(--mudo);font:var(--t-mono-p)}
+  .price .off{color:var(--etiqueta-escura);font:var(--t-mono-m)}
+  .meta{font:var(--t-legenda);color:var(--mudo);margin-top:var(--s1)}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  textarea{width:100%;min-height:200px;resize:vertical;background:var(--papel);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:var(--s3);white-space:pre-wrap;line-height:22px}
+  .card textarea{flex:1 0 auto}
+  textarea:focus-visible,input:focus-visible,select:focus-visible{outline-offset:0;border-color:var(--foco)}
+  .actions{display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center}
+  .card .actions .copy{flex:1 1 120px}
+  .more{margin-left:auto}
+  .more[open]{flex-basis:100%;margin-left:0}
+  .more summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:var(--s1);min-height:var(--alvo);padding:0 var(--s3);border-radius:var(--r);font:var(--t-legenda);font-weight:500;color:var(--mudo)}
+  .more summary::-webkit-details-marker{display:none}
+  .more summary::after{content:"▾" / "";font-size:11px}
+  .more[open] summary::after{content:"▴" / ""}
+  .more summary:hover{background:var(--linha);color:var(--tinta)}
+  .more .rare{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding-top:var(--s2);border-top:1px solid var(--linha);margin-top:var(--s1)}
+  .more .rare .lbl{margin-left:auto}
+  .box{display:none;max-width:1200px;margin:var(--s3) auto 0;background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4)}
+  .box.open{display:block}
+  .box textarea{min-height:140px}
+  .box .stack{display:flex;flex-direction:column;gap:var(--s3)}
+  .box .help{font:var(--t-legenda);color:var(--mudo);font-family:var(--mono);overflow-wrap:anywhere}
+  .status{font:var(--t-legenda);color:var(--mudo)}
+  .status:empty{position:absolute}
+  .status.err{color:var(--falhou)}
+  .toast{position:fixed;bottom:var(--s5);left:50%;transform:translateX(-50%);background:var(--tinta);color:var(--sobre-tinta);padding:var(--s3) var(--s5);border-radius:var(--r-pill);font-weight:500;box-shadow:var(--sombra);opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;max-width:calc(100vw - 32px)}
+  .toast.show{opacity:1}
+  @media (max-width:600px){
+    header{padding:var(--s3)}
+    main{padding:var(--s4) var(--s3) var(--s6)}
+    .bar .grp{width:100%}
+    .bar .grp .lbl{width:100%}
+    .bar .grp .lbl select{flex:1}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="row bar">
+    <div class="grp">
+      <h1>Mensagens Achadinhos</h1>
+      <span class="muted" id="count"></span>
+    </div>
+    <div class="grp">
+      <label class="lbl">Template <select id="tplSelect"></select></label>
+      <button class="ghost" id="btnTpl">Editar templates</button>
+      <button class="ghost" id="btnAdd">Adicionar links</button>
+      <button class="secondary" id="btnCopyAll">Copiar todas da página</button>
+    </div>
+  </div>
+
+  <div class="box" id="addBox">
+    <div class="stack">
+      <div class="row">
+        <label class="lbl">Categoria <select id="addCat"></select></label>
+        <input type="text" id="addCatNew" placeholder="ou nova categoria" aria-label="Nova categoria">
+      </div>
+      <textarea id="addLinks" aria-label="Links de afiliado" placeholder="Cole links de afiliado aqui, um por linha (Amazon ou Mercado Livre)"></textarea>
+      <div class="actions"><button id="saveLinks">Adicionar</button></div>
+    </div>
+  </div>
+
+  <div class="box" id="tplBox">
+    <div class="stack">
+      <input type="text" id="tplName" placeholder="Nome do template" aria-label="Nome do template">
+      <textarea id="tplText" aria-label="Texto do template"></textarea>
+      <div class="muted help">Campos: {TITULO_PRODUTO} {PRECO_PRODUTO} {PRECO_ANTIGO} {DESCONTO_PRODUTO} {NUMERO_VENDAS} {FRETE} {CUPOM} {LINK} {LOJA}</div>
+      <div class="actions">
+        <button id="saveTpl">Salvar template</button>
+        <button class="danger" id="delTpl">Excluir template</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
+  <div class="row filters">
+    <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option><option value="amazon">Amazon</option><option value="ml">Mercado Livre</option></select>
+    <select id="fBusca" aria-label="Filtrar por busca"><option value="">Todas as buscas</option></select>
+    <select id="fOrdem" aria-label="Ordenar por"><option value="">Ordem de coleta</option><option value="desc">Maior desconto</option><option value="preco">Menor preço</option></select>
+    <input type="search" id="fTexto" aria-label="Filtrar pelo título" placeholder="Filtrar pelo título">
+  </div>
+  <div class="pager row"></div>
+  <div class="grid" id="grid"></div>
+  <div class="pager row bottom"></div>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite">Copiado!</div>
+
+<script>
+const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
+const LOJA = {amazon:'Amazon', ml:'Mercado Livre'};
+const $ = s=>document.querySelector(s);
+const esc = s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const toast = m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1300);};
+const api = async(path, method='GET', body)=>{ const r=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); };
+
+let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
+let activeCat = localStorage.getItem('activeCat') || '';
+let page=1;
+const cats = ()=>[...new Set(items.map(i=>i.cat))];
+const num = p=>parseFloat(String(p||'').replace(/[^\d,]/g,'').replace(',','.'))||0;
+const pct = d=>parseInt(String(d||'').replace(/\D/g,''))||0;
+
+function buildMsg(it){
+  const d = it.data || {};
+  const map = {
+    '{LINK}': it.url, '{LOJA}': LOJA[it.loja]||'',
+    '{TITULO_PRODUTO}': d.titulo || '',
+    '{PRECO_PRODUTO}': d.preco || '',
+    '{PRECO_ANTIGO}': d.preco_antigo || '',
+    '{DESCONTO_PRODUTO}': d.desconto ? d.desconto.replace('-','') : '',
+    '{NUMERO_VENDAS}': d.vendas || (d.num_avaliacoes ? d.num_avaliacoes+' avaliações' : '') || d.avaliacao || '',
+    '{FRETE}': d.frete || '',
+    '{CUPOM}': d.cupom || '',
+  };
+  // linhas cujo campo está vazio somem da mensagem
+  const linhas = templates[current].split('\n').filter(l=>!Object.entries(map).some(([k,v])=>l.includes(k) && !v));
+  let s = linhas.join('\n').replace(/\n{3,}/g,'\n\n');
+  for (const [k,v] of Object.entries(map)) s = s.replaceAll(k, v);
+  return s.trim();
+}
+
+async function fetchItem(it, card){
+  const st = card.querySelector('.status'); const btn = card.querySelector('.fetch');
+  btn.disabled = true; st.className='status'; st.textContent='Buscando na Amazon...';
+  try{
+    const d = await api('fetch?url='+encodeURIComponent(it.url));
+    if (d.error) throw new Error(d.error);
+    if (d.captcha || !d.titulo) throw new Error('Amazon bloqueou (captcha) ou não achou o título. Tente mais tarde.');
+    Object.assign(it, await api('items/'+it.id,'PATCH',{data:d}));
+    renderCard(card, it); toast('Dados atualizados');
+  }catch(e){ st.className='status err'; st.textContent='Erro: '+e.message; btn.disabled=false; }
+}
+
+function renderCard(card, it){
+  const d = it.data;
+  const meta = d ? [d.avaliacao, d.num_avaliacoes, d.vendas].filter(Boolean).map(esc).join(' · ') : '';
+  card.innerHTML = `
+    <div class="top"><span class="badge ${it.loja}">${LOJA[it.loja]||it.loja}</span><span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Copiado</span></div>
+    ${d ? `<div class="info">${d.imagem?`<img loading="lazy" alt="" src="${esc(d.imagem)}">`:''}<div class="t"><h2 class="name" title="${esc(d.titulo)}">${esc(d.titulo)}</h2><div class="price"><span class="now">${esc(d.preco)}</span>${d.preco_antigo?'<s class="old"><span class="sr">Preço antigo </span>'+esc(d.preco_antigo)+'</s>':''}${d.desconto?'<span class="off">'+esc(d.desconto)+'</span>':''}</div>${meta?'<div class="meta">'+meta+'</div>':''}</div></div>` : ''}
+    <textarea aria-label="Mensagem para copiar"></textarea>
+    <div class="status" role="status"></div>
+    <div class="actions">
+      <button class="cta copy">Copiar</button>
+      <button class="secondary open">Abrir na loja</button>
+      <details class="more">
+        <summary>Mais ações</summary>
+        <div class="rare">
+          ${it.loja==='amazon'?'<button class="secondary fetch">Atualizar preço</button>':''}
+          <button class="secondary reset">Recarregar</button>
+          <label class="lbl">Mover para <select class="mv">${cats().map(c=>`<option ${c===it.cat?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ nova...</option></select></label>
+          <button class="danger del">Excluir</button>
+        </div>
+      </details>
+    </div>`;
+  const ta = card.querySelector('textarea'); ta.value = buildMsg(it);
+  card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast('Mensagem copiada!'); };
+  const f = card.querySelector('.fetch'); if(f) f.onclick = ()=>fetchItem(it, card);
+  card.querySelector('.open').onclick = ()=>window.open(it.url, '_blank');
+  card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };
+  card.querySelector('.del').onclick = async()=>{ await api('items/'+it.id,'DELETE'); items.splice(items.indexOf(it),1); render(); };
+  card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } c=c.trim(); await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; render(); };
+}
+
+function filtrada(){
+  const loja=$('#fLoja').value, busca=$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), ordem=$('#fOrdem').value;
+  let l = items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)));
+  if(ordem==='desc') l=[...l].sort((a,b)=>pct(b.data&&b.data.desconto)-pct(a.data&&a.data.desconto));
+  if(ordem==='preco') l=[...l].sort((a,b)=>(num(a.data&&a.data.preco)||1e12)-(num(b.data&&b.data.preco)||1e12));
+  return l;
+}
+
+function render(){
+  const cs = cats(); if(!cs.includes(activeCat)) activeCat = cs[0] || '';
+  localStorage.setItem('activeCat', activeCat);
+  $('#tabs').innerHTML = cs.map(c=>`<button type="button" class="tab ${c===activeCat?'active':''}" data-c="${esc(c)}" aria-pressed="${c===activeCat}">${esc(c)} <span class="muted">${items.filter(i=>i.cat===c).length}</span></button>`).join('');
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{activeCat=t.dataset.c; page=1; $('#fBusca').value=''; render();});
+  const buscas=[...new Set(items.filter(i=>i.cat===activeCat).map(i=>i.busca).filter(Boolean))];
+  const bsel=$('#fBusca'), bval=bsel.value;
+  bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+buscas.map(b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`).join('');
+  const list = filtrada();
+  $('#count').textContent = items.length+' itens no total · '+items.filter(i=>i.loja==='amazon').length+' Amazon · '+items.filter(i=>i.loja==='ml').length+' Mercado Livre';
+  const PAGE=24, pages=Math.max(1,Math.ceil(list.length/PAGE));
+  if(page>pages) page=pages; if(page<1) page=1;
+  const pagerHtml = pages>1 ? `<button class="secondary pg" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : `<span class="muted">${list.length} itens</span>`;
+  document.querySelectorAll('.pager').forEach(el=>{ el.innerHTML=pagerHtml; el.querySelectorAll('.pg').forEach(b=>b.onclick=()=>{page=+b.dataset.p; render(); window.scrollTo({top:0,behavior:'smooth'});}); });
+  const grid=$('#grid'); grid.innerHTML='';
+  list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; renderCard(c,it); grid.appendChild(c); });
+  $('#addCat').innerHTML = cs.map(c=>`<option ${c===activeCat?'selected':''}>${esc(c)}</option>`).join('');
+}
+['#fLoja','#fBusca','#fOrdem'].forEach(s=>$(s).onchange=()=>{page=1;render();});
+$('#fTexto').oninput=()=>{page=1;render();};
+
+function fillSelect(){
+  const sel=$('#tplSelect'); sel.innerHTML='';
+  for(const n of Object.keys(templates)){const o=document.createElement('option');o.value=o.textContent=n;sel.appendChild(o);}
+  if(!templates[current]) current=Object.keys(templates)[0]; sel.value=current;
+}
+const saveTemplates=()=>Promise.all([api('config/templates','PUT',templates), api('config/currentTpl','PUT',current)]);
+$('#tplSelect').onchange=e=>{current=e.target.value;api('config/currentTpl','PUT',current);render();};
+$('#btnTpl').onclick=()=>{$('#addBox').classList.remove('open');$('#tplBox').classList.toggle('open');$('#tplName').value=current;$('#tplText').value=templates[current];};
+$('#btnAdd').onclick=()=>{$('#tplBox').classList.remove('open');$('#addBox').classList.toggle('open');};
+$('#saveTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(!n)return;templates[n]=$('#tplText').value;current=n;await saveTemplates();fillSelect();render();toast('Template salvo');};
+$('#delTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(Object.keys(templates).length<=1)return;delete templates[n];current=Object.keys(templates)[0];await saveTemplates();fillSelect();render();$('#tplBox').classList.remove('open');};
+
+$('#saveLinks').onclick=async()=>{
+  const cat = ($('#addCatNew').value.trim() || $('#addCat').value || 'Geral');
+  const found=[...$('#addLinks').value.matchAll(/https?:\/\/\S+/g)].map(m=>m[0].replace(/[.,);]+$/,''));
+  const novos=found.map(u=>({url:u, cat, loja:/mercadoli|meli\.la/.test(u)?'ml':'amazon', item_id:u}));
+  const r=await api('items','POST',{items:novos});
+  items=await api('items'); activeCat=cat; $('#addLinks').value=''; $('#addCatNew').value=''; render(); toast(r.inserido+' links adicionados em "'+cat+'"');
+};
+$('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.card textarea')].map(t=>t.value).join('\n\n----------\n\n');await navigator.clipboard.writeText(all);toast('Copiadas!');};
+
+(async()=>{
+  const [it, tp, cur] = await Promise.all([api('items'), api('config/templates'), api('config/currentTpl')]);
+  items = it; if(tp) templates = tp; if(cur && templates[cur]) current = cur;
+  fillSelect(); render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Dados reais (SQLite) — não versionar
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Conversa do WhatsApp (tem dado pessoal do dono — LGPD)
+WhatsApp Chat - AmazonLinks/
+WhatsApp Chat - AmazonLinks.zip
+_chat.txt
+
+# Logs e progresso de coleta
+*.log
+coleta_amazon_feitos.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Segredos
+.env*
+!.env.example
+
+# Estado local do Claude Code
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
