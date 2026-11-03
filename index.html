@@ -18,6 +18,7 @@
     --sobre-tinta:#F7F7F5;      /* texto sobre botão Tinta */
     --foco:#C2410C;             /* anel de foco (Etiqueta escura: 4,8:1 sobre Papel) */
     --sombra:0 8px 24px rgba(17,17,16,.18);
+    --veu:rgba(17,17,16,.55);   /* fundo atrás de diálogos */
     --font:'Geist',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
     --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     /* escala tipográfica */
@@ -37,7 +38,7 @@
       --papel:#121211;--superficie:#1B1B19;--linha:#2C2C29;--linha-campo:#9A9A94;--mudo:#9A9A94;--tinta:#EDEDEA;
       --etiqueta:#FF6A2B;--etiqueta-escura:#FF6A2B;--etiqueta-clara:#3A2216;
       --enviado:#3FB86A;--falhou:#F0625F;
-      --sobre-tinta:#121211;--foco:#FF6A2B;--sombra:0 8px 24px rgba(0,0,0,.5);
+      --sobre-tinta:#121211;--foco:#FF6A2B;--sombra:0 8px 24px rgba(0,0,0,.5);--veu:rgba(0,0,0,.7);
     }
   }
   @media (pointer:coarse){:root{--alvo:44px}}
@@ -69,6 +70,7 @@
   button.danger{background:transparent;color:var(--falhou)}
   button.danger:hover:not(:disabled){opacity:1;background:var(--linha)}
   button:disabled{opacity:.45;cursor:not-allowed}
+  button[aria-disabled="true"]:not(.copyimg){opacity:.45;cursor:not-allowed}
   main{max-width:1200px;margin:0 auto;padding:var(--s5) var(--s4) var(--s7)}
   .tabs{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s4)}
   .tab{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--alvo);padding:0 var(--s4);border-radius:var(--r-pill);border:1px solid var(--linha);background:var(--superficie);color:var(--tinta);font-weight:400}
@@ -135,6 +137,119 @@
     .bar .grp .lbl{width:100%}
     .bar .grp .lbl select{flex:1}
   }
+  /* ---- Tela "Disparo automático" (regras, fila, histórico, números). Só tokens existentes. ---- */
+  .dsp{max-width:720px;margin:0 auto}
+  .dsp h2{font:var(--t-titulo);margin:0}
+  .dsp h2:focus-visible,.dsp h3[tabindex]:focus-visible{outline-width:1px;outline-offset:6px;border-radius:var(--r-sm)}
+  .dsp h3{font:var(--t-subtitulo);margin:0}
+  .dsp p{margin:0}
+  .dsp a{color:var(--tinta)}
+  .dsp .voltar{display:inline-flex;align-items:center;min-height:var(--alvo);margin-bottom:var(--s3);font:var(--t-legenda);font-weight:500;color:var(--mudo)}
+  .dsp .voltar:hover{color:var(--tinta)}
+  .dtopo{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:flex-start;justify-content:space-between;margin-bottom:var(--s4)}
+  .dtopo>div{flex:1 1 280px;display:flex;flex-direction:column;gap:var(--s1)}
+  .dnav{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s5)}
+  .dtab{display:inline-flex;align-items:center;min-height:var(--alvo);padding:0 var(--s4);border-radius:var(--r-pill);border:1px solid var(--linha);background:var(--superficie);color:var(--tinta);text-decoration:none}
+  .dtab:hover{border-color:var(--mudo)}
+  .dtab[aria-current="page"]{background:var(--etiqueta-clara);border-color:var(--etiqueta-escura);font-weight:600}
+  .dsec{margin-bottom:var(--s6)}
+  .dsec>h3{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s2);margin-bottom:var(--s3)}
+  .dsec.vazia{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s2);margin-bottom:var(--s4)}
+  .dsec.vazia>h3{margin:0}
+  .dlista{display:flex;flex-direction:column;gap:var(--s3)}
+  .dcard{background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s2);min-width:0}
+  .dcard.done{border-color:var(--enviado)}
+  .dcard.pausada .name{color:var(--mudo)}
+  .dcard .linha1{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--s2)}
+  .dcard .linha1 .name{flex:1 1 200px}
+  .dcard .mono{font:var(--t-mono-p);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .dcard .meta{margin-top:0}
+  .dcard .fhead{display:flex;flex-direction:column;gap:var(--s1);min-width:0}
+  .dcard .fnome{white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
+  .dcard .fsub{display:flex;align-items:baseline;justify-content:space-between;gap:var(--s2);min-width:0}
+  .dcard .fsub .busca{white-space:normal;overflow-wrap:anywhere;overflow:visible}
+  .dcard .aviso{font:var(--t-legenda);color:var(--falhou)}
+  .dcard .info img{width:72px;height:72px}
+  .dcard textarea{min-height:140px}
+  .estado{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;color:var(--mudo)}
+  .estado.ok{color:var(--enviado)}
+  .estado.ruim{color:var(--falhou)}
+  .vazio{background:var(--superficie);border:1px dashed var(--linha-campo);border-radius:var(--r-lg);padding:var(--s5);display:flex;flex-direction:column;gap:var(--s3);align-items:flex-start}
+  .dsp fieldset{border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);margin:0 0 var(--s4);min-width:0;background:var(--superficie)}
+  .dsp legend{font:var(--t-subtitulo);padding:0 var(--s2)}
+  .dsp .ajuda{font:var(--t-legenda);color:var(--mudo);margin-bottom:var(--s3)}
+  .campo{display:flex;flex-direction:column;gap:var(--s1);margin-bottom:var(--s3);min-width:0}
+  .campo>label,.campo .rot{font:var(--t-legenda);font-weight:500}
+  .campo .ajuda{margin:0}
+  .dsp input[type=number],.dsp input[type=time]{background:var(--superficie);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:0 var(--s3);min-height:var(--alvo);max-width:100%}
+  .dsp input[type=number]{width:8em}
+  .dsp select{min-width:0}
+  .dsp [aria-invalid="true"]{border-color:var(--falhou)}
+  .erro-campo{font:var(--t-legenda);color:var(--falhou)}
+  .erro-campo:empty{display:none}
+  .resumo-erros{border:1px solid var(--falhou);border-radius:var(--r-lg);padding:var(--s4);margin-bottom:var(--s4);display:flex;flex-direction:column;gap:var(--s2);background:var(--superficie)}
+  .resumo-erros:empty{display:none}
+  .resumo-erros ul{margin:0;padding-left:var(--s5)}
+  button.linklike{background:none;border:0;padding:0;min-height:var(--alvo);color:var(--tinta);text-decoration:underline;font:inherit;font-weight:400;text-align:left}
+  button.linklike:hover:not(:disabled){opacity:1;background:none;text-decoration-thickness:2px}
+  .chips{display:flex;flex-wrap:wrap;gap:var(--s2)}
+  .chips.cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .chip{position:relative;display:inline-flex;min-width:0}
+  .chip>span{display:inline-flex;align-items:center;gap:var(--s1);min-height:var(--alvo);padding:0 var(--s3);border:1px solid var(--linha-campo);border-radius:var(--r-pill);background:var(--superficie);color:var(--tinta);cursor:pointer;user-select:none;overflow-wrap:anywhere}
+  .chip>span .num{font:var(--t-mono-p);color:var(--mudo);white-space:nowrap;flex:none}
+  .chip input:checked+span{background:var(--etiqueta-clara);border-color:var(--etiqueta-escura);font-weight:600}
+  .chip input:checked+span::before{content:"✓" / ""}
+  .chip input:checked+span .num{color:var(--tinta)}
+  .chip input:focus-visible+span{outline:2px solid var(--foco);outline-offset:2px}
+  .chip input[aria-invalid="true"]+span{border-color:var(--falhou)}
+  .chips.cats .chip{display:flex}
+  .chips.cats .chip>span{width:100%;border-radius:var(--r);padding:var(--s2) var(--s3);justify-content:flex-start}
+  .chips.cats .chip>span .num{margin-left:auto}
+  .atalhos{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s2)}
+  .horarios{list-style:none;margin:0 0 var(--s2);padding:0;display:flex;flex-direction:column;gap:var(--s2)}
+  .horarios li{display:flex;gap:var(--s2);align-items:center}
+  .resumo{font:var(--t-legenda);color:var(--mudo);margin-top:var(--s2)}
+  .resumo.aviso{color:var(--falhou)}
+  details.filtros{margin-bottom:var(--s3)}
+  details.filtros>summary{cursor:pointer;min-height:var(--alvo);display:flex;align-items:center;gap:var(--s1);font:var(--t-legenda);font-weight:500;color:var(--mudo)}
+  details.filtros>summary::after{content:"▾" / "";font-size:11px}
+  details.filtros[open]>summary::after{content:"▴" / ""}
+  .previa{display:flex;flex-direction:column;gap:var(--s3);margin-top:var(--s3)}
+  .previa .corpo{display:flex;gap:var(--s3);align-items:flex-start}
+  .previa .foto{width:96px;height:96px;flex:none;object-fit:contain;background:var(--fundo-imagem);border:1px solid var(--linha);border-radius:var(--r-sm)}
+  .previa .sem-foto{width:96px;height:96px;flex:none;display:flex;align-items:center;justify-content:center;border:1px dashed var(--linha-campo);border-radius:var(--r-sm);font:var(--t-legenda);color:var(--mudo);text-align:center}
+  dialog .previa{margin-top:0}
+  dialog .previa .foto,dialog .previa .sem-foto{width:64px;height:64px}
+  .msg{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--papel);border:1px solid var(--linha);border-radius:var(--r);padding:var(--s3);flex:1;min-width:0;margin:0;font:var(--t-corpo)}
+  .barra-form{display:flex;flex-wrap:wrap;gap:var(--s2);padding-top:var(--s2)}
+  dialog{background:var(--superficie);color:var(--tinta);border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s5);width:min(92vw,460px);box-shadow:var(--sombra)}
+  dialog::backdrop{background:var(--veu)}
+  dialog h3{font:var(--t-subtitulo);margin:0 0 var(--s3)}
+  dialog .dlg-corpo{display:flex;flex-direction:column;gap:var(--s3);margin-bottom:var(--s4)}
+  dialog .dlg-corpo p{margin:0}
+  dialog .actions{justify-content:flex-end}
+  .htab{width:100%;border-collapse:collapse;background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg)}
+  .htab th{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo);text-align:left;padding:var(--s3);border-bottom:1px solid var(--linha)}
+  .htab td{padding:var(--s3);border-bottom:1px solid var(--linha);vertical-align:top;overflow-wrap:anywhere}
+  .htab tr:last-child td{border-bottom:0}
+  .htab .motivo{font:var(--t-legenda);color:var(--mudo)}
+  .htab .quando{white-space:nowrap}
+  .filtros-hist{display:flex;flex-wrap:wrap;gap:var(--s3);margin-bottom:var(--s4)}
+  .atencao{color:var(--falhou)}
+  /* na tela de disparo, o que só vale para as ofertas sai do cabeçalho; Template e "Editar templates" ficam (a regra usa templates) */
+  body.em-disparo #btnCopyAll,body.em-disparo #btnAdd,body.em-disparo #count,body.em-disparo #addBox{display:none}
+  @media (max-width:600px){
+    .dsp fieldset{padding:var(--s3)}
+    .barra-form{position:sticky;bottom:0;background:var(--papel);padding:var(--s3) 0;border-top:1px solid var(--linha);z-index:2}
+    .barra-form button{flex:1 1 120px}
+    .previa .corpo{flex-direction:column}
+    .htab,.htab tbody,.htab tr,.htab td{display:block}
+    .htab thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+    .htab tr{border-bottom:1px solid var(--linha);padding:var(--s2) 0}
+    .htab tr:last-child{border-bottom:0}
+    .htab td{border:0;padding:var(--s1) var(--s3);text-align:left}
+    .htab td::before{content:attr(data-rot);display:block;font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
+  }
   @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
@@ -149,6 +264,7 @@
       <label class="lbl">Template <select id="tplSelect"></select></label>
       <button class="ghost" id="btnTpl">Editar templates</button>
       <button class="ghost" id="btnAdd">Adicionar links</button>
+      <button class="ghost" id="btnDisparo">Disparo automático</button>
       <button class="secondary" id="btnCopyAll">Copiar todas da página</button>
     </div>
   </div>
@@ -178,6 +294,7 @@
 </header>
 
 <main>
+<div id="telaOfertas">
   <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
   <div class="row filters">
     <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option><option value="amazon">Amazon</option><option value="ml">Mercado Livre</option></select>
@@ -188,8 +305,12 @@
   <div class="pager row"></div>
   <div class="grid" id="grid"></div>
   <div class="pager row bottom"></div>
+</div>
+<div id="telaDisparo" class="dsp" hidden></div>
 </main>
+<dialog id="dlg"></dialog>
 <div class="toast" id="toast" role="status" aria-live="polite">Copiado!</div>
+<div class="toast" id="toastErro" role="alert"></div>
 
 <script>
 const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
@@ -211,7 +332,8 @@ const $ = s=>document.querySelector(s);
 const esc = s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // O tempo na tela acompanha o tamanho do texto; um aviso novo cancela o timer do anterior, para não ser apagado por ele
 let toastTimer;
-const toast = m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),Math.max(1300,String(m).length*50));};
+// erro=true usa o aviso com role="alert" (lido na hora); o comum é role="status"
+const toast = (m, erro=false)=>{const t=$(erro?'#toastErro':'#toast');$(erro?'#toast':'#toastErro').classList.remove('show');t.textContent=m;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),Math.max(1300,String(m).length*50));};
 const api = async(path, method='GET', body)=>{ const r=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); };
 
 let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
@@ -367,7 +489,11 @@ function renderCard(card, it){
   card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast(card.classList.contains('img-done') ? TXT_IMG.toastLegenda : 'Mensagem copiada!'); };
   const ci = card.querySelector('.copyimg'); ci.onclick = ()=>copiarImagem(it, card, ci);
   const f = card.querySelector('.fetch'); if(f) f.onclick = ()=>fetchItem(it, card);
-  card.querySelector('.open').onclick = ()=>window.open(it.url, '_blank');
+  card.querySelector('.open').onclick = ()=>{
+    let u = null; try { u = new URL(it.url); } catch (e) { /* url inválida */ }
+    if (u && u.protocol === 'https:') { window.open(u.href, '_blank', 'noopener,noreferrer'); return; }
+    const st = card.querySelector('.status'); st.className = 'status err'; st.textContent = 'Erro: link da loja inválido, não abri.';
+  };
   card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };
   card.querySelector('.del').onclick = async()=>{ await api('items/'+it.id,'DELETE'); items.splice(items.indexOf(it),1); render(); };
   card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } c=c.trim(); await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; render(); };
@@ -416,10 +542,18 @@ $('#delTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(Object.keys
 
 $('#saveLinks').onclick=async()=>{
   const cat = ($('#addCatNew').value.trim() || $('#addCat').value || 'Geral');
-  const found=[...$('#addLinks').value.matchAll(/https?:\/\/\S+/g)].map(m=>m[0].replace(/[.,);]+$/,''));
+  const achados=[...$('#addLinks').value.matchAll(/https?:\/\/\S+/g)].map(m=>m[0].replace(/[.,);]+$/,''));
+  // o servidor só aceita https: os http ficam de fora e voltam para a caixa, para o dono corrigir
+  const found=achados.filter(u=>/^https:\/\//i.test(u)), ignorados=achados.filter(u=>!/^https:\/\//i.test(u));
+  const aviso=ignorados.length ? ' ('+ignorados.length+' sem https ignorados; ficaram na caixa)' : '';
+  if(!found.length && ignorados.length){ toast('Nenhum link adicionado'+aviso); return; }
   const novos=found.map(u=>({url:u, cat, loja:/mercadoli|meli\.la/.test(u)?'ml':'amazon', item_id:u}));
   const r=await api('items','POST',{items:novos});
-  items=await api('items'); activeCat=cat; $('#addLinks').value=''; $('#addCatNew').value=''; render(); toast(r.inserido+' links adicionados em "'+cat+'"');
+  if(r && r.error){   // mantém a caixa para corrigir; o "item N" do servidor conta sobre found, então mostra o link
+    const m=/item (\d+)/.exec(r.error), recusado=m && found[+m[1]];
+    toast('Nenhum link adicionado: '+(recusado ? r.error.replace(/^item \d+: /,'')+': '+recusado : r.error)); return;
+  }
+  items=await api('items'); activeCat=cat; $('#addLinks').value=ignorados.join('\n'); $('#addCatNew').value=''; render(); toast(r.inserido+' links adicionados em "'+cat+'"'+aviso);
 };
 $('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.card textarea')].map(t=>t.value).join('\n\n----------\n\n');await navigator.clipboard.writeText(all);toast('Copiadas!');};
 
@@ -427,7 +561,884 @@ $('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.car
   const [it, tp, cur] = await Promise.all([api('items'), api('config/templates'), api('config/currentTpl')]);
   items = it; if(tp) templates = tp; if(cur && templates[cur]) current = cur;
   fillSelect(); render();
+  iniciarDisparo();
 })();
+</script>
+<script>
+// ================================================================
+// Tela "Disparo automático": regras, fila manual, histórico e números.
+// Seleção, limites, mensagem e agenda vivem no servidor (disparo.py, rotas /api/disparo/*); aqui só a tela.
+// Telas por hash: #disparo, #disparo/nova, #disparo/regra/<id>, #historico, #numeros, #numeros/novo, #numeros/<id>.
+// Telefone e id do grupo só trafegam no corpo JSON; nas listas, no histórico e nos avisos saem mascarados.
+// ================================================================
+const TXT_DISPARO = {
+  titulo:'Disparo automático', tituloAtencao:'atenção',
+  apoio:'Regras que geram mensagens de oferta sozinhas para o seu grupo. Por enquanto o envio é manual: as mensagens entram numa fila para você copiar e colar no WhatsApp.',
+  voltar:'← Voltar às ofertas',
+  abas:{regras:'Regras', historico:'Histórico', numeros:'Números de WhatsApp'},
+  carregando:'Carregando…',
+  tentar:'Tentar de novo',
+  erroCarga:'Não foi possível carregar os dados. Verifique se o servidor está aberto e tente de novo.',
+  erroRegras:'Não foi possível carregar as regras. Verifique se o servidor está aberto e tente de novo.',
+  semServidor:'Não consegui falar com o servidor. Verifique se ele está aberto e tente de novo.',
+  erroGenerico:'O servidor recusou o pedido.',
+  novaRegra:'Nova regra', salvarRegra:'Salvar regra', cancelar:'Cancelar', salvando:'Salvando…',
+  ativar:'Ativar', pausar:'Pausar', agora:'Disparar agora', editar:'Editar', duplicar:'Duplicar',
+  excluirRegra:'Excluir regra', excluirNumero:'Excluir número', maisAcoes:'Mais ações',
+  addNumero:'Adicionar número', cadastrarNumero:'Cadastrar número', salvarNumero:'Salvar número',
+  semNumero:'Antes de criar regras, cadastre o número de WhatsApp que vai enviar.',
+  semRegra:'Nenhuma regra ainda. Crie a primeira para gerar ofertas sozinho.',
+  semNumeros:'Nenhum número cadastrado. Cadastre o número que envia e o grupo onde as ofertas serão publicadas.',
+  semTelefone:'Sem telefone',
+  regraExcluida:'Regra excluída',
+  numeroRemovido:'Número removido',
+  nuncaEnviou:'Nunca enviou',
+  semItens:'Sem itens para enviar',
+  fila:'Para enviar',
+  filaVazia:'Nada na fila.',
+  filaIncerto:'O envio ficou incerto (o servidor foi reiniciado no meio). Confira no grupo se a mensagem saiu antes de marcar.',
+  copiarMsg:'Copiar mensagem', enviado:'Marcar como enviado', pular:'Pular',
+  copiarFalhou:'Não consegui copiar. Clique na página e tente de novo.',
+  marcadaEnviada:'Marcada como enviada.', marcadaPulada:'Item pulado.',
+  descartarT:'Descartar alterações?', descartar:'O que você alterou neste formulário ainda não foi salvo.', descartarOk:'Descartar',
+  excluirTexto:'Os envios já feitos continuam no histórico.',
+  numeroEmUso:'Pause ou mude as regras que usam este número primeiro (ou exclua essas regras).',
+  numeroExcluirTexto:'Este número deixa de poder ser escolhido nas regras.',
+  entendi:'Entendi',
+  sucessoRegra:'Regra salva. Ela está pausada: ative quando quiser começar.',
+  sucessoRegraEdit:'Regra salva.',
+  sucessoNumero:'Número salvo.',
+  ordens:[['relevancia','Mais relevantes'],['desconto','Maiores descontos'],['menor_preco','Mais baratos'],['maior_preco','Mais caros'],['cupom','Com cupom primeiro'],['recentes','Mais recentes'],['aleatoria','Aleatória']],
+  dias:['seg','ter','qua','qui','sex','sáb','dom'],
+  status:{pendente:['Na fila',''], enviando:['Enviando…',''], enviado:['✓ Enviado','ok'], pulado:['– Pulado',''], erro:['✕ Falhou','ruim'], incerto:['? Incerto','ruim'], expirado:['– Expirado','']},
+};
+const NOME_ORDEM = Object.fromEntries(TXT_DISPARO.ordens);
+
+const disp = {numeros:null, regras:null, fila:null, envios:null};
+let rotaSeq = 0, previaSeq = 0, formSujo = false, timerFila = null, rascunhoRegra = null;
+let templatesGarantidos = false, scrollOfertas = 0, noDisparo = false, previaLista = [], previaIdx = 0, tempoPrevia = null;
+
+// ---------------------------------------------------------------- utilidades
+// fetch das rotas de disparo: em erro lança Error(mensagem em pt-BR) com .status (0 = sem servidor)
+async function dapi(caminho, metodo='GET', corpo){
+  let r;
+  try{ r = await fetch('/api/disparo/'+caminho, {method:metodo, headers:{'Content-Type':'application/json'}, body: corpo===undefined ? undefined : JSON.stringify(corpo)}); }
+  catch{ throw Object.assign(new Error(TXT_DISPARO.semServidor), {status:0}); }
+  let d = null; try{ d = await r.json(); }catch{ /* corpo vazio ou não-JSON */ }
+  if (!r.ok) throw Object.assign(new Error((d && typeof d.error === 'string' && d.error) || TXT_DISPARO.erroGenerico), {status:r.status});
+  return d;
+}
+const soDigitos = s=>String(s??'').replace(/\D/g,'');
+// "(00) ·····-0001"; o número inteiro só aparece no campo do formulário de edição
+function mascararTelefone(t){
+  let d = soDigitos(t);
+  if (!d) return TXT_DISPARO.semTelefone;
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
+  return d.length >= 10 ? `(${d.slice(0,2)}) ·····-${d.slice(-4)}` : `·····-${d.slice(-4)}`;
+}
+const mascararGrupo = g=>{ const s = String(g??''); return s ? s.slice(0,3)+'···@g.us' : ''; };
+const semAcento = s=>String(s??'').normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+const dataLocal = d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+// ISO local sem fuso ("2026-11-03T09:00:00") -> "hoje 09:00", "ontem 10:32", "amanhã 08:00" ou "03/11 09:00"
+function quando(iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso||''));
+  if (!m) return '—';
+  const hoje = new Date(); hoje.setHours(0,0,0,0);
+  const dif = Math.round((new Date(+m[1], +m[2]-1, +m[3]) - hoje) / 864e5);
+  const rot = dif === 0 ? 'hoje' : dif === -1 ? 'ontem' : dif === 1 ? 'amanhã' : m[3]+'/'+m[2];
+  return rot+' '+m[4]+':'+m[5];
+}
+const listaTexto = a=>a.length <= 1 ? a.join('') : a.slice(0,-1).join(', ')+' e '+a[a.length-1];
+function textoDias(dias){
+  const d = [...dias].sort((a,b)=>a-b), n = TXT_DISPARO.dias;
+  if (d.length === 7) return 'todos os dias';
+  if (d.join() === '0,1,2,3,4') return 'seg a sex';
+  if (d.join() === '5,6') return 'sáb e dom';
+  return listaTexto(d.map(i=>n[i]));
+}
+const textoLojas = l=>l.length === 2 ? 'Amazon e Mercado Livre' : (LOJA[l[0]] || l[0] || '');
+const textoCats = c=>c.slice(0,3).join(', ')+(c.length > 3 ? ' +'+(c.length-3) : '');
+const horariosOrdenados = h=>[...h].sort();
+const fmtNum = n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+function resumoAgenda(r){
+  return `${textoDias(r.dias)}, ${listaTexto(horariosOrdenados(r.horarios))} · ${r.por_disparo} por horário · máx. ${r.max_por_dia}/dia`;
+}
+// Itens que combinam com os filtros (conta do cliente; o servidor ainda tira os já enviados e confere o link)
+function contarItens(v){
+  const pal = (v.palavras||[]).map(semAcento);
+  return items.filter(i=>{
+    const d = i.data;
+    if (!d || !d.titulo || !d.preco) return false;
+    if (!v.cats.includes(i.cat) || !v.lojas.includes(i.loja)) return false;
+    if (pct(d.desconto) < (Number.isFinite(v.desconto_min) ? v.desconto_min : 0)) return false;
+    if (pal.length){ const t = semAcento(d.titulo); if (!pal.some(p=>t.includes(p))) return false; }
+    return true;
+  }).length;
+}
+const raiz = ()=>$('#telaDisparo');
+const corpoEl = ()=>$('#dspCorpo');
+const rotuloNumero = n=>n ? n.nome : TXT_DISPARO.numeroRemovido;
+
+// ---------------------------------------------------------------- diálogo de confirmação (<dialog> nativo)
+// corpoHtml já vem escapado por quem chama. Resolve true só no botão de confirmar; Esc ou Cancelar = false.
+function confirmar({titulo, corpoHtml, ok, perigo=false, soFechar=false, origem=document.activeElement}){
+  return new Promise(resolve=>{
+    const d = $('#dlg');
+    if (d.open) d.close('0');
+    d.innerHTML = `<h3 id="dlgTitulo">${esc(titulo)}</h3><div class="dlg-corpo">${corpoHtml}</div>
+      <div class="actions"><button type="button" class="secondary" data-r="0">${esc(soFechar ? TXT_DISPARO.entendi : TXT_DISPARO.cancelar)}</button>${soFechar ? '' : `<button type="button" class="${perigo ? 'secondary danger' : ''}" data-r="1">${esc(ok)}</button>`}</div>`;
+    d.setAttribute('aria-labelledby','dlgTitulo');
+    let feito = false;
+    const fim = ok=>{ if (feito) return; feito = true; d.onclose = null; if (d.open) d.close(); if (origem && origem.isConnected) origem.focus(); resolve(ok); };
+    d.querySelectorAll('button').forEach(b=>b.onclick=()=>fim(b.dataset.r === '1'));
+    // Esc fecha pelo navegador; o evento de um diálogo anterior, atrasado, chega com o novo já aberto e é ignorado
+    d.onclose = ()=>{ if (!d.open) fim(false); };
+    d.showModal();
+    d.querySelector('button[data-r="0"]').focus();   // foco no botão seguro
+  });
+}
+
+// ---------------------------------------------------------------- templates e estado do cabeçalho
+// O servidor ainda não conhece os templates (vêm embutidos no JS): grava os padrões na 1ª vez, para a regra poder citá-los.
+async function garantirTemplates(){
+  if (templatesGarantidos) return;
+  if (await api('config/templates') == null){
+    const r = await api('config/templates','PUT',DEFAULT_TEMPLATES);
+    if (r && r.error) throw new Error(r.error);
+  }
+  templatesGarantidos = true;
+}
+const preparar = ()=>garantirTemplates().catch(()=>{});   // se falhar, o salvar da regra mostra o erro do servidor
+function marcarAtencao(){
+  const a = (disp.regras||[]).some(r=>r.aviso) || (disp.fila||[]).some(e=>e.status === 'incerto');
+  $('#btnDisparo').innerHTML = esc(TXT_DISPARO.titulo)+(a ? ` <span class="atencao">· ${esc(TXT_DISPARO.tituloAtencao)}</span>` : '');
+}
+async function atualizarAtencao(){
+  try{ [disp.regras, disp.fila] = await Promise.all([dapi('regras'), dapi('fila')]); marcarAtencao(); }
+  catch{ /* servidor sem as rotas ou fora do ar: o cabeçalho fica como está */ }
+}
+
+// ---------------------------------------------------------------- rotas por hash
+function rotaAtual(){
+  const h = location.hash.replace(/^#/,'');
+  let m;
+  if (h === 'disparo') return {tela:'regras'};
+  if (h === 'disparo/nova') return {tela:'regra', id:null};
+  if ((m = /^disparo\/regra\/(\d{1,9})$/.exec(h))) return {tela:'regra', id:+m[1]};
+  if (h === 'historico') return {tela:'historico'};
+  if (h === 'numeros') return {tela:'numeros'};
+  if (h === 'numeros/novo') return {tela:'numero', id:null};
+  if ((m = /^numeros\/(\d{1,9})$/.exec(h))) return {tela:'numero', id:+m[1]};
+  return null;
+}
+function marcarSujo(v){
+  formSujo = v;
+  window.onbeforeunload = v ? e=>{ e.preventDefault(); e.returnValue = ''; } : null;
+}
+// Navega com confirmação se há alteração não salva
+async function navegar(hash){
+  if (formSujo && !await confirmar({titulo:TXT_DISPARO.descartarT, corpoHtml:`<p>${esc(TXT_DISPARO.descartar)}</p>`, ok:TXT_DISPARO.descartarOk, perigo:true})) return;
+  marcarSujo(false);
+  const alvo = hash === '#' ? '' : hash;
+  if (location.hash === alvo) rotear(); else location.hash = hash;
+}
+function pararFila(){ clearInterval(timerFila); timerFila = null; }
+function sairDisparo(){
+  const veio = noDisparo;
+  noDisparo = false;
+  document.body.classList.remove('em-disparo');
+  $('#telaDisparo').hidden = true; $('#telaOfertas').hidden = false;
+  document.title = 'Etiqueta';
+  if (veio){ window.scrollTo(0, scrollOfertas); $('#btnDisparo').focus(); atualizarAtencao(); }
+}
+let hashAceito = '', confirmandoRota = false;
+async function rotear(){
+  // Voltar/Avançar do navegador com formulário não salvo: devolve o endereço anterior e pergunta antes de seguir
+  if (formSujo && location.hash !== hashAceito){
+    if (confirmandoRota) return;
+    const novo = location.hash;
+    history.replaceState(null, '', hashAceito || location.pathname+location.search);
+    confirmandoRota = true;
+    const ok = await confirmar({titulo:TXT_DISPARO.descartarT, corpoHtml:`<p>${esc(TXT_DISPARO.descartar)}</p>`, ok:TXT_DISPARO.descartarOk, perigo:true});
+    confirmandoRota = false;
+    if (!ok) return;
+    marcarSujo(false);
+    history.replaceState(null, '', novo || location.pathname+location.search);
+  }
+  hashAceito = location.hash;
+  const r = rotaAtual(), seq = ++rotaSeq;
+  pararFila(); marcarSujo(false); previaSeq++; clearTimeout(tempoPrevia);
+  if (!r){ sairDisparo(); return; }
+  if (!noDisparo){
+    scrollOfertas = window.scrollY; noDisparo = true;
+    document.body.classList.add('em-disparo');
+    $('#addBox').classList.remove('open'); $('#tplBox').classList.remove('open');
+    $('#telaOfertas').hidden = true; $('#telaDisparo').hidden = false; window.scrollTo(0, 0);
+  }
+  const tela = {regras:telaRegras, historico:telaHistorico, numeros:telaNumeros, regra:telaRegra, numero:telaNumero}[r.tela];
+  await tela(r, seq);
+}
+
+// Casca comum: "← Voltar", título (recebe o foco), abas secundárias (só nas listas) e o miolo
+function abrirCasca({ativa, titulo, topoHtml=''}){
+  const abas = ativa ? `<nav class="dnav" aria-label="Seções do disparo automático">${['regras','historico','numeros'].map(k=>
+    `<a class="dtab" data-nav href="${k === 'regras' ? '#disparo' : '#'+k}"${k === ativa ? ' aria-current="page"' : ''}>${esc(TXT_DISPARO.abas[k])}</a>`).join('')}</nav>` : '';
+  raiz().innerHTML = `<a class="voltar" data-nav href="#">${esc(TXT_DISPARO.voltar)}</a>
+    <div class="dtopo"><div><h2 id="dspTitulo" tabindex="-1">${esc(titulo)}</h2>${topoHtml}</div></div>
+    ${abas}<div id="dspCorpo"><p class="muted" role="status">${esc(TXT_DISPARO.carregando)}</p></div>`;
+  document.title = titulo+' · Etiqueta';
+  $('#dspTitulo').focus();
+}
+const erroCarga = (msg, retorno)=>`<div class="vazio" role="alert"><p>${esc(msg)}</p><button type="button" class="secondary" data-acao="tentar">${esc(TXT_DISPARO.tentar)}</button>${retorno||''}</div>`;
+
+// ---------------------------------------------------------------- tela: regras + fila
+async function carregarTudo(){
+  const [n, r, f, e] = await Promise.all([dapi('numeros'), dapi('regras'), dapi('fila'), dapi('envios')]);
+  Object.assign(disp, {numeros:n, regras:r, fila:f, envios:e});
+  marcarAtencao();
+}
+async function telaRegras(_, seq){
+  abrirCasca({ativa:'regras', titulo:TXT_DISPARO.titulo});
+  try{ await Promise.all([preparar(), carregarTudo()]); }
+  catch{ if (seq === rotaSeq) corpoEl().innerHTML = erroCarga(TXT_DISPARO.erroRegras); return; }
+  if (seq !== rotaSeq) return;
+  const semNum = !disp.numeros.length;
+  $('#dspTitulo').parentElement.insertAdjacentHTML('beforeend', `<p class="muted">${esc(TXT_DISPARO.apoio)}</p>`);
+  if (!semNum) $('#dspTitulo').closest('.dtopo').insertAdjacentHTML('beforeend', `<button type="button" data-acao="nova-regra">${esc(TXT_DISPARO.novaRegra)}</button>`);   // sem número, a única ação é "Cadastrar número" (abaixo)
+  corpoEl().innerHTML = `<section class="dsec" id="dspFilaSec" aria-labelledby="dspFilaT">
+      <h3 id="dspFilaT" tabindex="-1">${esc(TXT_DISPARO.fila)} <span class="muted" id="dspFilaN" aria-live="polite"></span></h3>
+      <p class="muted" id="dspFilaVazia">${esc(TXT_DISPARO.filaVazia)}</p>
+      <div class="dlista" id="dspFilaLista"></div>
+    </section>
+    <section class="dsec" aria-labelledby="dspRegrasT"><h3 id="dspRegrasT" tabindex="-1">${esc(TXT_DISPARO.abas.regras)}</h3><div class="dlista" id="dspRegras"></div></section>`;
+  desenharFila(); desenharRegras();
+  timerFila = setInterval(atualizarFila, 30000);
+}
+function ultimoEnvio(regraId){
+  const e = (disp.envios||[]).find(x=>x.regra_id === regraId && x.status === 'enviado');
+  return e ? quando(e.enviado_em || e.criado_em) : TXT_DISPARO.nuncaEnviou;
+}
+// Mono só em data/hora; textos como "Nunca enviou" ficam na fonte normal
+const monoSePar = t=>/\d/.test(t) ? `<span class="mono">${esc(t)}</span>` : esc(t);
+function htmlRegra(r){
+  const n = disp.numeros.find(x=>x.id === r.numero_id);
+  const estado = r.aviso ? ['Atenção','ruim'] : r.ativa ? ['Ativa','ok'] : ['Pausada',''];
+  const naFila = disp.fila.filter(e=>e.regra_id === r.id).length;
+  const proximo = !r.ativa ? '—' : contarItens(r) === 0 ? TXT_DISPARO.semItens : r.proximo ? quando(r.proximo) : '—';
+  return `<article class="dcard${r.ativa ? '' : ' pausada'}" data-regra="${r.id}" aria-labelledby="rt-${r.id}">
+    <div class="linha1"><h3 class="name" id="rt-${r.id}" title="${esc(r.nome)}">${esc(r.nome)}</h3><span class="estado ${estado[1]}">${estado[0]}</span></div>
+    ${r.aviso ? `<p class="aviso">Atenção: ${esc(r.aviso)}</p>` : ''}
+    <p class="meta">${esc(textoCats(r.cats))} · ${esc(textoLojas(r.lojas))} · ${esc(NOME_ORDEM[r.ordem] || r.ordem)}</p>
+    <p class="meta">${n ? `${esc(n.nome)} · <span aria-hidden="true">${esc(mascararTelefone(n.telefone))}</span><span class="sr">${n.telefone ? 'telefone com final '+esc(soDigitos(n.telefone).slice(-4)) : esc(TXT_DISPARO.semTelefone)}</span> · Grupo: ${esc(n.grupo_nome)}` : esc(TXT_DISPARO.numeroRemovido)}</p>
+    <p class="meta">${esc(resumoAgenda(r))}</p>
+    <p class="meta">Último envio: ${monoSePar(ultimoEnvio(r.id))} · Próximo: ${monoSePar(proximo)}${naFila ? ` · ${naFila} na fila` : ''}</p>
+    <div class="actions">
+      <button type="button" class="secondary" data-acao="alternar" data-id="${r.id}">${r.ativa ? TXT_DISPARO.pausar : TXT_DISPARO.ativar}</button>
+      <button type="button" class="secondary" data-acao="agora" data-id="${r.id}">${TXT_DISPARO.agora}</button>
+      <details class="more"><summary>${TXT_DISPARO.maisAcoes}</summary><div class="rare">
+        <button type="button" class="secondary" data-acao="editar" data-id="${r.id}">${TXT_DISPARO.editar}</button>
+        <button type="button" class="secondary" data-acao="duplicar" data-id="${r.id}">${TXT_DISPARO.duplicar}</button>
+        <button type="button" class="danger" data-acao="excluir-regra" data-id="${r.id}">${TXT_DISPARO.excluirRegra}</button>
+      </div></details>
+    </div></article>`;
+}
+const ASSINATURA = new WeakMap();   // html de cada cartão de regra já desenhado
+function desenharRegras(){
+  const box = $('#dspRegras'); if (!box) return;
+  if (!disp.numeros.length){
+    box.innerHTML = `<div class="vazio"><p id="dspSemNumero">${esc(TXT_DISPARO.semNumero)}</p><button type="button" data-acao="novo-numero">${esc(TXT_DISPARO.cadastrarNumero)}</button></div>`;
+    return;
+  }
+  if (!disp.regras.length){
+    box.innerHTML = `<div class="vazio"><p>${esc(TXT_DISPARO.semRegra)}</p><button type="button" data-acao="nova-regra">${esc(TXT_DISPARO.novaRegra)}</button></div>`;
+    return;
+  }
+  const peso = r=>r.aviso ? 0 : r.ativa ? 1 : 2;   // atenção, depois ativas, depois pausadas
+  const atuais = new Map([...box.children].filter(c=>c.dataset.regra).map(c=>[c.dataset.regra, c]));
+  const lista = [...disp.regras].sort((a,b)=>peso(a)-peso(b) || a.id-b.id).map(r=>{
+    const html = htmlRegra(r), velho = atuais.get(String(r.id));
+    if (velho && ASSINATURA.get(velho) === html) return velho;   // não mudou: mantém o nó (foco, "Mais ações" aberto)
+    const t = document.createElement('div'); t.innerHTML = html;
+    const novo = t.firstElementChild; ASSINATURA.set(novo, html);
+    return novo;
+  });
+  [...box.children].forEach(c=>{ if (!lista.includes(c)) c.remove(); });
+  let ref = null;
+  for (const c of lista){
+    if (c.parentNode !== box || (ref ? ref.nextElementSibling : box.firstElementChild) !== c){ if (ref) ref.after(c); else box.prepend(c); }
+    ref = c;
+  }
+}
+// Devolve o foco ao botão equivalente depois de redesenhar; se o cartão sumiu, vai ao vizinho ou ao título da seção
+function focarRegra(id, acao, vizinhos=[]){
+  const alvo = [id, ...vizinhos].map(i=>document.querySelector(`#dspRegras [data-regra="${i}"] [data-acao="${acao}"]`)).find(Boolean)
+    || document.querySelector('#dspRegras [data-acao]') || $('#dspRegrasT');
+  if (alvo) alvo.focus();
+}
+
+// ---- fila manual
+function itemDaFila(e){
+  const base = items.find(i=>i.id === e.item_pk);
+  return {...(base || {id:e.item_pk}), data:{...(base && base.data || {}), titulo:e.titulo || (base && base.data && base.data.titulo) || '', imagem:e.imagem || ''}};
+}
+function criarCardFila(e){
+  const r = (disp.regras||[]).find(x=>x.id === e.regra_id), n = (disp.numeros||[]).find(x=>x.id === e.numero_id);
+  const inc = e.status === 'incerto', t = e.titulo ? esc(e.titulo) : '';
+  // nome acessível = texto visível + título do item, para distinguir os cartões (WCAG 2.5.3)
+  const rot = (visivel, lig=': ')=>t ? ` aria-label="${visivel}${lig}${t}"` : '';
+  const el = document.createElement('article');
+  el.className = 'dcard'; el.dataset.envio = e.id; el.dataset.status = e.status;
+  el.setAttribute('aria-labelledby', 'ft-'+e.id);
+  el.innerHTML = `<div class="fhead"><span class="badge fnome" title="${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}">${esc(r ? r.nome : TXT_DISPARO.regraExcluida)}</span><div class="fsub"><span class="busca">${n ? 'Grupo: '+esc(n.grupo_nome) : ''}</span><span class="estado ${inc ? 'ruim' : ''}">${inc ? 'Incerto' : 'Na fila'}</span></div></div>
+    <div class="info">${e.imagem ? `<img loading="lazy" alt="" src="${esc(e.imagem)}">` : ''}<div class="t"><h3 class="name" id="ft-${e.id}" title="${esc(e.titulo)}">${esc(e.titulo)}</h3><div class="meta">${esc(quando(e.criado_em))}</div></div></div>
+    ${inc ? `<p class="aviso">${esc(TXT_DISPARO.filaIncerto)}</p>` : ''}
+    <textarea${rot('Mensagem para copiar', ' de ')}></textarea>
+    <div class="status" role="status"></div>
+    <div class="actions">
+      <button type="button" class="cta" data-acao="copiar-msg"${rot(TXT_DISPARO.copiarMsg, ' de ')}>${TXT_DISPARO.copiarMsg}</button>
+      ${e.imagem
+        ? `<button type="button" class="secondary copyimg" data-acao="copiar-img"${rot(TXT_IMG.botao, ' de ')}>${TXT_IMG.botao}</button>`
+        : `<button type="button" class="secondary copyimg" data-acao="copiar-img" aria-disabled="true" aria-describedby="semfoto-f${e.id}"${rot(TXT_IMG.botao, ' de ')}>${TXT_IMG.botao}</button><span class="sr" id="semfoto-f${e.id}">${TXT_IMG.semFoto}</span>`}
+      <button type="button" class="secondary" data-acao="marcar" data-status="enviado"${rot(TXT_DISPARO.enviado)}>${TXT_DISPARO.enviado}</button>
+      <button type="button" class="ghost" data-acao="marcar" data-status="pulado"${rot(TXT_DISPARO.pular)}>${TXT_DISPARO.pular}</button>
+    </div>`;
+  el.querySelector('textarea').value = e.mensagem;
+  return el;
+}
+// Reconcilia por id: não refaz o cartão que já está na tela (preserva texto editado, foco e "imagem copiada")
+function desenharFila(){
+  const lista = $('#dspFilaLista'); if (!lista) return;
+  const fila = disp.fila || [];
+  const comFoco = lista.contains(document.activeElement) ? document.activeElement.closest('[data-envio]') : null;
+  [...lista.children].forEach(c=>{ const e = fila.find(x=>x.id === +c.dataset.envio); if (!e || e.status !== c.dataset.status) c.remove(); });
+  let ref = null;
+  for (const e of fila){
+    let c = lista.querySelector(`[data-envio="${e.id}"]`);
+    if (!c){ c = criarCardFila(e); if (ref) ref.after(c); else lista.prepend(c); }
+    ref = c;
+  }
+  $('#dspFilaN').textContent = fila.length ? '('+fila.length+')' : '';
+  $('#dspFilaVazia').hidden = fila.length > 0;
+  $('#dspFilaSec').classList.toggle('vazia', !fila.length);
+  if (comFoco && !comFoco.isConnected){   // o cartão com foco saiu: vai ao que o substituiu, ao próximo ou ao título da seção
+    const alvo = lista.querySelector(`[data-envio="${comFoco.dataset.envio}"] [data-acao="copiar-msg"]`) || lista.querySelector('[data-acao="copiar-msg"]') || $('#dspFilaT');
+    alvo.focus();
+  }
+}
+const assinaturaTela = ()=>JSON.stringify([(disp.fila||[]).map(e=>[e.id, e.status]), disp.regras]);
+let regrasPendentes = false;   // houve mudança nas regras, mas havia foco dentro da lista: redesenha no próximo ciclo
+async function atualizarFila(){
+  const antes = assinaturaTela();
+  try{ [disp.fila, disp.regras] = await Promise.all([dapi('fila'), dapi('regras')]); }catch{ return; }   // erro de rede no refresh: mantém o que está na tela
+  if (!noDisparo || !$('#dspFilaLista')) return;
+  desenharFila(); marcarAtencao();
+  if (assinaturaTela() === antes && !regrasPendentes) return;
+  try{ disp.envios = await dapi('envios'); }catch{ /* o "último envio" fica como estava */ }
+  const lr = $('#dspRegras');
+  if (!lr) return;
+  if (lr.contains(document.activeElement)){ regrasPendentes = true; return; }   // não tira o foco de quem está usando
+  desenharRegras(); regrasPendentes = false;
+}
+async function marcarEnvio(card, status){
+  const id = +card.dataset.envio, bs = card.querySelectorAll('button');
+  const proximo = card.nextElementSibling || card.previousElementSibling;
+  const tinhaFoco = card.contains(document.activeElement);
+  bs.forEach(b=>b.disabled = true);
+  try{
+    await dapi('envios/'+id, 'PATCH', {status});
+    disp.fila = disp.fila.filter(e=>e.id !== id);
+    card.remove(); desenharFila(); marcarAtencao();
+    toast(status === 'enviado' ? TXT_DISPARO.marcadaEnviada : TXT_DISPARO.marcadaPulada);
+    if (tinhaFoco || document.activeElement === document.body)
+      (proximo && proximo.isConnected && proximo.querySelector('[data-acao="copiar-msg"]') || $('#dspFilaT')).focus();
+  }catch(er){
+    bs.forEach(b=>b.disabled = false);
+    toast(er.message, true);
+    if (er.status === 409) atualizarFila();   // já mudou em outro lugar: mostra a fila de agora
+  }
+}
+async function copiarMensagemFila(card){
+  const ta = card.querySelector('textarea');
+  try{
+    await navigator.clipboard.writeText(ta.value);
+    card.classList.add('done'); toast(card.classList.contains('img-done') ? TXT_IMG.toastLegenda : 'Mensagem copiada!');
+  }catch{ const st = card.querySelector('.status'); st.className = 'status err'; st.textContent = TXT_DISPARO.copiarFalhou; }
+}
+
+// ---- ações do cartão da regra
+async function alternarRegra(id, btn){
+  const r = disp.regras.find(x=>x.id === id); if (!r) return;
+  btn.disabled = true;
+  try{
+    await dapi('regras/'+id, 'PUT', {ativa: r.ativa ? 0 : 1});
+    await carregarTudo(); desenharRegras(); focarRegra(id, 'alternar');
+    toast(r.ativa ? 'Regra pausada.' : 'Regra ativada.');
+  }catch(e){ btn.disabled = false; toast(e.message, true); }
+}
+function enviosHoje(regraId){
+  const hoje = dataLocal(new Date());
+  return (disp.envios||[]).filter(e=>e.regra_id === regraId && String(e.criado_em).startsWith(hoje) && ['enviado','pendente','enviando','incerto'].includes(e.status)).length;
+}
+async function dispararAgora(id, btn){
+  const r = disp.regras.find(x=>x.id === id); if (!r) return;
+  const n = disp.numeros.find(x=>x.id === r.numero_id);
+  btn.disabled = true; btn.textContent = 'Preparando…';
+  let amostra;
+  try{ amostra = await dapi('previa', 'POST', {...r, n:Math.min(r.por_disparo, 20)}); }
+  catch(e){ toast(e.message, true); btn.disabled = false; btn.textContent = TXT_DISPARO.agora; return; }
+  btn.disabled = false; btn.textContent = TXT_DISPARO.agora;
+  const grupo = n ? n.grupo_nome : '';
+  const ja = enviosHoje(r.id);
+  const corpoHtml = amostra.length
+    ? `<p>Disparar até ${r.por_disparo} ${r.por_disparo === 1 ? 'mensagem' : 'mensagens'} para a fila do grupo ${esc(grupo)}? Você copia e cola no WhatsApp. Valem como parte dos envios de hoje (${ja} de ${r.max_por_dia}).</p>
+       ${amostra.slice(0,3).map(a=>`<div class="previa"><div class="corpo">${a.imagem ? `<img class="foto" alt="" src="${esc(a.imagem)}">` : `<div class="sem-foto">Sem foto</div>`}<p class="name">${esc(a.titulo)}</p></div></div>`).join('')}`
+    : `<p>Nenhum item combina com esta regra agora. Confira as categorias e os filtros, ou espere entrarem itens novos.</p>`;
+  const ok = await confirmar({titulo:`${TXT_DISPARO.agora}: ${r.nome}`, corpoHtml, ok:TXT_DISPARO.agora, soFechar:!amostra.length, origem:btn});
+  if (!ok) return;
+  btn.disabled = true; btn.textContent = 'Disparando…';
+  try{
+    const res = await dapi('regras/'+id+'/agora', 'POST');
+    const q = Array.isArray(res && res.envios) ? res.envios.length : (res && res.criados) || 0;
+    await carregarTudo(); desenharFila(); desenharRegras(); focarRegra(id, 'agora');
+    toast(q ? `${q} ${q === 1 ? 'mensagem entrou' : 'mensagens entraram'} na fila.` : 'Nada foi gerado: limite do dia, item já enviado recentemente ou nenhum item disponível.');
+  }catch(e){ toast(e.message, true); btn.disabled = false; btn.textContent = TXT_DISPARO.agora; }
+}
+async function excluirRegra(id, btnOrigem){
+  const r = disp.regras.find(x=>x.id === id); if (!r) return;
+  const ok = await confirmar({titulo:`Excluir a regra "${r.nome}"?`, corpoHtml:`<p>${esc(TXT_DISPARO.excluirTexto)}</p>`, ok:TXT_DISPARO.excluirRegra, perigo:true, origem:btnOrigem});
+  if (!ok) return;
+  const ids = [...document.querySelectorAll('#dspRegras [data-regra]')].map(c=>+c.dataset.regra), i = ids.indexOf(id);
+  try{
+    await dapi('regras/'+id, 'DELETE'); await carregarTudo(); desenharRegras(); desenharFila();
+    focarRegra(-1, 'alternar', [ids[i+1], ids[i-1]].filter(Boolean));
+    toast('Regra excluída.');
+  }catch(e){ toast(e.message, true); }
+}
+
+// ---------------------------------------------------------------- tela: histórico
+const PERIODOS = [['hoje','Hoje',0],['7','Últimos 7 dias',6],['30','Últimos 30 dias',29],['tudo','Todo o período',null]];
+async function telaHistorico(_, seq){
+  abrirCasca({ativa:'historico', titulo:TXT_DISPARO.abas.historico});
+  corpoEl().innerHTML = `<div class="filtros-hist"><div class="campo"><label for="hPeriodo">Período</label><select id="hPeriodo">${PERIODOS.map(p=>`<option value="${p[0]}"${p[0] === '7' ? ' selected' : ''}>${p[1]}</option>`).join('')}</select></div>
+    <div class="campo"><label for="hStatus">Status</label><select id="hStatus"><option value="">Todos</option>${Object.entries(TXT_DISPARO.status).map(([k,v])=>`<option value="${k}">${esc(v[0].replace(/^[✓✕?–] /,''))}</option>`).join('')}</select></div></div>
+    <div id="dspHist"><p class="muted" role="status">${esc(TXT_DISPARO.carregando)}</p></div>`;
+  $('#hPeriodo').onchange = $('#hStatus').onchange = ()=>carregarHistorico(rotaSeq);
+  await carregarHistorico(seq);
+}
+let histLista = [], histMostrar = 50;
+async function carregarHistorico(seq){
+  const per = PERIODOS.find(p=>p[0] === $('#hPeriodo').value), st = $('#hStatus').value;
+  const d = new Date(); if (per[2] != null) d.setDate(d.getDate() - per[2]);
+  const q = [per[2] != null ? 'desde='+dataLocal(d) : '', st ? 'status='+encodeURIComponent(st) : ''].filter(Boolean).join('&');
+  const box = $('#dspHist');
+  try{
+    const [e, r, n] = await Promise.all([dapi('envios'+(q ? '?'+q : '')), dapi('regras'), dapi('numeros'), preparar()]);
+    if (seq !== rotaSeq) return;
+    histLista = e; histMostrar = 50; disp.regras = r; disp.numeros = n;
+  }catch{ if (seq === rotaSeq) box.innerHTML = erroCarga(TXT_DISPARO.erroCarga); return; }
+  desenharHistorico();
+}
+function desenharHistorico(){
+  const box = $('#dspHist'); if (!box) return;
+  if (!histLista.length){ box.innerHTML = `<div class="vazio"><p>Nenhum envio neste período.</p></div>`; return; }
+  const nomeRegra = id=>{ const r = (disp.regras||[]).find(x=>x.id === id); return r ? r.nome : TXT_DISPARO.regraExcluida; };
+  const linhas = histLista.slice(0, histMostrar).map(e=>{
+    const [rot, cls] = TXT_DISPARO.status[e.status] || [e.status, ''];
+    return `<tr role="row"><td role="cell" class="quando mono" data-rot="Data e hora">${esc(quando(e.criado_em))}</td>
+      <td role="cell" data-rot="Item"><span>${esc(e.titulo)}</span>${e.motivo ? `<div class="motivo">${esc(e.motivo)}</div>` : ''}</td>
+      <td role="cell" data-rot="Regra">${esc(nomeRegra(e.regra_id))}</td>
+      <td role="cell" data-rot="Status"><span class="estado ${cls}">${esc(rot)}</span></td></tr>`;
+  }).join('');
+  box.innerHTML = `<table class="htab" role="table"><caption class="sr">Envios do disparo automático</caption><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Data e hora</th><th scope="col" role="columnheader">Item</th><th scope="col" role="columnheader">Regra</th><th scope="col" role="columnheader">Status</th></tr></thead><tbody role="rowgroup">${linhas}</tbody></table>
+    <p class="muted" style="margin-top:var(--s3)">${Math.min(histMostrar, histLista.length)} de ${histLista.length} envios</p>
+    ${histLista.length > histMostrar ? `<button type="button" class="secondary" data-acao="mais-historico" style="margin-top:var(--s2)">Carregar mais</button>` : ''}`;
+}
+
+// ---------------------------------------------------------------- tela: números
+async function telaNumeros(_, seq){
+  abrirCasca({ativa:'numeros', titulo:TXT_DISPARO.abas.numeros});
+  try{ [disp.numeros, disp.regras] = await Promise.all([dapi('numeros'), dapi('regras'), preparar()]); }
+  catch{ if (seq === rotaSeq) corpoEl().innerHTML = erroCarga(TXT_DISPARO.erroCarga); return; }
+  if (seq !== rotaSeq) return;
+  $('#dspTitulo').closest('.dtopo').insertAdjacentHTML('beforeend', `<button type="button" data-acao="novo-numero">${esc(TXT_DISPARO.addNumero)}</button>`);
+  desenharNumeros();
+}
+const regrasDoNumero = id=>(disp.regras||[]).filter(r=>r.numero_id === id).length;
+function desenharNumeros(){
+  if (!disp.numeros.length){
+    corpoEl().innerHTML = `<div class="vazio"><p>${esc(TXT_DISPARO.semNumeros)}</p><button type="button" data-acao="novo-numero">${esc(TXT_DISPARO.cadastrarNumero)}</button></div>`;
+    return;
+  }
+  corpoEl().innerHTML = `<div class="dlista">${disp.numeros.map(n=>{
+    const k = regrasDoNumero(n.id);
+    return `<article class="dcard" data-numero="${n.id}" aria-labelledby="nt-${n.id}">
+      <div class="linha1"><h3 class="name" id="nt-${n.id}" title="${esc(n.nome)}">${esc(n.nome)}</h3><span class="estado ${n.ativo ? 'ok' : ''}">${n.ativo ? 'Ativo' : 'Desativado'}</span></div>
+      <p class="meta">Telefone: <span class="mono" aria-hidden="true">${esc(mascararTelefone(n.telefone))}</span><span class="sr">${n.telefone ? 'com final '+esc(soDigitos(n.telefone).slice(-4)) : esc(TXT_DISPARO.semTelefone)}</span></p>
+      <p class="meta">Grupo: ${esc(n.grupo_nome)}${n.grupo_id ? ` · <span class="mono">${esc(mascararGrupo(n.grupo_id))}</span>` : ''}</p>
+      <p class="meta">Limite: ${n.limite_diario} por dia · ${k ? k+(k === 1 ? ' regra usa' : ' regras usam')+' este número' : 'nenhuma regra usa este número'}</p>
+      <div class="actions"><details class="more"><summary>${TXT_DISPARO.maisAcoes}</summary><div class="rare">
+        <button type="button" class="secondary" data-acao="editar-numero" data-id="${n.id}">${TXT_DISPARO.editar}</button>
+        <button type="button" class="danger" data-acao="excluir-numero" data-id="${n.id}">${TXT_DISPARO.excluirNumero}</button>
+      </div></details></div></article>`;
+  }).join('')}</div>`;
+}
+async function excluirNumero(id){
+  const n = disp.numeros.find(x=>x.id === id); if (!n) return;
+  if (regrasDoNumero(id)){
+    await confirmar({titulo:`Não dá para excluir "${n.nome}"`, corpoHtml:`<p>${esc(TXT_DISPARO.numeroEmUso)}</p>`, soFechar:true});
+    return;
+  }
+  const ok = await confirmar({titulo:`Excluir o número "${n.nome}"?`, corpoHtml:`<p>${esc(TXT_DISPARO.numeroExcluirTexto)}</p>`, ok:TXT_DISPARO.excluirNumero, perigo:true});
+  if (!ok) return;
+  try{ await dapi('numeros/'+id, 'DELETE'); disp.numeros = await dapi('numeros'); desenharNumeros(); toast('Número excluído.'); }
+  catch(e){
+    if (e.status === 409) await confirmar({titulo:`Não dá para excluir "${n.nome}"`, corpoHtml:`<p>${esc(TXT_DISPARO.numeroEmUso)}</p>`, soFechar:true});
+    else toast(e.message, true);
+  }
+}
+
+// ---------------------------------------------------------------- formulários: apoio
+const campoErro = id=>`<p class="erro-campo" id="e-${id}"></p>`;
+// Mostra os erros: inline sob o campo, aria-invalid e um resumo no topo com links que levam ao campo
+function mostrarErros(erros, extra){
+  document.querySelectorAll('#telaDisparo [aria-invalid]').forEach(e=>e.removeAttribute('aria-invalid'));
+  document.querySelectorAll('#telaDisparo .erro-campo').forEach(e=>e.textContent = '');
+  const resumo = $('#dspErros');
+  for (const e of erros){
+    const p = $('#e-'+e.id), campo = document.getElementById('f-'+e.id);
+    if (p) p.textContent = e.msg;
+    // grupos (categorias, dias, horários) marcam os campos de dentro; o aria-describedby de cada um já aponta o erro
+    if (campo) (campo.matches('input,select,textarea') ? [campo] : [...campo.querySelectorAll('input')]).forEach(c=>c.setAttribute('aria-invalid','true'));
+  }
+  if (!erros.length && !extra){ resumo.innerHTML = ''; return; }
+  resumo.innerHTML = extra
+    ? `<p><strong>Não salvou.</strong> ${esc(extra)}</p>`
+    : `<p><strong>Corrija ${erros.length === 1 ? 'este campo' : 'estes '+erros.length+' campos'} para salvar:</strong></p><ul>${erros.map(e=>`<li><button type="button" class="linklike" data-acao="foco" data-alvo="f-${e.id}">${esc(e.msg)}</button></li>`).join('')}</ul>`;
+  resumo.setAttribute('role','alert');
+  resumo.tabIndex = -1; resumo.focus();
+}
+const lerInt = el=>{ const t = String(el.value).trim(); return t === '' ? NaN : Number(t); };
+const intEm = (v, a, b)=>Number.isInteger(v) && v >= a && v <= b;
+function focarCampo(id){
+  const el = document.getElementById(id); if (!el) return;
+  const alvo = el.matches('input,select,textarea,button') ? el : el.querySelector('input,select,button');
+  (alvo || el).focus();
+}
+
+// ---------------------------------------------------------------- tela: formulário da regra
+function regraPadrao(){
+  const n = disp.numeros;
+  return {nome:'', numero_id: n.length === 1 ? n[0].id : null, cats:[], lojas:['amazon','ml'], palavras:[], desconto_min:0,
+    ordem:'relevancia', template: templates[current] ? current : Object.keys(templates)[0], com_foto:1,
+    dias:[0,1,2,3,4,5,6], horarios:['09:00'], por_disparo:1, max_por_dia:10, repetir_apos_dias:7, intervalo_seg:60};
+}
+function htmlChip(tipo, nome, valor, marcado, rotuloHtml, extra=''){
+  return `<label class="chip"><input type="${tipo}" name="${nome}" value="${esc(valor)}" class="sr"${marcado ? ' checked' : ''}${extra}><span>${rotuloHtml}</span></label>`;
+}
+function htmlHorarios(lista){
+  return lista.map((h,i)=>`<li><label class="sr" for="hor-${i}">Horário ${i+1}</label><input type="time" id="hor-${i}" name="horario" value="${esc(h)}" aria-describedby="e-horarios">
+    <button type="button" class="ghost" data-acao="rm-horario" data-i="${i}" aria-label="Remover horário ${i+1}"${lista.length < 2 ? ' disabled' : ''}>Remover</button></li>`).join('');
+}
+function htmlFormRegra(v){
+  const todas = cats(), extras = v.cats.filter(c=>!todas.includes(c));
+  const lojasSel = v.lojas.length === 2 ? 'ambas' : v.lojas[0];
+  const nums = disp.numeros;
+  const tpls = Object.keys(templates), tplFalta = v.template && !tpls.includes(v.template);
+  return `<form id="frmRegra" novalidate>
+  <div id="dspErros" class="resumo-erros"></div>
+  <fieldset><legend>1. Identificação</legend>
+    <div class="campo"><label for="f-nome">Nome da regra</label><input type="text" id="f-nome" maxlength="80" autocomplete="off" value="${esc(v.nome)}" aria-describedby="e-nome"><p class="ajuda">Ex.: Eletrônicos de manhã</p>${campoErro('nome')}</div>
+    <div class="campo"><label for="f-numero">Número que envia</label><select id="f-numero" aria-describedby="e-numero">${nums.length === 1 && v.numero_id ? '' : '<option value="">Escolha…</option>'}${nums.map(n=>`<option value="${n.id}"${n.id === v.numero_id ? ' selected' : ''}>${esc(n.nome)} · Grupo: ${esc(n.grupo_nome)}${n.ativo ? '' : ' · desativado'}</option>`).join('')}</select>${campoErro('numero')}</div>
+  </fieldset>
+  <fieldset><legend>2. O que enviar</legend>
+    <div class="campo"><span class="rot" id="rotCats">Categorias</span>
+      <div class="chips cats" id="f-cats" role="group" aria-labelledby="rotCats" aria-describedby="e-cats">${todas.map(c=>htmlChip('checkbox','cat',c,v.cats.includes(c),`${esc(c)} <span class="num">${items.filter(i=>i.cat === c).length}</span>`)).join('')}${extras.map(c=>htmlChip('checkbox','cat',c,true,`${esc(c)} <span class="num">sem itens</span>`)).join('')}</div>
+      <div class="atalhos"><button type="button" class="linklike" data-acao="cats-todas">Marcar todas</button><button type="button" class="linklike" data-acao="cats-limpar">Limpar</button></div>${campoErro('cats')}</div>
+    <div class="campo"><span class="rot" id="rotLojas">Loja</span>
+      <div class="chips seg" id="f-lojas" role="radiogroup" aria-labelledby="rotLojas">${[['amazon','Amazon'],['ml','Mercado Livre'],['ambas','Ambas']].map(([k,t])=>htmlChip('radio','lojas',k,k === lojasSel,esc(t))).join('')}</div></div>
+    <div class="campo"><span class="rot" id="rotOrdem">Ordem de envio</span>
+      <div class="chips seg" id="f-ordem" role="radiogroup" aria-labelledby="rotOrdem">${TXT_DISPARO.ordens.map(([k,t])=>htmlChip('radio','ordem',k,k === v.ordem,esc(t))).join('')}</div></div>
+    <details class="filtros"${v.palavras.length || v.desconto_min ? ' open' : ''}><summary>Filtros (opcional)</summary>
+      <div class="campo"><label for="f-palavras">Palavras no título</label><input type="text" id="f-palavras" autocomplete="off" value="${esc(v.palavras.join(', '))}" aria-describedby="a-palavras e-palavras"><p class="ajuda" id="a-palavras">Separe por vírgula. Basta o título ter uma delas. Vazio = qualquer título.</p>${campoErro('palavras')}</div>
+      <div class="campo"><label for="f-desc">Desconto mínimo (%)</label><input type="number" id="f-desc" min="0" max="95" step="1" inputmode="numeric" value="${esc(v.desconto_min)}" aria-describedby="a-desc e-desc"><p class="ajuda" id="a-desc">De 0 a 95. 0 = qualquer desconto.</p>${campoErro('desc')}</div>
+    </details>
+    <p class="resumo" id="f-contador" aria-live="polite"></p>
+  </fieldset>
+  <fieldset><legend>3. Quando enviar</legend>
+    <div class="campo"><span class="rot" id="rotDias">Dias da semana</span>
+      <div class="chips" id="f-dias" role="group" aria-labelledby="rotDias" aria-describedby="e-dias">${TXT_DISPARO.dias.map((t,i)=>htmlChip('checkbox','dia',i,v.dias.includes(i),esc(t))).join('')}</div>
+      <div class="atalhos"><button type="button" class="linklike" data-acao="dias-todos">Todos os dias</button><button type="button" class="linklike" data-acao="dias-util">Seg a sex</button></div>${campoErro('dias')}</div>
+    <div class="campo"><span class="rot" id="rotHor">Horários</span>
+      <ul class="horarios" id="f-horarios" aria-labelledby="rotHor">${htmlHorarios(v.horarios)}</ul>${campoErro('horarios')}
+      <div><button type="button" class="secondary" data-acao="add-horario">Adicionar horário</button></div></div>
+    <div class="campo"><label for="f-por">Mensagens por horário</label><input type="number" id="f-por" min="1" max="10" step="1" inputmode="numeric" value="${esc(v.por_disparo)}" aria-describedby="e-por"><p class="ajuda">De 1 a 10 mensagens em cada horário.</p>${campoErro('por')}</div>
+    <div class="campo"><label for="f-max">Máximo por dia</label><input type="number" id="f-max" min="1" max="200" step="1" inputmode="numeric" value="${esc(v.max_por_dia)}" aria-describedby="e-max"><p class="ajuda">Soma de todos os horários desta regra. O limite do número também vale.</p>${campoErro('max')}</div>
+    <details class="filtros"><summary>Avançado</summary>
+      <div class="campo"><label for="f-intervalo">Intervalo entre mensagens (segundos)</label><input type="number" id="f-intervalo" min="30" max="3600" step="1" inputmode="numeric" value="${esc(v.intervalo_seg)}" aria-describedby="a-intervalo e-intervalo"><p class="ajuda" id="a-intervalo">De 30 a 3600. Só vale quando houver envio automático; no envio manual não muda nada.</p>${campoErro('intervalo')}</div>
+    </details>
+    <p class="resumo" id="f-resumo" aria-live="polite"></p>
+  </fieldset>
+  <fieldset><legend>4. Repetição</legend>
+    <div class="campo"><label for="f-rep">Não repetir o mesmo item por (dias)</label><input type="number" id="f-rep" min="1" max="365" step="1" inputmode="numeric" value="${v.repetir_apos_dias == null ? '' : esc(v.repetir_apos_dias)}"${v.repetir_apos_dias == null ? ' disabled' : ''} aria-describedby="a-rep e-rep"><p class="ajuda" id="a-rep">O mesmo item não é gerado de novo para este número dentro desse prazo, valendo para todas as regras dele.</p>${campoErro('rep')}</div>
+    <label class="chip"><input type="checkbox" id="f-nunca" class="sr"${v.repetir_apos_dias == null ? ' checked' : ''}><span>Nunca repetir o mesmo item</span></label>
+  </fieldset>
+  <fieldset><legend>5. Mensagem e prévia</legend>
+    <div class="campo"><label for="f-template">Template</label><select id="f-template" aria-describedby="e-template">${tplFalta ? `<option value="${esc(v.template)}" selected>${esc(v.template)} (não existe mais)</option>` : ''}${tpls.map(t=>`<option value="${esc(t)}"${t === v.template ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select><p class="ajuda"><button type="button" class="linklike" data-acao="editar-templates">Editar templates</button></p>${campoErro('template')}</div>
+    <label class="chip"><input type="checkbox" id="f-foto" class="sr"${v.com_foto ? ' checked' : ''}><span>Com foto</span></label>
+    <div class="previa" id="dspPrevia" aria-live="polite"></div>
+  </fieldset>
+  <div class="barra-form"><button type="submit" id="btnSalvar">${esc(TXT_DISPARO.salvarRegra)}</button><button type="button" class="secondary" data-acao="cancelar" data-volta="#disparo">${esc(TXT_DISPARO.cancelar)}</button></div>
+  </form>`;
+}
+// Lê o formulário no formato da API (campos numéricos inválidos viram NaN e a validação aponta)
+function lerFormRegra(){
+  const f = $('#frmRegra'), marcados = n=>[...f.querySelectorAll(`input[name="${n}"]:checked`)];
+  const lj = (f.querySelector('input[name="lojas"]:checked')||{}).value;
+  const pal = [...new Set($('#f-palavras').value.split(',').map(p=>p.trim()).filter(Boolean))];
+  return {
+    nome: $('#f-nome').value.trim(),
+    numero_id: $('#f-numero').value ? +$('#f-numero').value : null,
+    cats: marcados('cat').map(i=>i.value),
+    lojas: lj === 'ambas' ? ['amazon','ml'] : lj ? [lj] : [],
+    palavras: pal,
+    desconto_min: lerInt($('#f-desc')),
+    ordem: (f.querySelector('input[name="ordem"]:checked')||{}).value,
+    template: $('#f-template').value,
+    com_foto: $('#f-foto').checked ? 1 : 0,
+    dias: marcados('dia').map(i=>+i.value).sort((a,b)=>a-b),
+    horarios: [...f.querySelectorAll('input[name="horario"]')].map(i=>i.value),
+    por_disparo: lerInt($('#f-por')),
+    max_por_dia: lerInt($('#f-max')),
+    repetir_apos_dias: $('#f-nunca').checked ? null : lerInt($('#f-rep')),
+    intervalo_seg: lerInt($('#f-intervalo')),
+  };
+}
+function validarRegra(v){
+  const e = [];
+  if (!v.nome || v.nome.length > 80) e.push({id:'nome', msg:'Dê um nome à regra, de 1 a 80 letras.'});
+  if (!v.numero_id) e.push({id:'numero', msg:'Escolha o número que envia.'});
+  if (!v.cats.length) e.push({id:'cats', msg:'Escolha ao menos uma categoria.'});
+  if (v.palavras.length > 20 || v.palavras.some(p=>p.length > 40)) e.push({id:'palavras', msg:'Use até 20 palavras, de até 40 letras cada.'});
+  if (!intEm(v.desconto_min, 0, 95)) e.push({id:'desc', msg:'Informe um desconto mínimo de 0 a 95.'});
+  if (!v.dias.length) e.push({id:'dias', msg:'Escolha ao menos um dia.'});
+  if (!v.horarios.length || v.horarios.some(h=>!/^([01]\d|2[0-3]):[0-5]\d$/.test(h))) e.push({id:'horarios', msg:'Preencha todos os horários (hora e minuto).'});
+  else if (new Set(v.horarios).size !== v.horarios.length) e.push({id:'horarios', msg:'Há horários repetidos. Cada horário só pode aparecer uma vez.'});
+  else if (v.horarios.length > 48) e.push({id:'horarios', msg:'Use no máximo 48 horários.'});
+  if (!intEm(v.por_disparo, 1, 10)) e.push({id:'por', msg:'Informe de 1 a 10 mensagens por horário.'});
+  if (!intEm(v.max_por_dia, 1, 200)) e.push({id:'max', msg:'Informe um máximo por dia de 1 a 200.'});
+  if (v.repetir_apos_dias !== null && !intEm(v.repetir_apos_dias, 1, 365)) e.push({id:'rep', msg:'Informe de 1 a 365 dias, ou marque "Nunca repetir".'});
+  if (!intEm(v.intervalo_seg, 30, 3600)) e.push({id:'intervalo', msg:'Informe um intervalo de 30 a 3600 segundos (em "Avançado").'});
+  if (!templates[v.template] || !String(templates[v.template]).includes('{LINK}')) e.push({id:'template', msg:'Escolha um template que exista e tenha o campo {LINK}.'});
+  return e;
+}
+// Contador, resumo da agenda e prévia, a cada mudança no formulário
+function atualizarDerivados(){
+  const v = lerFormRegra(), ct = $('#f-contador'), rs = $('#f-resumo');
+  if (!v.cats.length) ct.textContent = 'Escolha ao menos uma categoria para ver quantos itens combinam.';
+  else {
+    const n = contarItens(v);
+    ct.className = 'resumo'+(n ? '' : ' aviso');
+    ct.textContent = n ? `Cerca de ${fmtNum(n)} ${n === 1 ? 'item combina' : 'itens combinam'} com esses filtros (sem contar os já enviados recentemente).` : 'Nenhum item combina; a regra não enviará nada até entrarem itens.';
+  }
+  const hs = v.horarios.filter(h=>/^\d\d:\d\d$/.test(h));
+  if (!hs.length || !v.dias.length || !Number.isInteger(v.por_disparo)){ rs.className = 'resumo'; rs.textContent = ''; return; }
+  const cap = new Set(hs).size * v.por_disparo;
+  const folga = Number.isInteger(v.max_por_dia) && cap < v.max_por_dia;   // o aviso só aparece depois de o dono mexer em horários, quantidade ou máximo
+  rs.className = 'resumo'+(folga && capTocada ? ' aviso' : '');
+  rs.textContent = `Gera ${v.por_disparo} ${v.por_disparo === 1 ? 'mensagem' : 'mensagens'} em cada horário (${listaTexto(horariosOrdenados([...new Set(hs)]))}), ${textoDias(v.dias)}`
+    + (Number.isInteger(v.max_por_dia) ? `, até ${v.max_por_dia} por dia.` : '.')
+    + (folga && capTocada ? ` Pelos horários, saem no máximo ${cap} por dia.` : '');
+}
+function desenharPrevia(){
+  const box = $('#dspPrevia'); if (!box) return;
+  if (!previaLista.length){
+    box.innerHTML = `<p class="resumo aviso">Nenhum item combina com esta regra agora. Ela não enviará nada até entrarem itens.</p>`;
+    return;
+  }
+  const a = previaLista[previaIdx % previaLista.length];
+  box.innerHTML = `<p class="muted">Assim a mensagem chega no grupo. Usa o template escolhido acima.</p>
+    <div class="corpo">${a.imagem ? `<img class="foto" alt="Foto do item da prévia" src="${esc(a.imagem)}">` : `<div class="sem-foto">Sem foto</div>`}<pre class="msg">${esc(a.mensagem)}</pre></div>
+    ${previaLista.length > 1 ? `<div><button type="button" class="secondary" data-acao="outra-previa">Ver outro item (${previaIdx % previaLista.length + 1} de ${previaLista.length})</button></div>` : ''}`;
+}
+async function atualizarPrevia(){
+  const box = $('#dspPrevia'); if (!box) return;
+  const v = lerFormRegra(), seq = ++previaSeq;
+  const faltam = validarRegra({...v, nome: v.nome || 'Prévia'});   // o servidor valida de novo; aqui evita um pedido sabidamente inválido
+  if (faltam.length){
+    box.innerHTML = `<p class="muted">Complete o formulário para ver a prévia: ${esc(faltam[0].msg)}</p>`; return;
+  }
+  box.setAttribute('aria-busy','true');
+  try{
+    const r = await dapi('previa', 'POST', {...v, nome: v.nome || 'Prévia', n:5});
+    if (seq !== previaSeq) return;
+    previaLista = r; previaIdx = 0; desenharPrevia();
+  }catch(e){
+    if (seq !== previaSeq) return;
+    box.innerHTML = `<p class="resumo aviso">Prévia indisponível: ${esc(e.message)}</p>`;
+  }finally{ if (seq === previaSeq) box.removeAttribute('aria-busy'); }
+}
+let capTocada = false;
+function aoMudarForm(ev){
+  if (ev && ev.target && ev.target.closest && ev.target.closest('#f-por, #f-max, #f-horarios')) capTocada = true;
+  marcarSujo(true); atualizarDerivados();
+  clearTimeout(tempoPrevia); tempoPrevia = setTimeout(atualizarPrevia, 500);
+}
+async function telaRegra(r, seq){
+  const edicao = r.id !== null;
+  abrirCasca({titulo: edicao ? 'Editar regra' : TXT_DISPARO.novaRegra});
+  try{ [disp.numeros, disp.regras] = await Promise.all([dapi('numeros'), dapi('regras'), preparar()]); }
+  catch{ if (seq === rotaSeq) corpoEl().innerHTML = erroCarga(TXT_DISPARO.erroCarga); return; }
+  if (seq !== rotaSeq) return;
+  let v;
+  if (edicao){
+    v = disp.regras.find(x=>x.id === r.id);
+    if (!v){ corpoEl().innerHTML = `<div class="vazio" role="alert"><p>Regra não encontrada. Ela pode ter sido excluída.</p><a data-nav href="#disparo">Voltar às regras</a></div>`; return; }
+  } else {
+    v = rascunhoRegra || regraPadrao(); rascunhoRegra = null;
+  }
+  if (!disp.numeros.length){
+    corpoEl().innerHTML = `<div class="vazio"><p>${esc(TXT_DISPARO.semNumero)}</p><button type="button" data-acao="novo-numero">${esc(TXT_DISPARO.cadastrarNumero)}</button></div>`;
+    return;
+  }
+  corpoEl().innerHTML = htmlFormRegra(v);
+  const f = $('#frmRegra'); f.dataset.id = edicao ? r.id : '';
+  capTocada = edicao;   // regra nova abre sem aviso; regra salva mostra a sobra desde o começo
+  f.addEventListener('input', aoMudarForm); f.addEventListener('change', aoMudarForm);
+  f.onsubmit = ev=>{ ev.preventDefault(); salvarRegra(edicao ? r.id : null); };
+  marcarSujo(false);
+  atualizarDerivados(); atualizarPrevia();
+}
+async function salvarRegra(id){
+  const v = lerFormRegra(), erros = validarRegra(v);
+  mostrarErros(erros);
+  if (erros.length){ return; }
+  const btn = $('#btnSalvar'); btn.disabled = true; btn.textContent = TXT_DISPARO.salvando;
+  try{
+    // A regra nasce pausada: o dono ativa de propósito (spec). Na edição, "ativa" não muda.
+    if (id === null) await dapi('regras', 'POST', {...v, ativa:0}); else await dapi('regras/'+id, 'PUT', v);
+    marcarSujo(false);
+    toast(id === null ? TXT_DISPARO.sucessoRegra : TXT_DISPARO.sucessoRegraEdit);
+    location.hash = '#disparo';
+  }catch(e){
+    btn.disabled = false; btn.textContent = TXT_DISPARO.salvarRegra;
+    mostrarErros([], e.message);
+  }
+}
+
+// ---------------------------------------------------------------- tela: formulário do número
+function htmlFormNumero(n){
+  return `<form id="frmNumero" novalidate>
+  <div id="dspErros" class="resumo-erros"></div>
+  <fieldset><legend>Número e grupo</legend>
+    <div class="campo"><label for="f-nome">Rótulo</label><input type="text" id="f-nome" maxlength="80" autocomplete="off" value="${esc(n.nome)}" aria-describedby="a-nome e-nome"><p class="ajuda" id="a-nome">Como você chama este número. Ex.: Loja 1</p>${campoErro('nome')}</div>
+    <div class="campo"><label for="f-tel">Telefone com DDI e DDD</label><input type="text" id="f-tel" inputmode="tel" autocomplete="off" value="${esc(n.telefone)}" aria-describedby="a-tel e-tel"><p class="ajuda" id="a-tel">Opcional no envio manual. Só dígitos, ex.: 55 + DDD + número, de 10 a 15 dígitos. Fica só neste computador.</p>${campoErro('tel')}</div>
+    <div class="campo"><label for="f-grupo">Grupo de destino</label><input type="text" id="f-grupo" maxlength="80" autocomplete="off" value="${esc(n.grupo_nome)}" aria-describedby="a-grupo e-grupo"><p class="ajuda" id="a-grupo">O grupo onde as ofertas serão publicadas.</p>${campoErro('grupo')}</div>
+    <div class="campo"><label for="f-gid">Código do grupo (opcional)</label><input type="text" id="f-gid" autocomplete="off" value="${esc(n.grupo_id)}" aria-describedby="a-gid e-gid"><p class="ajuda" id="a-gid">Só o envio automático usa. Formato: números seguidos de @g.us.</p>${campoErro('gid')}</div>
+    <div class="campo"><label for="f-lim">Limite por dia</label><input type="number" id="f-lim" min="1" max="200" step="1" inputmode="numeric" value="${esc(n.limite_diario)}" aria-describedby="a-lim e-lim"><p class="ajuda" id="a-lim">Máximo de mensagens por dia somando todas as regras deste número (1 a 200).</p>${campoErro('lim')}</div>
+    <label class="chip"><input type="checkbox" id="f-ativo" class="sr"${n.ativo ? ' checked' : ''}><span>Número ativo</span></label>
+  </fieldset>
+  <div class="barra-form"><button type="submit" id="btnSalvar">${esc(TXT_DISPARO.salvarNumero)}</button><button type="button" class="secondary" data-acao="cancelar" data-volta="#numeros">${esc(TXT_DISPARO.cancelar)}</button></div>
+  </form>`;
+}
+function lerFormNumero(){
+  return {nome:$('#f-nome').value.trim(), telefone:soDigitos($('#f-tel').value), grupo_nome:$('#f-grupo').value.trim(),
+    grupo_id:$('#f-gid').value.trim(), limite_diario:lerInt($('#f-lim')), ativo:$('#f-ativo').checked ? 1 : 0};
+}
+function validarNumero(v){
+  const e = [];
+  if (!v.nome || v.nome.length > 80) e.push({id:'nome', msg:'Dê um rótulo ao número, de 1 a 80 letras.'});
+  if (v.telefone && !/^\d{10,15}$/.test(v.telefone)) e.push({id:'tel', msg:'Informe o telefone com DDI e DDD, só dígitos, de 10 a 15 dígitos.'});
+  if (!v.grupo_nome || v.grupo_nome.length > 80) e.push({id:'grupo', msg:'Informe o nome do grupo, de 1 a 80 letras.'});
+  if (v.grupo_id && !/^\d{5,25}(-\d{5,25})?@g\.us$/.test(v.grupo_id)) e.push({id:'gid', msg:'O código do grupo tem números seguidos de @g.us. Deixe vazio se não souber.'});
+  if (!intEm(v.limite_diario, 1, 200)) e.push({id:'lim', msg:'Informe um limite por dia de 1 a 200.'});
+  return e;
+}
+async function telaNumero(r, seq){
+  const edicao = r.id !== null;
+  abrirCasca({titulo: edicao ? 'Editar número' : TXT_DISPARO.addNumero});
+  try{ disp.numeros = await dapi('numeros'); }
+  catch{ if (seq === rotaSeq) corpoEl().innerHTML = erroCarga(TXT_DISPARO.erroCarga); return; }
+  if (seq !== rotaSeq) return;
+  const n = edicao ? disp.numeros.find(x=>x.id === r.id) : {nome:'', telefone:'', grupo_nome:'', grupo_id:'', limite_diario:40, ativo:1};
+  if (!n){ corpoEl().innerHTML = `<div class="vazio" role="alert"><p>Número não encontrado. Ele pode ter sido excluído.</p><a data-nav href="#numeros">Voltar aos números</a></div>`; return; }
+  corpoEl().innerHTML = htmlFormNumero(n);
+  const f = $('#frmNumero');
+  f.addEventListener('input', ()=>marcarSujo(true)); f.addEventListener('change', ()=>marcarSujo(true));
+  f.onsubmit = ev=>{ ev.preventDefault(); salvarNumero(edicao ? r.id : null); };
+}
+async function salvarNumero(id){
+  const v = lerFormNumero(), erros = validarNumero(v);
+  mostrarErros(erros);
+  if (erros.length) return;
+  const btn = $('#btnSalvar'); btn.disabled = true; btn.textContent = TXT_DISPARO.salvando;
+  try{
+    if (id === null) await dapi('numeros', 'POST', v); else await dapi('numeros/'+id, 'PUT', v);
+    marcarSujo(false); toast(TXT_DISPARO.sucessoNumero); location.hash = '#numeros';
+  }catch(e){ btn.disabled = false; btn.textContent = TXT_DISPARO.salvarNumero; mostrarErros([], e.message); }
+}
+
+// ---------------------------------------------------------------- eventos (delegação) e início
+$('#telaDisparo').addEventListener('click', ev=>{
+  const a = ev.target.closest('a[data-nav]');
+  if (a){
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button) return;
+    ev.preventDefault(); navegar(a.getAttribute('href')); return;
+  }
+  const b = ev.target.closest('[data-acao]'); if (!b) return;
+  const id = +b.dataset.id, card = b.closest('[data-envio]');
+  switch (b.dataset.acao){
+    case 'tentar': rotear(); break;
+    case 'nova-regra': navegar('#disparo/nova'); break;
+    case 'novo-numero': navegar('#numeros/novo'); break;
+    case 'editar': navegar('#disparo/regra/'+id); break;
+    case 'duplicar': {
+      const r = disp.regras.find(x=>x.id === id);
+      if (r){ rascunhoRegra = {...r, nome:r.nome+' (cópia)'}; navegar('#disparo/nova'); }
+      break;
+    }
+    case 'alternar': alternarRegra(id, b); break;
+    case 'agora': dispararAgora(id, b); break;
+    case 'excluir-regra': excluirRegra(id, b); break;
+    case 'editar-numero': navegar('#numeros/'+id); break;
+    case 'excluir-numero': excluirNumero(id); break;
+    case 'copiar-msg': if (card) copiarMensagemFila(card); break;
+    case 'copiar-img': if (card){ const e = disp.fila.find(x=>x.id === +card.dataset.envio); if (e) copiarImagem(itemDaFila(e), card, b); } break;
+    case 'marcar': if (card) marcarEnvio(card, b.dataset.status); break;
+    case 'mais-historico': histMostrar += 50; desenharHistorico(); break;
+    case 'cancelar': navegar(b.dataset.volta); break;
+    case 'foco': focarCampo(b.dataset.alvo); break;
+    case 'cats-todas': document.querySelectorAll('#f-cats input').forEach(i=>i.checked = true); aoMudarForm(); break;
+    case 'cats-limpar': document.querySelectorAll('#f-cats input').forEach(i=>i.checked = false); aoMudarForm(); break;
+    case 'dias-todos': document.querySelectorAll('#f-dias input').forEach(i=>i.checked = true); aoMudarForm(); break;
+    case 'dias-util': document.querySelectorAll('#f-dias input').forEach(i=>i.checked = +i.value < 5); aoMudarForm(); break;
+    case 'add-horario': {
+      const hs = [...document.querySelectorAll('#f-horarios input')].map(i=>i.value);
+      if (hs.length >= 48) break;
+      capTocada = true; hs.push(''); $('#f-horarios').innerHTML = htmlHorarios(hs); focarCampo('hor-'+(hs.length-1)); aoMudarForm();
+      break;
+    }
+    case 'rm-horario': {
+      const hs = [...document.querySelectorAll('#f-horarios input')].map(i=>i.value);
+      if (hs.length < 2) break;
+      capTocada = true; hs.splice(+b.dataset.i, 1); $('#f-horarios').innerHTML = htmlHorarios(hs); focarCampo('hor-'+Math.min(+b.dataset.i, hs.length-1)); aoMudarForm();
+      break;
+    }
+    case 'outra-previa': previaIdx++; desenharPrevia(); break;
+    case 'editar-templates': $('#btnTpl').click(); $('#btnTpl').scrollIntoView({block:'nearest'}); break;
+  }
+});
+$('#telaDisparo').addEventListener('change', ev=>{
+  if (ev.target.id === 'f-nunca'){   // "Nunca repetir" desliga o campo de dias
+    const n = $('#f-rep'); n.disabled = ev.target.checked; if (!ev.target.checked && !n.value) n.value = 7;
+  }
+});
+$('#btnDisparo').onclick = ()=>navegar('#disparo');
+function iniciarDisparo(){
+  hashAceito = location.hash;
+  window.addEventListener('hashchange', ()=>rotear());
+  if (rotaAtual()) rotear(); else atualizarAtencao();
+}
+document.addEventListener('visibilitychange', ()=>{ if (!document.hidden && noDisparo && timerFila) atualizarFila(); });
 </script>
 </body>
 </html>

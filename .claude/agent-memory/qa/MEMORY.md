@@ -1,2 +1,6 @@
 - [Testes do front (copiar-imagem)](testes-front-copiar-imagem.md) — comando Chrome headless, armadilhas do --dump-dom, stubs e portas do scratchpad
-- [Testes do servidor Python](testes-servidor-python.md) — unittest com subprocesso, mutantes sem rede, backlog 5 e bugs q1/q2 abertos
+- [Testes do servidor Python](testes-servidor-python.md) — unittest com subprocesso, mutantes sem rede, backlog 5 (q1/q2 corrigidos)
+- [Testes do coletar_ml.js](testes-coletar-ml.md) — node:test+vm, helpers do QA, mutantes (cancelled conta), fatos do banco real do ML
+- [Abas e migração (Parte A)](testes-abas-migracao.md) — comandos, fluxo da cópia migrada p/ abas.test.html, mutantes e armadilhas
+- [Testes do disparo](testes-disparo.md) — suítes, paridade via node vm, armadilhas (Write converte \u, pendente expira), mutantes e fatos do banco
+- [Tela Disparo (páginas qa/integração)](testes-disparo-tela.md) — nomes sem underscore, integração com banco novo, slot de 1 s, mutantes

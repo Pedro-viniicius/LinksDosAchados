@@ -2,14 +2,15 @@
 """Coleta produtos da Amazon (buscas.json + lista do WhatsApp) e grava no achadinhos.db.
 
 Uso:  python3 coletar_amazon.py [buscas|whatsapp|tudo]
-Retoma de onde parou: termos já coletados ficam em coleta_amazon_feitos.txt.
+Retoma de onde parou: termos já coletados ficam em coleta_amazon_feitos.txt
+(ACHADINHOS_FEITOS troca o caminho desse arquivo).
 """
 import json, os, random, re, sys, time, urllib.parse, urllib.request
 from bs4 import BeautifulSoup
 import servidor as S
 
 BASE = S.BASE
-FEITOS = os.path.join(BASE, 'coleta_amazon_feitos.txt')
+FEITOS = os.environ.get('ACHADINHOS_FEITOS') or os.path.join(BASE, 'coleta_amazon_feitos.txt')
 POR_BUSCA = 30
 CHAT = os.path.join(BASE, 'WhatsApp Chat - AmazonLinks', '_chat.txt')
 
@@ -79,8 +80,18 @@ def gravar(itens):
     return c
 
 
+def chave_busca(termo):
+    return f'busca|{termo}'
+
+
 def feitos():
-    return set(open(FEITOS, encoding='utf-8').read().splitlines()) if os.path.exists(FEITOS) else set()
+    """Chaves já coletadas. O progresso é por termo (`busca|{termo}`): as linhas antigas
+    `busca|{cat}|{termo}` valem pelo último segmento, então renomear a aba não recoleta nada."""
+    if not os.path.exists(FEITOS):
+        return set()
+    with open(FEITOS, encoding='utf-8') as f:
+        linhas = f.read().splitlines()
+    return {chave_busca(l.rsplit('|', 1)[1]) if l.startswith('busca|') else l for l in linhas}
 
 
 def marcar(chave):
@@ -97,7 +108,7 @@ def coletar_buscas():
     ja = feitos()
     for cat, termos in buscas.items():
         for termo in termos:
-            chave = f'busca|{cat}|{termo}'
+            chave = chave_busca(termo)
             if chave in ja:
                 continue
             res = []

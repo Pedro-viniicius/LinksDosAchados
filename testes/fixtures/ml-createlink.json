@@ -1,0 +1,33 @@
+{
+  "urls": [
+    {
+      "origin_url": "https://produto.mercadolivre.com.br/MLB-4100000003",
+      "short_url": "https://mercadolivre.com/sec/1xYz9Qw",
+      "created": true
+    },
+    {
+      "origin_url": "https://produto.mercadolivre.com.br/MLB-4200000001",
+      "short_url": "https://meli.la/2PfM3kQ",
+      "created": true
+    },
+    {
+      "origin_url": "https://produto.mercadolivre.com.br/MLB-4100000001-smart-tv-samsung-50-crystal-uhd-4k-_JM",
+      "short_url": "https://meli.la/1AbC234",
+      "created": false
+    },
+    {
+      "origin_url": "https://produto.mercadolivre.com.br/MLB-4200000002",
+      "short_url": null,
+      "error_code": "INTERNAL_SERVER_ERROR",
+      "message": "Tente de novo mais tarde",
+      "created": false
+    },
+    {
+      "origin_url": "https://produto.mercadolivre.com.br/MLB-4100000002",
+      "short_url": null,
+      "error_code": "ITEM_NOT_ELIGIBLE",
+      "message": "O produto não participa do programa de afiliados",
+      "created": false
+    }
+  ]
+}

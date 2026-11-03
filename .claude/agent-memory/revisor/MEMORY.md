@@ -1,3 +1,6 @@
-- [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio com ACHADINHOS_DB/PORTA, Chrome headless, testes do front e do servidor
+- [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio, Chrome headless, testes, scripts de dado; `--noproxy` sempre com aspas
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global, regra da spec sem medir, cor da referência sem conferir
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
+- [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível persistente por config, toggle às cegas; formatos reais via GET
+- [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo com o estado que ele cria; a doc herda erro do plano (FEITOS novo recoleta tudo)
+- [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes

@@ -1,0 +1,1513 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: tela Disparo automático</title>
+<!--
+  Testes da tela "Disparo automático" do index.html (etapa 5 do plano docs/produto/planos/disparo-automatico.md,
+  CA2, CA9, CA10, CA11 e a parte de tela do CA1). Sem dependência. Rodar com um servidor no ar:
+
+    node testes/rodar.mjs disparo            (porta 8765; PORTA=<n> troca a porta)
+
+  O runner abre o Chrome headless em tempo real (CDP) e sai com código 0 só quando a linha de resultado diz "OK".
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real; só GET sai para a API real (itens e config/currentTpl);
+  - toda rota /api/disparo/* e o GET/PUT de /api/config/templates são atendidos por um servidor FALSO em memória
+    (função falso), que registra cada pedido em LOG. Escrita em outra rota da API real nunca sai: vira VIOL e
+    reprova o teste. Por isso o servidor sob teste não precisa ter as rotas de disparo nem ser reiniciado;
+  - os itens do banco são reais (só leitura); a fila, os números e as regras são falsos;
+  - a área de transferência e a baixada da foto são stubs; nada de rede externa.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste comentário,
+  para um grep no texto da página não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: tela Disparo automático</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 800, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- dados de teste
+const FONE = '00000000001', FONE_FMT = '(00) 00000-0001', FONE_MASC = '(00) ·····-0001';   // número fictício
+const GID = '120363012345678901@g.us', GID_MASC = '120···@g.us';
+const URL_ML = 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-E.webp';
+const XSS = '<img src=x onerror="window.__xss=1">';
+
+// ---------------------------------------------------------------- ambiente
+let W, FETCH_ORIG, API_ANTES = null, PNG_BLOB = null;
+let E;                       // estado do servidor falso
+const LOG = [];              // pedidos do iframe: {metodo, url, corpo}
+const VIOL = [];             // escrita fora do servidor falso (deve ficar vazia)
+const SPY = { set: [], clear: [] };   // setInterval/clearInterval do iframe
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => (el ? el.textContent : '').replace(/\s+/g, ' ').trim();
+// o aviso de erro (role=alert) é outro elemento (#toastErro); toastTxt lê o que está aparecendo
+const toastTxt = () => {
+  const e = W.document.getElementById('toastErro'), t = W.document.getElementById('toast');
+  return e.classList.contains('show') && e.textContent ? e.textContent : t.textContent;
+};
+const tela = () => W.document.getElementById('telaDisparo');
+const reqs = (metodo, re) => LOG.filter(r => r.metodo === metodo && re.test(r.url));
+
+function novoEstado() {
+  return { templates: null, numeros: [], regras: [], envios: [], seqN: 0, seqR: 0, seqE: 0, falhas: [], previa: null, agora: null };
+}
+const json = (corpo, status = 200) => new W.Response(JSON.stringify(corpo), { status, headers: { 'content-type': 'application/json' } });
+const iso = (d = new Date()) => {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+};
+const minAtras = n => iso(new Date(Date.now() - n * 60000));
+const dataLocal = d => iso(d).slice(0, 10);
+
+function numeroFalso(s = {}) {
+  return { id: ++E.seqN, nome: 'Loja 1', telefone: FONE, grupo_nome: 'Achadinhos', grupo_id: GID, limite_diario: 40, ativo: 1, criado_em: iso(), atualizado_em: iso(), ...s };
+}
+function regraFalsa(s = {}) {
+  return { id: ++E.seqR, nome: 'Eletrônicos de manhã', numero_id: E.numeros[0] ? E.numeros[0].id : 1, ativa: 1, cats: [CAT1()], lojas: ['amazon', 'ml'],
+    palavras: [], desconto_min: 0, ordem: 'desconto', template: 'Template 1', com_foto: 1, dias: [0, 1, 2, 3, 4], horarios: ['09:00', '12:00'],
+    por_disparo: 1, max_por_dia: 20, repetir_apos_dias: 7, intervalo_seg: 60, aviso: '', criado_em: iso(), atualizado_em: iso(), ...s };
+}
+function envioFalso(s = {}) {
+  const n = ++E.seqE;
+  return { id: n, regra_id: E.regras[0] ? E.regras[0].id : 1, numero_id: E.numeros[0] ? E.numeros[0].id : 1, item_pk: ITEM1().id, slot: '2026-11-03T09:00#' + n,
+    status: 'pendente', mensagem: '*Produto ' + n + '*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/QA' + n, imagem: URL_ML, titulo: 'Produto ' + n,
+    motivo: '', transporte: 'manual', criado_em: minAtras(n), enviado_em: null, ...s };
+}
+const CAT1 = () => W.eval('cats()[0]');
+const ITEM1 = () => W.eval('items[0]');
+
+// Servidor falso: devolve Response ou null (= não é comigo; GET segue para o servidor real, o resto é VIOL)
+function falso(url, opcoes) {
+  const u = new URL(url, 'http://x');
+  const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+  const caminho = u.pathname.replace(/^\/api\//, '');
+  if (!/^\/api\//.test(u.pathname)) return null;
+  const corpo = opcoes && opcoes.body ? JSON.parse(opcoes.body) : undefined;
+  const pedido = { metodo, url: u.pathname + u.search, corpo };
+  if (caminho === 'config/templates' || caminho.startsWith('disparo/')) {
+    LOG.push(pedido);
+    for (const f of E.falhas) if (f.re.test(metodo + ' ' + caminho)) return f.erro === '__rede' ? 'rede' : json({ error: f.erro }, f.status);
+  }
+  if (caminho === 'config/templates') {
+    if (metodo === 'GET') return json(E.templates);
+    if (metodo === 'PUT') { E.templates = corpo; return json({ ok: true }); }
+  }
+  if (!caminho.startsWith('disparo/')) return null;
+  const r = caminho.slice(8);
+  let m;
+  const achar = (lista, id) => lista.find(x => x.id === +id);
+  if (r === 'numeros') {
+    if (metodo === 'GET') return json(E.numeros);
+    if (metodo === 'POST') { const n = numeroFalso(corpo); E.numeros.push(n); return json(n, 201); }
+  }
+  if ((m = /^numeros\/(\d+)$/.exec(r))) {
+    const n = achar(E.numeros, m[1]);
+    if (!n) return json({ error: 'número não encontrado' }, 404);
+    if (metodo === 'PUT') { Object.assign(n, corpo); return json(n); }
+    if (metodo === 'DELETE') {
+      if (E.regras.some(x => x.numero_id === n.id)) return json({ error: 'este número é usado por uma regra: mude ou exclua a regra primeiro' }, 409);
+      E.numeros.splice(E.numeros.indexOf(n), 1); return json({ ok: true });
+    }
+  }
+  if (r === 'regras') {
+    if (metodo === 'GET') return json(E.regras.map(x => ({ ...x, proximo: x.ativa ? iso(new Date(Date.now() + 86400000)).slice(0, 11) + '09:00:00' : null })));
+    if (metodo === 'POST') { const x = regraFalsa(corpo); E.regras.push(x); return json(x, 201); }
+  }
+  if ((m = /^regras\/(\d+)$/.exec(r))) {
+    const x = achar(E.regras, m[1]);
+    if (!x) return json({ error: 'regra não encontrada' }, 404);
+    if (metodo === 'PUT') { Object.assign(x, corpo); return json(x); }
+    if (metodo === 'DELETE') { E.regras.splice(E.regras.indexOf(x), 1); return json({ ok: true }); }
+  }
+  if ((m = /^regras\/(\d+)\/agora$/.exec(r)) && metodo === 'POST') {
+    const novos = (E.agora || [envioFalso({ regra_id: +m[1] })]).map(e => ({ ...e }));
+    E.envios.push(...novos);
+    return json({ criados: novos.length, envios: novos });
+  }
+  if (r === 'previa' && metodo === 'POST') {
+    return json(E.previa || [
+      { item_pk: 1, titulo: 'Item A', mensagem: '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA', imagem: URL_ML },
+      { item_pk: 2, titulo: 'Item B', mensagem: '*Item B*\n🛒 https://meli.la/BBB', imagem: '' },
+      { item_pk: 3, titulo: 'Item C', mensagem: '*Item C*\n🛒 https://meli.la/CCC', imagem: URL_ML }]);
+  }
+  if (r === 'fila' && metodo === 'GET') return json(E.envios.filter(e => e.status === 'pendente' || e.status === 'incerto').sort((a, b) => a.criado_em < b.criado_em ? -1 : a.criado_em > b.criado_em ? 1 : a.id - b.id));
+  if ((m = /^envios\/(\d+)$/.exec(r)) && metodo === 'PATCH') {
+    const e = achar(E.envios, m[1]);
+    if (!e) return json({ error: 'envio não encontrado' }, 404);
+    if (!['pendente', 'incerto'].includes(e.status)) return json({ error: 'este envio não pode mais ser marcado assim' }, 409);
+    e.status = corpo.status; if (corpo.status === 'enviado') e.enviado_em = iso();
+    return json(e);
+  }
+  if (r === 'envios' && metodo === 'GET') {
+    const desde = u.searchParams.get('desde'), st = u.searchParams.get('status');
+    return json(E.envios.filter(e => (!desde || e.criado_em >= desde) && (!st || e.status === st)).sort((a, b) => b.criado_em < a.criado_em ? -1 : 1).slice(0, 500));
+  }
+  return json({ error: 'rota não encontrada' }, 404);
+}
+
+async function pngBlob() {
+  const cv = W.document.createElement('canvas'); cv.width = 8; cv.height = 8;
+  const c = cv.getContext('2d'); c.fillStyle = '#c00'; c.fillRect(0, 0, 8, 8);
+  return new Promise(r => cv.toBlob(r, 'image/png'));
+}
+
+function instalarStubs(janela) {
+  const orig = janela.fetch.bind(janela);
+  FETCH_ORIG = FETCH_ORIG || orig;
+  janela.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+    if (/^https:\/\/http2\.mlstatic\.com\//.test(url)) return Promise.resolve(new W.Response(PNG_BLOB, { status: 200, headers: { 'content-type': 'image/png' } }));
+    const f = falso(url, opcoes);
+    if (f === 'rede') return Promise.reject(new janela.TypeError('Failed to fetch'));
+    if (f) return Promise.resolve(f);
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new janela.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return orig(entrada, opcoes);
+  };
+  janela.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  // espia os timers da fila (a atualização é de 30 s)
+  const si = janela.setInterval.bind(janela), ci = janela.clearInterval.bind(janela);
+  janela.setInterval = (fn, ms, ...r) => { const id = si(fn, ms, ...r); SPY.set.push({ id, ms }); return id; };
+  janela.clearInterval = id => { SPY.clear.push(id); return ci(id); };
+}
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html'; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  E = novoEstado();
+  PNG_BLOB = await pngBlob();
+  instalarStubs(W);
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0,
+    'o index.html carregar os itens do servidor (servidor no ar?)');
+}
+
+let clip;
+function stubClipboard() {
+  clip = { write: [], text: [] };
+  const cb = {
+    write: async arr => {
+      clip.write.push(arr.map(it => Array.from(it.types)));
+      await Promise.all(arr.flatMap(it => Array.from(it.types).map(t => it.getType(t))));
+    },
+    writeText: async t => { clip.text.push(t); }
+  };
+  Object.defineProperty(W.navigator, 'clipboard', { value: cb, configurable: true });
+}
+
+async function restaurar() {
+  try { delete W.navigator.clipboard; } catch (e) { /* ignora */ }
+  const d = W.document.getElementById('dlg'); if (d && d.open) d.close('0');
+  E = novoEstado();
+  LOG.length = 0; SPY.set.length = 0; SPY.clear.length = 0;
+  for (const id of ['toast', 'toastErro']) { const t = W.document.getElementById(id); if (t) { t.textContent = ''; t.classList.remove('show'); } }
+  document.getElementById('app').style.width = '';
+  W.eval('templatesGarantidos = false; rascunhoRegra = null;');
+  delete W.__xss;
+  W.eval('marcarSujo(false); confirmandoRota = false');   // antes de mudar o hash: formulário sujo pergunta (D3)
+  if (W.location.hash) { W.location.hash = ''; await esperar(() => tela().hidden, 'voltar às ofertas'); }
+}
+
+// ---------------------------------------------------------------- ajudantes de tela
+const carregou = () => { const c = q('#dspCorpo'); return !!c && !/Carregando…/.test(c.textContent); };
+// Navega e espera a tela NOVA (o <h2> é recriado a cada rota); no mesmo hash não há hashchange, então recarrega a rota
+async function abrir(hash) {
+  const antes = q('#dspTitulo');
+  if (W.location.hash === hash) W.eval('rotear()'); else W.location.hash = hash;
+  await esperar(() => !tela().hidden && q('#dspTitulo') && q('#dspTitulo') !== antes && carregou(), 'a tela ' + hash + ' carregar');
+}
+function digitar(sel, valor) {
+  const el = typeof sel === 'string' ? q(sel) : sel;
+  afirma(el, 'campo não existe: ' + sel);
+  el.value = valor; el.dispatchEvent(new W.Event('input', { bubbles: true }));
+}
+const chip = (grupo, valor) => qa(grupo + ' input').find(i => i.value === String(valor));
+function marcarChip(grupo, valor, v = true) {
+  const i = chip(grupo, valor); afirma(i, 'chip ' + valor + ' não existe em ' + grupo);
+  if (i.checked !== v) i.click();
+}
+const clicar = sel => { const b = typeof sel === 'string' ? q(sel) : sel; afirma(b, 'botão não existe: ' + sel); b.click(); };
+const acao = (nome, id) => q('[data-acao="' + nome + '"]' + (id !== undefined ? '[data-id="' + id + '"]' : ''));
+const dialogoAberto = () => q('#dlg').open;
+const botaoDialogo = r => q('#dlg button[data-r="' + r + '"]');
+const textoTela = () => txt(tela());
+const semDadoPessoal = (onde, texto) => {
+  for (const s of [FONE, FONE_FMT, GID, '00000-0001', '363012345678901']) afirma(!String(texto).includes(s), 'dado pessoal "' + s + '" apareceu em ' + onde);
+};
+// preenche o formulário de regra com o mínimo válido
+function preencherRegra(sobre = {}) {
+  digitar('#f-nome', sobre.nome || 'Regra de teste');
+  if (sobre.numero !== false) { const s = q('#f-numero'); if (!s.value) { s.value = String(E.numeros[0].id); s.dispatchEvent(new W.Event('change', { bubbles: true })); } }
+  if (sobre.cats !== false) marcarChip('#f-cats', sobre.cat || CAT1());
+}
+
+// ================================================================ A. cabeçalho e rotas por hash
+teste('CA2/tela: o cabeçalho tem o botão discreto "Disparo automático" (ghost) e a tela de disparo começa oculta', async () => {
+  const b = q('#btnDisparo');
+  afirma(b, 'falta #btnDisparo');
+  igual(txt(b), 'Disparo automático');
+  afirma(b.classList.contains('ghost'), 'deve ser .ghost, como "Editar templates"');
+  afirma(!b.classList.contains('cta'), 'não pode ser Etiqueta');
+  afirma(b.closest('header'), 'fica no cabeçalho');
+  afirma(tela().hidden && !q('#telaOfertas').hidden, 'começa nas ofertas');
+});
+
+teste('rotas: #disparo abre a tela, oculta as ofertas, foca o <h2> e atualiza o título; "← Voltar às ofertas" volta e devolve o foco ao botão', async () => {
+  const tabsAntes = qa('#tabs .tab').length, ativaAntes = W.eval('activeCat');
+  E.numeros.push(numeroFalso());
+  q('#btnDisparo').click();
+  await esperar(() => !tela().hidden && carregou(), 'abrir #disparo');
+  igual(W.location.hash, '#disparo');
+  afirma(q('#telaOfertas').hidden, 'as ofertas ficam ocultas (hidden)');
+  const h2 = q('#telaDisparo h2');
+  igual(txt(h2), 'Disparo automático');
+  afirma(W.document.activeElement === h2, 'o foco vai ao <h2>');
+  igual(h2.getAttribute('tabindex'), '-1');
+  igual(W.document.title, 'Disparo automático · Etiqueta');
+  afirma(q('main') && tela().closest('main'), 'a tela fica dentro do <main>');
+  const voltar = q('#telaDisparo a.voltar');
+  igual(txt(voltar), '← Voltar às ofertas');
+  voltar.click();
+  await esperar(() => tela().hidden, 'voltar às ofertas');
+  afirma(!q('#telaOfertas').hidden, 'as ofertas voltam');
+  igual(W.document.title, 'Etiqueta');
+  afirma(W.document.activeElement === q('#btnDisparo'), 'o foco volta ao botão do cabeçalho');
+  igual(qa('#tabs .tab').length, tabsAntes, 'as abas das ofertas continuam');
+  igual(W.eval('activeCat'), ativaAntes, 'a aba ativa das ofertas é preservada');
+});
+
+teste('rotas: as cinco rotas por hash abrem a tela certa; hash desconhecido volta às ofertas; abas com aria-current', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  const casos = [['#disparo', 'Disparo automático', 'Regras'], ['#historico', 'Histórico', 'Histórico'], ['#numeros', 'Números de WhatsApp', 'Números de WhatsApp'],
+    ['#disparo/nova', 'Nova regra', null], ['#disparo/regra/' + E.regras[0].id, 'Editar regra', null],
+    ['#numeros/novo', 'Adicionar número', null], ['#numeros/' + E.numeros[0].id, 'Editar número', null]];
+  for (const [hash, titulo, aba] of casos) {
+    await abrir(hash);
+    igual(txt(q('#telaDisparo h2')), titulo, hash);
+    const atual = qa('.dtab[aria-current="page"]');
+    if (aba) { igual(atual.map(txt), [aba], hash); igual(qa('.dtab').length, 3); }
+    else igual(atual.length, 0, hash + ' (formulário não tem abas)');
+    afirma(W.document.title.startsWith(titulo), 'título da página em ' + hash + ': ' + W.document.title);
+  }
+  W.location.hash = '#qualquer-coisa';
+  await esperar(() => tela().hidden, 'hash desconhecido volta às ofertas');
+});
+
+teste('rotas: carregar a página já em #disparo mantém a tela (atualizar não perde o lugar)', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'Regra recarregada' }));
+  const f = document.createElement('iframe'); f.title = 'recarga';
+  document.body.appendChild(f);
+  try {
+    f.src = '/index.html#disparo';
+    // instala o servidor falso assim que o script da página rodou (a 1ª carga de itens é GET real e segue)
+    let w = null;
+    await esperar(() => { try { if (f.contentWindow.eval('typeof api') === 'function') { w = f.contentWindow; return true; } } catch (e) { /* ainda carregando */ } return false; }, 'script do app', 4000, 1);
+    const antes = W; W = w; instalarStubs(w);
+    try {
+      await esperar(() => !w.document.getElementById('telaDisparo').hidden && /Regra recarregada/.test(w.document.getElementById('telaDisparo').textContent), 'a tela #disparo abrir sozinha');
+      igual(w.document.title, 'Disparo automático · Etiqueta');
+      afirma(w.document.getElementById('telaOfertas').hidden, 'ofertas ocultas');
+    } finally { W = antes; }
+  } finally { f.remove(); }
+});
+
+teste('templates: se GET config/templates é nulo, grava DEFAULT_TEMPLATES uma vez; se já existe, não grava', async () => {
+  E.templates = null;
+  await abrir('#disparo');
+  const puts = reqs('PUT', /config\/templates/);
+  igual(puts.length, 1);
+  igual(puts[0].corpo, W.eval('DEFAULT_TEMPLATES'));
+  await abrir('#historico');
+  igual(reqs('PUT', /config\/templates/).length, 1, 'a 2ª abertura não grava de novo');
+  // servidor que já conhece os templates: nada de PUT
+  W.eval('templatesGarantidos = false'); LOG.length = 0;
+  E.templates = { 'Template 1': 'x {LINK}' };
+  await abrir('#numeros');
+  igual(reqs('PUT', /config\/templates/).length, 0);
+});
+
+teste('D6: sem número, "Nova regra" não aparece no topo e "Cadastrar número" é a ação principal', async () => {
+  await abrir('#disparo');
+  afirma(textoTela().includes('Antes de criar regras, cadastre o número de WhatsApp que vai enviar.'), textoTela());
+  igual(acao('nova-regra'), null, 'sem "Nova regra" quando não há número');
+  igual(qa('#telaDisparo button').filter(b => b.dataset.acao === 'novo-numero').map(txt), ['Cadastrar número']);
+  clicar(acao('novo-numero'));
+  await esperar(() => W.location.hash === '#numeros/novo', 'ir ao cadastro');
+});
+
+teste('D6: botão com aria-disabled="true" parece desabilitado (opacidade e cursor), exceto "Copiar imagem" ocupado', async () => {
+  const b = W.document.createElement('button'); b.setAttribute('aria-disabled', 'true'); b.textContent = 'x';
+  W.document.body.appendChild(b);
+  try {
+    const c = W.getComputedStyle(b);
+    igual(c.opacity, '0.45'); igual(c.cursor, 'not-allowed');
+    b.className = 'copyimg'; b.setAttribute('aria-busy', 'true');
+    igual(W.getComputedStyle(b).opacity, '1', 'copiando: não escurece');
+  } finally { b.remove(); }
+});
+
+teste('estado vazio com número e sem regra: convida a criar a primeira regra', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo');
+  afirma(textoTela().includes('Nenhuma regra ainda. Crie a primeira para gerar ofertas sozinho.'), textoTela());
+  afirma(acao('nova-regra'), '"Nova regra" existe com número cadastrado');
+  clicar(acao('nova-regra'));
+  await esperar(() => W.location.hash === '#disparo/nova', 'abrir o formulário');
+});
+
+teste('erro de carga: mostra a mensagem com role=alert e "Tentar de novo" recarrega', async () => {
+  E.numeros.push(numeroFalso());
+  E.falhas.push({ re: /^GET disparo\/regras$/, status: 500, erro: 'falhou' });
+  W.location.hash = '#disparo';
+  await esperar(() => /Não foi possível carregar as regras/.test(textoTela()), 'mensagem de erro');
+  afirma(textoTela().includes('Verifique se o servidor está aberto e tente de novo.'));
+  afirma(q('#dspCorpo [role="alert"]'), 'role=alert');
+  E.falhas.length = 0;
+  clicar(acao('tentar'));
+  await esperar(() => textoTela().includes('Nenhuma regra ainda'), 'recarregar com sucesso');
+});
+
+teste('erro de rede (servidor fora): mesma mensagem de erro, sem exceção solta', async () => {
+  E.falhas.push({ re: /^GET disparo\//, erro: '__rede' });
+  W.location.hash = '#numeros';
+  await esperar(() => /Não foi possível carregar os dados/.test(textoTela()), 'mensagem de erro');
+  afirma(acao('tentar'), 'botão Tentar de novo');
+});
+
+// ================================================================ B. números
+teste('CA1/tela: cadastro vazio mostra os erros inline, aria-invalid, resumo com foco e não envia nada', async () => {
+  await abrir('#numeros/novo');
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#dspErros')).includes('Corrija'), 'resumo de erros');
+  igual(txt(q('#e-nome')), 'Dê um rótulo ao número, de 1 a 80 letras.');
+  igual(txt(q('#e-grupo')), 'Informe o nome do grupo, de 1 a 80 letras.');
+  igual(q('#f-nome').getAttribute('aria-invalid'), 'true');
+  afirma(q('#f-nome').getAttribute('aria-describedby').includes('e-nome'), 'aria-describedby aponta o erro');
+  afirma(W.document.activeElement === q('#dspErros'), 'foco no resumo');
+  igual(q('#dspErros').getAttribute('role'), 'alert');
+  igual(reqs('POST', /disparo\/numeros/).length, 0, 'nada vai ao servidor');
+  // o link do resumo leva ao campo
+  clicar('#dspErros [data-acao="foco"]');
+  afirma(W.document.activeElement === q('#f-nome'), 'o link do resumo foca o campo');
+});
+
+teste('CA1/tela: telefone, código do grupo e limite inválidos são recusados no formulário', async () => {
+  await abrir('#numeros/novo');
+  digitar('#f-nome', 'Loja 1'); digitar('#f-grupo', 'Achadinhos');
+  digitar('#f-tel', '12345'); digitar('#f-gid', '120363@grupo'); digitar('#f-lim', '0');
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#e-tel')) !== '', 'erros');
+  igual(txt(q('#e-tel')), 'Informe o telefone com DDI e DDD, só dígitos, de 10 a 15 dígitos.');
+  afirma(txt(q('#e-gid')).includes('@g.us'), txt(q('#e-gid')));
+  igual(txt(q('#e-lim')), 'Informe um limite por dia de 1 a 200.');
+  igual(reqs('POST', /disparo\/numeros/).length, 0);
+  igual(q('#f-tel').getAttribute('inputmode'), 'tel');
+  igual(q('#f-tel').getAttribute('autocomplete'), 'off');
+});
+
+teste('CA1/tela: salvar número envia só dígitos, volta para #numeros e a lista mostra telefone e grupo mascarados', async () => {
+  await abrir('#numeros/novo');
+  digitar('#f-nome', 'Loja 1'); digitar('#f-tel', FONE_FMT); digitar('#f-grupo', 'Achadinhos'); digitar('#f-gid', GID); digitar('#f-lim', '30');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#numeros' && carregou() && qa('[data-numero]').length === 1, 'voltar à lista');
+  const p = reqs('POST', /disparo\/numeros/);
+  igual(p.length, 1);
+  igual(p[0].corpo, { nome: 'Loja 1', telefone: FONE, grupo_nome: 'Achadinhos', grupo_id: GID, limite_diario: 30, ativo: 1 });
+  igual(p[0].url, '/api/disparo/numeros', 'telefone e grupo nunca na URL');
+  const t = textoTela();
+  afirma(t.includes('Telefone: ' + FONE_MASC), 'telefone mascarado: ' + t);
+  afirma(t.includes('Grupo: Achadinhos') && t.includes(GID_MASC), 'grupo e id mascarado: ' + t);
+  afirma(t.includes('Limite: 30 por dia'), t);
+  semDadoPessoal('a lista de números', t + ' ' + q('#telaDisparo').innerHTML);
+  semDadoPessoal('o toast', toastTxt());
+  igual(toastTxt(), 'Número salvo.');
+  semDadoPessoal('o título da página', W.document.title);
+  semDadoPessoal('a URL', W.location.href);
+  // leitor de tela: "final 0001"
+  afirma(q('[data-numero] .sr').textContent.includes('0001') && !q('[data-numero] .sr').textContent.includes('00000'), 'texto para leitor de tela');
+});
+
+teste('CA1/tela: nenhuma tela, exceto o campo de edição, mostra telefone ou grupo inteiros; nenhuma URL os carrega', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso(), envioFalso({ status: 'enviado', enviado_em: iso() }));
+  for (const h of ['#disparo', '#historico', '#numeros', '#disparo/nova', '#disparo/regra/' + E.regras[0].id]) {
+    await abrir(h);
+    semDadoPessoal(h, textoTela() + ' ' + q('#telaDisparo').innerHTML);
+  }
+  // só o formulário de edição carrega o valor inteiro, em campo de texto
+  await abrir('#numeros/' + E.numeros[0].id);
+  igual(q('#f-tel').value, FONE);
+  igual(q('#f-gid').value, GID);
+  semDadoPessoal('o texto da edição', textoTela());
+  for (const r of LOG) semDadoPessoal('a URL ' + r.url, r.url);
+  igual(W.location.href.includes(FONE), false);
+});
+
+teste('mascaramento: telefone com/sem DDI, curto, vazio e id do grupo', async () => {
+  const m = s => W.eval('mascararTelefone(' + JSON.stringify(s) + ')');
+  igual(m('00000000001'), '(00) ·····-0001');
+  igual(m('5500000000001'), '(00) ·····-0001');
+  igual(m('0000000001'), '(00) ·····-0001');
+  igual(m('1234567'), '·····-4567');
+  igual(m(''), 'Sem telefone');
+  igual(m(null), 'Sem telefone');
+  igual(W.eval('mascararGrupo("120363012345678901@g.us")'), '120···@g.us');
+  igual(W.eval('mascararGrupo("")'), '');
+});
+
+teste('CA1/tela: editar número envia PUT com o número inteiro no corpo, nunca na URL; "Cancelar" volta sem enviar', async () => {
+  E.numeros.push(numeroFalso());
+  const id = E.numeros[0].id;
+  await abrir('#numeros');
+  clicar(acao('editar-numero', id));
+  await esperar(() => W.location.hash === '#numeros/' + id && q('#f-nome'), 'abrir a edição');
+  igual(q('#f-nome').value, 'Loja 1');
+  digitar('#f-nome', 'Loja 2');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#numeros' && carregou(), 'salvar');
+  const p = reqs('PUT', /disparo\/numeros\/\d+/);
+  igual(p.length, 1);
+  igual(p[0].url, '/api/disparo/numeros/' + id);
+  igual(p[0].corpo.nome, 'Loja 2'); igual(p[0].corpo.telefone, FONE); igual(p[0].corpo.grupo_id, GID);
+  afirma(textoTela().includes('Loja 2'));
+});
+
+teste('números: "Excluir número" com regra usando mostra a explicação e não chama DELETE; sem regra pede confirmação e exclui', async () => {
+  E.numeros.push(numeroFalso({ nome: 'Em uso' }), numeroFalso({ nome: 'Livre' }));
+  E.regras.push(regraFalsa({ numero_id: E.numeros[0].id }));
+  await abrir('#numeros');
+  clicar(acao('excluir-numero', E.numeros[0].id));
+  await esperar(dialogoAberto, 'diálogo');
+  afirma(txt(q('#dlg')).includes('Pause ou mude as regras que usam este número primeiro'), txt(q('#dlg')));
+  igual(qa('#dlg button').length, 1, 'só o botão de fechar');
+  clicar(botaoDialogo(0));
+  await esperar(() => !dialogoAberto(), 'fechar');
+  igual(reqs('DELETE', /./).length, 0);
+  // sem regra
+  clicar(acao('excluir-numero', E.numeros[1].id));
+  await esperar(dialogoAberto, 'diálogo 2');
+  afirma(txt(q('#dlg h3')).includes('Livre'), txt(q('#dlg h3')));
+  afirma(W.document.activeElement === botaoDialogo(0), 'o foco começa no botão seguro (Cancelar)');
+  igual(txt(botaoDialogo(0)), 'Cancelar');
+  clicar(botaoDialogo(1));
+  await esperar(() => reqs('DELETE', /numeros\/\d+$/).length === 1 && !textoTela().includes('Livre'), 'excluir');
+  igual(toastTxt(), 'Número excluído.');
+});
+
+teste('números: se o servidor devolve 409 ao excluir, a explicação aparece (corrida com outra regra)', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#numeros');
+  E.regras.push(regraFalsa());   // uma regra nasce depois de a tela carregar
+  clicar(acao('excluir-numero', E.numeros[0].id));
+  await esperar(dialogoAberto, 'confirmação');
+  clicar(botaoDialogo(1));
+  await esperar(() => !dialogoAberto() || /Não dá para excluir/.test(txt(q('#dlg'))), 'resposta');
+  await esperar(() => dialogoAberto() && /Não dá para excluir/.test(txt(q('#dlg h3'))), 'explicação do 409');
+});
+
+// ================================================================ C. regras
+teste('CA2: o formulário tem as 5 seções, chips de categorias vindos de cats(), lojas, 7 ordens, dias e horários', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  igual(qa('#frmRegra fieldset legend').map(txt), ['1. Identificação', '2. O que enviar', '3. Quando enviar', '4. Repetição', '5. Mensagem e prévia']);
+  const reais = W.eval('cats()');
+  afirma(reais.length > 1, 'o banco real precisa ter categorias');
+  igual(qa('#f-cats input').map(i => i.value), reais, 'chips = cats()');
+  const contagens = qa('#f-cats .chip .num').map(txt);
+  igual(contagens, reais.map(c => String(W.eval('items.filter(i=>i.cat===' + JSON.stringify(c) + ').length'))), 'contagem de itens por categoria');
+  igual(qa('#f-cats input:checked').length, 0, 'nenhuma marcada');
+  igual(qa('#f-lojas input').map(i => i.value), ['amazon', 'ml', 'ambas']);
+  igual(qa('#f-lojas .chip').map(txt), ['Amazon', 'Mercado Livre', 'Ambas']);
+  igual(q('#f-lojas input:checked').value, 'ambas');
+  igual(qa('#f-ordem input').map(i => i.value), ['relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes', 'aleatoria']);
+  igual(qa('#f-ordem .chip').map(txt), ['Mais relevantes', 'Maiores descontos', 'Mais baratos', 'Mais caros', 'Com cupom primeiro', 'Mais recentes', 'Aleatória']);
+  igual(qa('#f-dias .chip').map(txt), ['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom']);
+  igual(qa('#f-dias input:checked').length, 7);
+  igual(qa('#f-horarios input[type="time"]').length, 1);
+  afirma(q('#frmRegra [name="so_com_cupom"]') === null, 'não existe so_com_cupom na API');
+  // todo campo tem rótulo; grupos em role=group/radiogroup com nome
+  for (const el of qa('#frmRegra input:not(.sr):not([type="checkbox"]), #frmRegra select')) {
+    afirma(q('label[for="' + el.id + '"]') || el.getAttribute('aria-label'), 'campo sem rótulo: ' + el.id);
+  }
+  for (const g of qa('#f-cats, #f-lojas, #f-ordem, #f-dias')) afirma(g.getAttribute('aria-labelledby') && q('#' + g.getAttribute('aria-labelledby')), 'grupo sem nome: ' + g.id);
+  afirma(q('#f-cats input').classList.contains('sr'), 'o input do chip é oculto, mas focável (.sr), sem display:none');
+  igual(W.getComputedStyle(q('#f-cats input')).display !== 'none', true);
+});
+
+teste('CA2: "Marcar todas" e "Limpar" nas categorias; atalhos de dias; contador e resumo da agenda ao vivo', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  const total = qa('#f-cats input').length;
+  clicar('[data-acao="cats-todas"]');
+  igual(qa('#f-cats input:checked').length, total);
+  clicar('[data-acao="cats-limpar"]');
+  igual(qa('#f-cats input:checked').length, 0);
+  afirma(txt(q('#f-contador')).startsWith('Escolha ao menos uma categoria'), txt(q('#f-contador')));
+  marcarChip('#f-cats', CAT1());
+  const esperado = W.eval('items.filter(i=>i.cat===cats()[0] && i.data && i.data.titulo && i.data.preco).length');
+  afirma(txt(q('#f-contador')).includes('Cerca de ' + W.eval('fmtNum(' + esperado + ')')) || esperado === 0, 'contador: ' + txt(q('#f-contador')) + ' (esperado ' + esperado + ')');
+  igual(q('#f-contador').getAttribute('aria-live'), 'polite');
+  clicar('[data-acao="dias-util"]');
+  igual(qa('#f-dias input:checked').map(i => i.value), ['0', '1', '2', '3', '4']);
+  digitar('#f-horarios input', '09:00');
+  digitar('#f-por', '2'); digitar('#f-max', '20');
+  const r = txt(q('#f-resumo'));
+  afirma(r.includes('Gera 2 mensagens em cada horário (09:00), seg a sex, até 20 por dia.'), r);
+  afirma(r.includes('Pelos horários, saem no máximo 2 por dia.'), 'avisa que os horários não comportam o máximo: ' + r);
+  igual(q('#f-resumo').getAttribute('aria-live'), 'polite');
+  clicar('[data-acao="dias-todos"]');
+  afirma(txt(q('#f-resumo')).includes('todos os dias'), txt(q('#f-resumo')));
+});
+
+teste('CA2: horários: adicionar, remover (mínimo 1), duplicado e vazio são recusados', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  igual(q('[data-acao="rm-horario"]').disabled, true, 'com 1 horário não dá para remover');
+  clicar('[data-acao="add-horario"]');
+  igual(qa('#f-horarios input').length, 2);
+  afirma(W.document.activeElement === qa('#f-horarios input')[1], 'o foco vai ao horário novo');
+  qa('#f-horarios input')[0].value = '09:00'; qa('#f-horarios input')[1].value = '09:00';
+  preencherRegra();
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#e-horarios')) !== '', 'erro de horário');
+  afirma(txt(q('#e-horarios')).includes('repetidos'), txt(q('#e-horarios')));
+  qa('#f-horarios input')[1].value = '';
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#e-horarios')).includes('Preencha'), 'erro de horário vazio');
+  clicar(qa('[data-acao="rm-horario"]')[1]);
+  igual(qa('#f-horarios input').length, 1);
+  igual(reqs('POST', /disparo\/regras$/).length, 0);
+  // o rótulo de cada horário é lido pelo leitor de tela
+  igual(qa('#f-horarios label').map(txt), ['Horário 1']);
+});
+
+teste('CA2: salvar com campos faltando mostra os erros (resumo com foco, aria-invalid) e não envia', async () => {
+  E.numeros.push(numeroFalso(), numeroFalso({ nome: 'Loja 2' }));
+  await abrir('#disparo/nova');
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#dspErros')).includes('Corrija'), 'resumo');
+  igual(txt(q('#e-nome')), 'Dê um nome à regra, de 1 a 80 letras.');
+  igual(txt(q('#e-numero')), 'Escolha o número que envia.');
+  igual(txt(q('#e-cats')), 'Escolha ao menos uma categoria.');
+  igual(q('#f-nome').getAttribute('aria-invalid'), 'true');
+  igual(q('#f-numero').getAttribute('aria-invalid'), 'true');
+  afirma(qa('#f-cats input').every(i => i.getAttribute('aria-invalid') === 'true'), 'grupo de categorias marcado');
+  afirma(W.document.activeElement === q('#dspErros'), 'foco no resumo');
+  afirma(qa('#dspErros [data-acao="foco"]').length >= 3, 'um link por erro');
+  igual(reqs('POST', /disparo\/regras$/).length, 0);
+  // corrigir limpa os erros
+  preencherRegra({ nome: 'Ok' });
+  const s = q('#f-numero'); s.value = String(E.numeros[1].id); s.dispatchEvent(new W.Event('change', { bubbles: true }));
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvar');
+  igual(reqs('POST', /disparo\/regras$/).length, 1);
+});
+
+teste('CA2: limites numéricos fora da faixa são recusados antes do servidor', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  preencherRegra();
+  digitar('#f-desc', '96'); digitar('#f-por', '11'); digitar('#f-max', '201'); digitar('#f-rep', '366'); digitar('#f-intervalo', '29');
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#dspErros')).includes('Corrija'), 'erros');
+  for (const id of ['desc', 'por', 'max', 'rep', 'intervalo']) afirma(txt(q('#e-' + id)) !== '', 'sem erro em ' + id);
+  igual(txt(q('#e-desc')), 'Informe um desconto mínimo de 0 a 95.');
+  digitar('#f-desc', ''); clicar('#btnSalvar');
+  await esperar(() => txt(q('#e-desc')) !== '');
+  igual(reqs('POST', /disparo\/regras$/).length, 0);
+});
+
+teste('CA2: criar regra envia os campos do plano, nasce pausada (ativa:0), vira cartão "Pausada" e avisa', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  const cat = CAT1();
+  digitar('#f-nome', '  Eletrônicos de manhã  ');
+  marcarChip('#f-cats', cat);
+  marcarChip('#f-lojas', 'ml');
+  marcarChip('#f-ordem', 'cupom');
+  q('details.filtros').open = true;
+  digitar('#f-palavras', 'fone,  Bluetooth , fone ,');
+  digitar('#f-desc', '15');
+  clicar('[data-acao="dias-util"]');
+  digitar('#f-horarios input', '09:30');
+  clicar('[data-acao="add-horario"]');
+  digitar(qa('#f-horarios input')[1], '18:00');
+  digitar('#f-por', '2'); digitar('#f-max', '12'); digitar('#f-rep', '14'); digitar('#f-intervalo', '90');
+  marcarChip('#f-ordem', 'cupom');
+  clicar('#f-foto'); // desmarca "Com foto"
+  igual(q('#f-template').value, 'Template 1');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && carregou() && qa('[data-regra]').length === 1, 'voltar à lista com a regra');
+  const p = reqs('POST', /disparo\/regras$/);
+  igual(p.length, 1);
+  igual(p[0].corpo, { nome: 'Eletrônicos de manhã', numero_id: E.numeros[0].id, cats: [cat], lojas: ['ml'], palavras: ['fone', 'Bluetooth'],
+    desconto_min: 15, ordem: 'cupom', template: 'Template 1', com_foto: 0, dias: [0, 1, 2, 3, 4], horarios: ['09:30', '18:00'],
+    por_disparo: 2, max_por_dia: 12, repetir_apos_dias: 14, intervalo_seg: 90, ativa: 0 });
+  afirma(!('so_com_cupom' in p[0].corpo) && !('categorias' in p[0].corpo), 'só os nomes do plano');
+  igual(toastTxt(), 'Regra salva. Ela está pausada: ative quando quiser começar.');
+  const c = q('[data-regra]');
+  afirma(txt(c.querySelector('.estado')) === 'Pausada', txt(c.querySelector('.estado')));
+  afirma(txt(c).includes('Próximo: —'), 'pausada: próximo é —: ' + txt(c));
+  afirma(txt(c).includes('Nunca enviou'), txt(c));
+  afirma(txt(c).includes('seg a sex, 09:30 e 18:00 · 2 por horário · máx. 12/dia'), txt(c));
+  afirma(txt(c).includes('Mercado Livre · Com cupom primeiro'), txt(c));
+  afirma(txt(c).includes('Loja 1') && txt(c).includes(FONE_MASC) && txt(c).includes('Grupo: Achadinhos'), txt(c));
+  igual(txt(acao('alternar')), 'Ativar');
+});
+
+teste('CA2: "Nunca repetir" manda repetir_apos_dias null e desliga o campo de dias; desmarcar volta a 7', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  preencherRegra();
+  igual(q('#f-rep').value, '7');
+  clicar('#f-nunca');
+  igual(q('#f-rep').disabled, true);
+  clicar('#f-nunca');
+  igual(q('#f-rep').disabled, false); igual(q('#f-rep').value, '7');
+  clicar('#f-nunca');
+  clicar('#btnSalvar');
+  await esperar(() => reqs('POST', /disparo\/regras$/).length === 1, 'POST');
+  igual(reqs('POST', /disparo\/regras$/)[0].corpo.repetir_apos_dias, null);
+});
+
+teste('CA2: erro do servidor ao salvar aparece no resumo (role=alert), sem sair do formulário e sem perder o que foi digitado', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  preencherRegra({ nome: 'Minha regra' });
+  E.falhas.push({ re: /^POST disparo\/regras$/, status: 400, erro: 'template precisa conter {LINK}' });
+  clicar('#btnSalvar');
+  await esperar(() => /template precisa conter/.test(txt(q('#dspErros'))), 'erro do servidor');
+  afirma(txt(q('#dspErros')).includes('Não salvou.'), txt(q('#dspErros')));
+  igual(q('#dspErros').getAttribute('role'), 'alert');
+  igual(W.location.hash, '#disparo/nova');
+  igual(q('#f-nome').value, 'Minha regra');
+  igual(q('#btnSalvar').disabled, false, 'o botão volta a funcionar');
+  igual(txt(q('#btnSalvar')), 'Salvar regra');
+});
+
+teste('CA2: editar regra carrega os valores, mostra categoria que não existe mais e envia PUT sem "ativa"', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Velha', cats: [CAT1(), 'Categoria que sumiu'], lojas: ['amazon'], palavras: ['tv', 'monitor'], desconto_min: 20, ordem: 'recentes',
+    dias: [5, 6], horarios: ['08:00', '20:00'], por_disparo: 3, max_por_dia: 9, repetir_apos_dias: null, intervalo_seg: 120, com_foto: 0 }));
+  const id = E.regras[0].id;
+  await abrir('#disparo');
+  clicar(acao('editar', id));
+  await esperar(() => W.location.hash === '#disparo/regra/' + id && q('#f-nome'), 'abrir a edição');
+  igual(q('#f-nome').value, 'Velha');
+  igual(qa('#f-cats input:checked').map(i => i.value), [CAT1(), 'Categoria que sumiu']);
+  afirma(txt(chip('#f-cats', 'Categoria que sumiu').closest('.chip')).includes('sem itens'), 'categoria sem itens fica visível');
+  igual(q('#f-lojas input:checked').value, 'amazon');
+  igual(q('#f-ordem input:checked').value, 'recentes');
+  igual(q('#f-palavras').value, 'tv, monitor');
+  afirma(q('details.filtros').open, 'filtros abrem quando há valor');
+  igual(q('#f-desc').value, '20');
+  igual(qa('#f-dias input:checked').map(i => i.value), ['5', '6']);
+  igual(qa('#f-horarios input').map(i => i.value), ['08:00', '20:00']);
+  igual([q('#f-por').value, q('#f-max').value, q('#f-intervalo').value], ['3', '9', '120']);
+  igual(q('#f-nunca').checked, true); igual(q('#f-rep').disabled, true);
+  igual(q('#f-foto').checked, false);
+  marcarChip('#f-cats', 'Categoria que sumiu', false);
+  digitar('#f-nome', 'Nova');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && carregou(), 'salvar');
+  const p = reqs('PUT', /disparo\/regras\/\d+$/);
+  igual(p.length, 1);
+  igual(p[0].url, '/api/disparo/regras/' + id);
+  afirma(!('ativa' in p[0].corpo), 'editar não mexe em ativa');
+  igual(p[0].corpo.nome, 'Nova'); igual(p[0].corpo.cats, [CAT1()]); igual(p[0].corpo.repetir_apos_dias, null);
+  igual(toastTxt(), 'Regra salva.');
+});
+
+teste('CA2: regra inexistente na rota de edição mostra o aviso com link para voltar', async () => {
+  E.numeros.push(numeroFalso());
+  W.location.hash = '#disparo/regra/9999';
+  await esperar(() => /Regra não encontrada/.test(textoTela()), 'aviso');
+  afirma(q('#telaDisparo a[data-nav][href="#disparo"]'), 'link para as regras');
+});
+
+teste('CA10: a prévia mostra a mensagem do servidor, troca de item e usa o corpo da regra com n e nome provisório', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  afirma(txt(q('#dspPrevia')).includes('Escolha') || txt(q('#dspPrevia')).includes('Complete'), 'sem categoria ainda não pede prévia: ' + txt(q('#dspPrevia')));
+  igual(reqs('POST', /previa/).length, 0, 'formulário incompleto não chama o servidor');
+  marcarChip('#f-cats', CAT1());
+  await esperar(() => q('#dspPrevia pre.msg'), 'prévia', 300, 10);
+  const p = reqs('POST', /disparo\/previa$/);
+  afirma(p.length >= 1, 'chamou previa');
+  const c = p[p.length - 1].corpo;
+  igual(c.n, 5); igual(c.nome, 'Prévia'); igual(c.cats, [CAT1()]); igual(c.numero_id, E.numeros[0].id);
+  afirma(!('so_com_cupom' in c), 'sem campos fora do plano');
+  igual(q('#dspPrevia pre.msg').textContent, '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA');
+  afirma(q('#dspPrevia img.foto'), 'foto do item A');
+  afirma(txt(q('[data-acao="outra-previa"]')).includes('1 de 3'), txt(q('[data-acao="outra-previa"]')));
+  clicar('[data-acao="outra-previa"]');
+  afirma(q('#dspPrevia pre.msg').textContent.startsWith('*Item B*'), 'item B');
+  afirma(!q('#dspPrevia img.foto') && txt(q('#dspPrevia .sem-foto')) === 'Sem foto', 'item sem foto mostra "Sem foto"');
+  igual(q('#dspPrevia').getAttribute('aria-live'), 'polite');
+  igual(reqs('POST', /disparo\/regras/).length, 0, 'a prévia não grava nada');
+});
+
+teste('CA10: prévia sem itens avisa; erro do servidor na prévia aparece sem quebrar; resposta atrasada não sobrescreve a nova', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  E.previa = [];
+  marcarChip('#f-cats', CAT1());
+  await esperar(() => /Nenhum item combina com esta regra agora/.test(txt(q('#dspPrevia'))), 'prévia vazia');
+  E.previa = null;
+  E.falhas.push({ re: /^POST disparo\/previa$/, status: 400, erro: 'template precisa existir' });
+  digitar('#f-nome', 'x');
+  await esperar(() => /Prévia indisponível: template precisa existir/.test(txt(q('#dspPrevia'))), 'erro da prévia', 300, 10);
+});
+
+teste('CA10: a mensagem da prévia e os textos vindos da API passam por esc (nada de HTML injetado)', async () => {
+  E.numeros.push(numeroFalso({ nome: XSS, grupo_nome: XSS }));
+  E.regras.push(regraFalsa({ nome: XSS, aviso: XSS }));
+  E.envios.push(envioFalso({ titulo: XSS, mensagem: XSS, motivo: XSS }));
+  E.previa = [{ item_pk: 1, titulo: XSS, mensagem: XSS, imagem: '' }];
+  await abrir('#disparo');
+  afirma(textoTela().includes(XSS), 'o texto aparece literal: ' + textoTela().slice(0, 200));
+  await abrir('#historico'); afirma(textoTela().includes(XSS));
+  await abrir('#numeros'); afirma(textoTela().includes(XSS));
+  await abrir('#disparo/nova');
+  marcarChip('#f-cats', CAT1());
+  await esperar(() => q('#dspPrevia pre.msg'), 'prévia');
+  igual(q('#dspPrevia pre.msg').textContent, XSS);
+  igual(qa('#telaDisparo img[src="x"]').length, 0, 'nenhum <img src=x> foi criado');
+  await dormir(50);
+  igual(W.__xss, undefined, 'o onerror não rodou');
+});
+
+teste('CA2: cartão da regra ativa: Ativa, próximo horário, resumo da agenda, último envio, na fila e ações', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ cats: [CAT1(), 'B', 'C', 'D'] }));
+  E.envios.push(envioFalso({ status: 'enviado', enviado_em: minAtras(5), criado_em: minAtras(5) }), envioFalso());
+  await abrir('#disparo');
+  const c = q('[data-regra]');
+  igual(txt(c.querySelector('.estado')), 'Ativa');
+  const t = txt(c);
+  afirma(t.includes(CAT1() + ', B, C +1'), 'até 3 categorias e "+N": ' + t);
+  afirma(t.includes('Amazon e Mercado Livre · Maiores descontos'), t);
+  afirma(t.includes('seg a sex, 09:00 e 12:00 · 1 por horário · máx. 20/dia'), t);
+  afirma(/Último envio: hoje \d\d:\d\d/.test(t) || /Último envio: ontem \d\d:\d\d/.test(t), t);
+  afirma(/Próximo: amanhã 09:00/.test(t) || /Próximo: Sem itens para enviar/.test(t), t);
+  afirma(t.includes('1 na fila'), t);
+  igual(txt(acao('alternar')), 'Pausar');
+  igual(txt(acao('agora')), 'Disparar agora');
+  igual(qa('#telaDisparo .more .rare button').map(txt), ['Editar', 'Duplicar', 'Excluir regra']);
+  afirma(q('#telaDisparo .more summary') && txt(q('#telaDisparo .more summary')) === 'Mais ações');
+  afirma(!c.querySelector('button.cta'), 'sem botão Etiqueta no cartão da regra');
+});
+
+teste('CA2: a lista põe "Atenção" primeiro, depois ativas, depois pausadas; regra com aviso marca o cabeçalho', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'P pausada', ativa: 0 }), regraFalsa({ nome: 'A ativa' }), regraFalsa({ nome: 'T atenção', aviso: 'o template Template 9 foi apagado' }));
+  await abrir('#disparo');
+  igual(qa('[data-regra] h3').map(txt), ['T atenção', 'A ativa', 'P pausada']);
+  igual(qa('[data-regra] .estado').map(txt), ['Atenção', 'Ativa', 'Pausada']);
+  afirma(txt(q('[data-regra]')).includes('Atenção: o template Template 9 foi apagado'), txt(q('[data-regra]')));
+  afirma(txt(q('#btnDisparo')).includes('atenção'), 'cabeçalho: ' + txt(q('#btnDisparo')));
+});
+
+teste('CA2: Ativar e Pausar enviam PUT {ativa} e atualizam o cartão', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ ativa: 0 }));
+  const id = E.regras[0].id;
+  await abrir('#disparo');
+  clicar(acao('alternar', id));
+  await esperar(() => txt(q('[data-regra] .estado')) === 'Ativa', 'ativar');
+  igual(reqs('PUT', /regras\/\d+$/)[0].corpo, { ativa: 1 });
+  igual(toastTxt(), 'Regra ativada.');
+  clicar(acao('alternar', id));
+  await esperar(() => txt(q('[data-regra] .estado')) === 'Pausada', 'pausar');
+  igual(reqs('PUT', /regras\/\d+$/)[1].corpo, { ativa: 0 });
+});
+
+teste('CA2: Excluir regra: o diálogo foca "Cancelar"; Esc/Cancelar não excluem; confirmar chama DELETE só com o id', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Para excluir' }));
+  const id = E.regras[0].id;
+  await abrir('#disparo');
+  q('#telaDisparo .more summary').click();
+  const botao = acao('excluir-regra', id);
+  botao.focus(); botao.click();
+  await esperar(dialogoAberto, 'diálogo');
+  afirma(txt(q('#dlg h3')).includes('Para excluir'), txt(q('#dlg h3')));
+  afirma(txt(q('#dlg')).includes('Os envios já feitos continuam no histórico.'), txt(q('#dlg')));
+  afirma(W.document.activeElement === botaoDialogo(0) && txt(botaoDialogo(0)) === 'Cancelar', 'foco em Cancelar');
+  igual(txt(botaoDialogo(1)), 'Excluir regra');
+  afirma(botaoDialogo(1).classList.contains('danger'), 'ação destrutiva em vermelho');
+  igual(q('#dlg').getAttribute('aria-labelledby'), 'dlgTitulo');
+  q('#dlg').requestClose();   // o mesmo que a tecla Esc
+  await esperar(() => !dialogoAberto(), 'Esc fecha');
+  igual(reqs('DELETE', /./).length, 0, 'Esc não exclui');
+  afirma(W.document.activeElement === botao, 'o foco volta ao botão de origem');
+  botao.click(); await esperar(dialogoAberto, 'diálogo 2');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual(reqs('DELETE', /./).length, 0, 'Cancelar não exclui');
+  botao.click(); await esperar(dialogoAberto, 'diálogo 3');
+  clicar(botaoDialogo(1));
+  await esperar(() => reqs('DELETE', /./).length === 1 && qa('[data-regra]').length === 0, 'excluir');
+  igual(reqs('DELETE', /./)[0].url, '/api/disparo/regras/' + id);
+  igual(toastTxt(), 'Regra excluída.');
+});
+
+teste('CA2: Duplicar abre o formulário de nova regra com os mesmos valores e o nome "(cópia)"', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Original', ordem: 'menor_preco', horarios: ['07:00'] }));
+  await abrir('#disparo');
+  q('#telaDisparo .more summary').click();
+  clicar(acao('duplicar', E.regras[0].id));
+  await esperar(() => W.location.hash === '#disparo/nova' && q('#f-nome'), 'formulário');
+  igual(q('#f-nome').value, 'Original (cópia)');
+  igual(q('#f-ordem input:checked').value, 'menor_preco');
+  igual(qa('#f-horarios input').map(i => i.value), ['07:00']);
+  clicar('[data-acao="cancelar"]');
+  await esperar(() => W.location.hash === '#disparo' && acao('nova-regra'), 'cancelar');
+  clicar(acao('nova-regra')); await esperar(() => q('#f-nome'), 'nova vazia');
+  igual(q('#f-nome').value, '', 'a cópia não vaza para a próxima regra nova');
+});
+
+teste('CA2: alteração não salva + Cancelar/Voltar/aba pede confirmação; "Descartar" sai, "Cancelar" fica', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  clicar('[data-acao="cancelar"]');   // sem alteração: sai direto
+  await esperar(() => W.location.hash === '#disparo' && acao('nova-regra'), 'sai sem perguntar');
+  clicar(acao('nova-regra')); await esperar(() => q('#f-nome'));
+  digitar('#f-nome', 'meio digitado');
+  igual(W.eval('formSujo'), true);
+  afirma(typeof W.onbeforeunload === 'function', 'beforeunload ligado enquanto há alteração');
+  clicar('[data-acao="cancelar"]');
+  await esperar(dialogoAberto, 'confirmação');
+  igual(txt(q('#dlg h3')), 'Descartar alterações?');
+  igual(txt(botaoDialogo(1)), 'Descartar');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual(W.location.hash, '#disparo/nova', 'continua no formulário');
+  igual(q('#f-nome').value, 'meio digitado');
+  clicar('#telaDisparo a.voltar');
+  await esperar(dialogoAberto, 'confirmação pelo link Voltar');
+  clicar(botaoDialogo(1));
+  await esperar(() => tela().hidden, 'voltou às ofertas');
+  igual(W.eval('formSujo'), false);
+  igual(W.onbeforeunload, null, 'beforeunload desligado');
+});
+
+teste('CA11: "Disparar agora" mostra o item escolhido, pede confirmação, chama POST .../agora e põe a mensagem na fila', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Rodar já', por_disparo: 2, max_por_dia: 20 }));
+  const id = E.regras[0].id;
+  E.envios.push(envioFalso({ status: 'enviado', enviado_em: minAtras(1), criado_em: minAtras(1) }));
+  await abrir('#disparo');
+  const antes = qa('#dspFilaLista > *').length;
+  clicar(acao('agora', id));
+  await esperar(dialogoAberto, 'diálogo');
+  const pv = reqs('POST', /disparo\/previa$/);
+  igual(pv.length, 1); igual(pv[0].corpo.n, 2, 'a prévia traz os por_disparo itens');
+  const t = txt(q('#dlg'));
+  afirma(t.includes('Disparar até 2 mensagens para a fila do grupo Achadinhos'), t);
+  afirma(t.includes('Valem como parte dos envios de hoje (1 de 20)'), t);
+  afirma(t.includes('Item A'), 'mostra o item escolhido com o título');
+  afirma(q('#dlg img'), 'e a foto pequena');
+  igual(reqs('POST', /agora$/).length, 0, 'nada acontece antes de confirmar');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual(reqs('POST', /agora$/).length, 0, 'Cancelar não dispara');
+  clicar(acao('agora', id)); await esperar(dialogoAberto, 'diálogo 2');
+  clicar(botaoDialogo(1));
+  await esperar(() => reqs('POST', /agora$/).length === 1, 'POST agora');
+  await esperar(() => qa('#dspFilaLista > *').length === antes + 1, 'envio na fila (' + qa('#dspFilaLista > *').length + ' cartões; fila no servidor falso: ' + E.envios.filter(e => e.status === 'pendente').length + ')');
+  igual(reqs('POST', /agora$/)[0].url, '/api/disparo/regras/' + id + '/agora');
+  igual(toastTxt(), '1 mensagem entrou na fila.');
+});
+
+teste('CA11: "Disparar agora" sem item disponível só avisa (sem botão de confirmar); resultado vazio do servidor explica o motivo', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  E.previa = [];
+  clicar(acao('agora'));
+  await esperar(dialogoAberto, 'diálogo');
+  afirma(txt(q('#dlg')).includes('Nenhum item combina com esta regra agora'), txt(q('#dlg')));
+  igual(qa('#dlg button').length, 1);
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual(reqs('POST', /agora$/).length, 0);
+  // o servidor pode devolver zero (limite do dia, repetição)
+  E.previa = null; E.agora = [];
+  clicar(acao('agora')); await esperar(dialogoAberto);
+  clicar(botaoDialogo(1));
+  await esperar(() => /Nada foi gerado/.test(toastTxt()), 'toast');
+  afirma(toastTxt().includes('limite do dia'), toastTxt());
+});
+
+teste('CA11: erro do servidor em "Disparar agora" vira aviso e o botão volta a funcionar', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  E.falhas.push({ re: /agora$/, status: 409, erro: 'regra em processamento' });
+  clicar(acao('agora')); await esperar(dialogoAberto);
+  clicar(botaoDialogo(1));
+  await esperar(() => toastTxt() === 'regra em processamento', 'toast do erro');
+  afirma(!acao('agora').disabled, 'botão volta');
+  igual(txt(acao('agora')), 'Disparar agora');
+});
+
+// ================================================================ D. fila manual
+teste('CA9: a fila manual lista os envios com mensagem, grupo, regra e as quatro ações; vazia explica', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'Regra X' }));
+  await abrir('#disparo');
+  afirma(txt(q('#dspFilaVazia')) === 'Nada na fila.', 'fila vazia: uma linha curta');
+  afirma(q('#dspFilaSec').classList.contains('vazia'), 'seção recolhida (uma linha)');
+  igual(q('#dspFilaVazia').hidden, false);
+  E.envios.push(envioFalso({ titulo: 'Fone JBL' }), envioFalso({ titulo: 'Outro', imagem: '' }));
+  await abrir('#disparo');
+  igual(q('#dspFilaVazia').hidden, true);
+  const cards = qa('#dspFilaLista > article');
+  igual(cards.length, 2);
+  igual(txt(q('#dspFilaN')), '(2)');
+  const c = cards[0];   // o mais antigo vem primeiro (o 2º foi criado há mais tempo)
+  igual(c.querySelector('textarea').value, E.envios[1].mensagem);
+  igual(cards.map(x => +x.dataset.envio), [E.envios[1].id, E.envios[0].id], 'do mais antigo para o mais novo');
+  afirma(txt(c).includes('Regra X') && txt(c).includes('Grupo: Achadinhos') && txt(c).includes('Outro'), 'regra, grupo e título: ' + txt(c));
+  afirma(c.querySelector('button.cta'), 'Copiar mensagem é o botão Etiqueta');
+  for (const card of cards) {
+    igual([...card.querySelectorAll('button')].map(txt), ['Copiar mensagem', 'Copiar imagem', 'Marcar como enviado', 'Pular']);
+    afirma(card.querySelector('textarea').getAttribute('aria-label').startsWith('Mensagem para copiar de '), 'textarea com nome do item');
+    afirma(card.querySelector('.status[role="status"]'), 'área de status para o copiarImagem');
+  }
+  semDadoPessoal('a fila', textoTela());
+});
+
+teste('CA9: "Copiar mensagem" copia o texto do campo (inclusive editado) e avisa; depois da imagem, o aviso muda para "legenda"', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso());
+  await abrir('#disparo');
+  stubClipboard();
+  const c = q('#dspFilaLista article');
+  c.querySelector('textarea').value = c.querySelector('textarea').value + '\nEditado';
+  clicar(c.querySelector('[data-acao="copiar-msg"]'));
+  await esperar(() => clip.text.length === 1, 'copiar');
+  await dormir(30);
+  igual(clip.text[0], E.envios[0].mensagem + '\nEditado');
+  igual(toastTxt(), 'Mensagem copiada!');
+  afirma(c.classList.contains('done'), 'cartão marcado como copiado');
+});
+
+teste('CA9: "Copiar imagem" reaproveita copiarImagem com o item de items: foto vira PNG na área de transferência', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso());
+  await abrir('#disparo');
+  stubClipboard();
+  const c = q('#dspFilaLista article');
+  const b = c.querySelector('[data-acao="copiar-img"]');
+  igual(b.getAttribute('aria-label'), 'Copiar imagem de Produto 1');
+  igual(b.getAttribute('aria-disabled'), null);
+  clicar(b);
+  await esperar(() => b.getAttribute('data-estado') === 'copiada', 'imagem copiada');
+  igual(clip.write.length, 1); igual(clip.write[0], [['image/png']]);
+  igual(toastTxt(), W.eval('TXT_IMG.toastOk'));
+  afirma(c.classList.contains('img-done'), 'marca img-done como no cartão da oferta');
+  clicar(c.querySelector('[data-acao="copiar-msg"]'));
+  await esperar(() => clip.text.length === 1);
+  await dormir(30);
+  igual(toastTxt(), W.eval('TXT_IMG.toastLegenda'), 'depois da imagem, avisa para colar como legenda');
+  // o item vem de items: copiarImagem recebe o id do item do banco
+  igual(W.eval('itemDaFila(' + JSON.stringify(E.envios[0]) + ')').id, ITEM1().id);
+});
+
+teste('CA9: envio sem foto: "Copiar imagem" fica aria-disabled com o motivo e o clique explica, sem chamar a área de transferência', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ imagem: '' }));
+  await abrir('#disparo');
+  stubClipboard();
+  const c = q('#dspFilaLista article'), b = c.querySelector('[data-acao="copiar-img"]');
+  igual(b.getAttribute('aria-disabled'), 'true');
+  const desc = W.document.getElementById(b.getAttribute('aria-describedby'));
+  igual(txt(desc), W.eval('TXT_IMG.semFoto'));
+  clicar(b);
+  await esperar(() => txt(c.querySelector('.status')) === W.eval('TXT_IMG.semFoto'), 'mensagem de sem foto');
+  afirma(c.querySelector('.status').classList.contains('err'));
+  igual(clip.write.length, 0);
+});
+
+teste('CA9: "Enviado" e "Pular" mandam PATCH {status}, tiram o cartão da fila e avisam', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso(), envioFalso());
+  await abrir('#disparo');
+  const [a, b] = qa('#dspFilaLista article');   // a = mais antigo = id 2
+  const idA = +a.dataset.envio, idB = +b.dataset.envio;
+  clicar(a.querySelector('[data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 1, 'cartão sai');
+  let p = reqs('PATCH', /envios\/\d+$/);
+  igual(p[0].url, '/api/disparo/envios/' + idA); igual(p[0].corpo, { status: 'enviado' });
+  igual(toastTxt(), 'Marcada como enviada.');
+  clicar(b.querySelector('[data-acao="marcar"][data-status="pulado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 0, 'cartão sai');
+  p = reqs('PATCH', /envios\/\d+$/);
+  igual(p[1].url, '/api/disparo/envios/' + idB); igual(p[1].corpo, { status: 'pulado' });
+  igual(toastTxt(), 'Item pulado.');
+  igual(q('#dspFilaVazia').hidden, false, 'fila vazia volta a explicar');
+  igual(txt(q('#dspFilaN')), '');
+});
+
+teste('CA9: marcar um envio que já mudou (409) mostra o erro, reabilita os botões e atualiza a fila', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso());
+  await abrir('#disparo');
+  E.envios[0].status = 'enviado';   // mudou em outro lugar depois de a tela carregar
+  const c = q('#dspFilaLista article');
+  clicar(c.querySelector('[data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => toastTxt() === 'este envio não pode mais ser marcado assim', 'toast do 409');
+  await esperar(() => qa('#dspFilaLista article').length === 0, 'a fila reflete o servidor');
+});
+
+teste('CA9: envio "incerto" mostra o aviso para conferir no grupo; o cabeçalho ganha "atenção"; dá para marcar', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ status: 'incerto' }));
+  await abrir('#disparo');
+  const c = q('#dspFilaLista article');
+  igual(txt(c.querySelector('.estado')), 'Incerto');
+  afirma(txt(c).includes('Confira no grupo se a mensagem saiu'), txt(c));
+  afirma(txt(q('#btnDisparo')).includes('atenção'), txt(q('#btnDisparo')));
+  clicar(c.querySelector('[data-acao="marcar"][data-status="pulado"]'));
+  await esperar(() => !txt(q('#btnDisparo')).includes('atenção'), 'atenção some depois de tratar');
+});
+
+teste('CA9: a fila atualiza a cada 30 s só na tela de regras; o refresh preserva o cartão (texto editado) e traz os novos; sair para o timer', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso());
+  await abrir('#disparo');
+  afirma(SPY.set.some(s => s.ms === 30000), 'setInterval de 30000 ms: ' + JSON.stringify(SPY.set));
+  const id = SPY.set.filter(s => s.ms === 30000).pop().id;
+  const c1 = q('#dspFilaLista article');
+  c1.querySelector('textarea').value = 'texto que o dono editou';
+  E.envios.push(envioFalso({ criado_em: minAtras(0) }));
+  const antes = reqs('GET', /disparo\/fila/).length;
+  await W.eval('atualizarFila()');
+  afirma(reqs('GET', /disparo\/fila/).length > antes, 'buscou a fila de novo');
+  igual(qa('#dspFilaLista article').length, 2, 'o envio novo aparece');
+  afirma(q('#dspFilaLista article') === c1, 'o cartão antigo é o mesmo nó (não foi refeito)');
+  igual(c1.querySelector('textarea').value, 'texto que o dono editou', 'o texto editado sobrevive ao refresh');
+  igual(q('#dspFilaLista article:last-child').dataset.envio, String(E.envios[1].id), 'o novo vai para o fim');
+  // o envio sai do servidor: o cartão some
+  E.envios[0].status = 'enviado';
+  await W.eval('atualizarFila()');
+  igual(qa('#dspFilaLista article').length, 1);
+  // sair da tela para o timer
+  await abrir('#historico');
+  afirma(SPY.clear.includes(id), 'clearInterval do timer da fila ao sair');
+  igual(SPY.set.filter(s => s.ms === 30000).length, 1, 'o histórico não cria timer');
+});
+
+teste('CA9: falha de rede no refresh da fila mantém o que está na tela, sem erro solto', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso());
+  await abrir('#disparo');
+  E.falhas.push({ re: /^GET disparo\/fila$/, erro: '__rede' });
+  await W.eval('atualizarFila()');
+  igual(qa('#dspFilaLista article').length, 1);
+});
+
+// ================================================================ E. histórico
+teste('CA10: o histórico é uma tabela semântica com data, item, regra e status em texto; motivo do erro aparece', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'Regra H' }));
+  E.envios.push(
+    envioFalso({ status: 'enviado', titulo: 'Fone', enviado_em: minAtras(1), criado_em: minAtras(1) }),
+    envioFalso({ status: 'erro', titulo: 'TV', motivo: 'o transporte recusou', criado_em: minAtras(2) }),
+    envioFalso({ status: 'pulado', titulo: 'Mouse', criado_em: minAtras(3) }),
+    envioFalso({ status: 'expirado', titulo: 'Cabo', criado_em: minAtras(4) }),
+    envioFalso({ status: 'incerto', titulo: 'Caixa', criado_em: minAtras(5) }),
+    envioFalso({ status: 'pendente', titulo: 'Fila', criado_em: minAtras(6) }),
+    envioFalso({ regra_id: 999, status: 'enviado', titulo: 'Órfã', criado_em: minAtras(7) }));
+  await abrir('#historico');
+  const tb = q('table.htab');
+  afirma(tb && tb.querySelector('caption') && tb.querySelectorAll('th[scope="col"]').length === 4, 'tabela com caption e 4 cabeçalhos');
+  igual(qa('table.htab th').map(txt), ['Data e hora', 'Item', 'Regra', 'Status']);
+  const linhas = qa('table.htab tbody tr');
+  igual(linhas.length, 7);
+  igual(linhas.map(l => txt(l.querySelector('td:nth-child(4)'))), ['✓ Enviado', '✕ Falhou', '– Pulado', '– Expirado', '? Incerto', 'Na fila', '✓ Enviado']);
+  afirma(txt(linhas[1]).includes('o transporte recusou'), 'causa do erro: ' + txt(linhas[1]));
+  igual(txt(linhas[0].querySelector('td:nth-child(3)')), 'Regra H');
+  igual(txt(linhas[6].querySelector('td:nth-child(3)')), 'Regra excluída');
+  afirma(/^hoje \d\d:\d\d$/.test(txt(linhas[0].querySelector('td:nth-child(1)'))), txt(linhas[0].querySelector('td:nth-child(1)')));
+  afirma(linhas[0].querySelector('td[data-rot="Status"] .estado.ok') && linhas[1].querySelector('.estado.ruim'), 'cor + texto');
+  // o cabeçalho ocultado no celular usa clip, não display:none (continua na árvore de acessibilidade)
+  igual(W.getComputedStyle(tb.querySelector('thead')).display !== 'none', true);
+});
+
+teste('CA10: o filtro de período e de status vai como desde=AAAA-MM-DD e status=... (sem dado pessoal na URL)', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ status: 'erro', criado_em: minAtras(1) }), envioFalso({ status: 'enviado', criado_em: minAtras(2) }),
+    envioFalso({ status: 'enviado', criado_em: iso(new Date(Date.now() - 20 * 86400000)) }));
+  await abrir('#historico');
+  const hoje = new Date();
+  let ult = () => reqs('GET', /disparo\/envios/).pop();
+  const d7 = new Date(); d7.setDate(d7.getDate() - 6);
+  igual(ult().url, '/api/disparo/envios?desde=' + dataLocal(d7), 'padrão: últimos 7 dias');
+  igual(qa('table.htab tbody tr').length, 2, 'o de 20 dias atrás fica de fora');
+  const per = q('#hPeriodo'); per.value = 'hoje'; per.dispatchEvent(new W.Event('change'));
+  await esperar(() => ult().url === '/api/disparo/envios?desde=' + dataLocal(hoje), 'período hoje');
+  per.value = '30'; per.dispatchEvent(new W.Event('change'));
+  const d30 = new Date(); d30.setDate(d30.getDate() - 29);
+  await esperar(() => ult().url === '/api/disparo/envios?desde=' + dataLocal(d30), 'período 30 dias');
+  await esperar(() => qa('table.htab tbody tr').length === 3);
+  per.value = 'tudo'; per.dispatchEvent(new W.Event('change'));
+  await esperar(() => ult().url === '/api/disparo/envios', 'sem filtro de período');
+  const st = q('#hStatus'); st.value = 'erro'; st.dispatchEvent(new W.Event('change'));
+  await esperar(() => ult().url === '/api/disparo/envios?status=erro', 'só erros');
+  await esperar(() => qa('table.htab tbody tr').length === 1, 'filtrou');
+  igual(qa('#hStatus option').map(txt), ['Todos', 'Na fila', 'Enviando…', 'Enviado', 'Pulado', 'Falhou', 'Incerto', 'Expirado']);
+  for (const r of LOG) semDadoPessoal(r.url, r.url);
+});
+
+teste('CA10: histórico vazio explica; mais de 50 envios mostram 50 e "Carregar mais"', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  await abrir('#historico');
+  afirma(textoTela().includes('Nenhum envio neste período.'), textoTela());
+  for (let i = 0; i < 120; i++) E.envios.push(envioFalso({ status: 'enviado', titulo: 'Item ' + i, criado_em: minAtras(i + 1) }));
+  q('#hPeriodo').dispatchEvent(new W.Event('change'));
+  await esperar(() => qa('table.htab tbody tr').length === 50, '50 linhas');
+  afirma(textoTela().includes('50 de 120 envios'), textoTela());
+  clicar('[data-acao="mais-historico"]');
+  igual(qa('table.htab tbody tr').length, 100);
+  clicar('[data-acao="mais-historico"]');
+  igual(qa('table.htab tbody tr').length, 120);
+  igual(q('[data-acao="mais-historico"]'), null, 'sem botão quando acabou');
+});
+
+// ================================================================ F. regras de produto e acessibilidade
+teste('identidade: só "Copiar mensagem" da fila é Etiqueta; "Nova regra", "Salvar regra" e "Salvar número" são Tinta; nada de ícone/emoji nos controles novos', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  afirma(!acao('nova-regra').classList.contains('cta'), 'Nova regra em Tinta');
+  igual(qa('#telaDisparo .cta').length, 0, 'sem fila, sem Etiqueta');
+  await abrir('#disparo/nova'); afirma(!q('#btnSalvar').classList.contains('cta'), 'Salvar regra em Tinta');
+  await abrir('#numeros/novo'); afirma(!q('#btnSalvar').classList.contains('cta'), 'Salvar número em Tinta');
+  // as ordens e lojas não usam ícones de terceiros
+  await abrir('#disparo/nova');
+  afirma(!/[\u{1F300}-\u{1FAFF}]/u.test(txt(q('#frmRegra'))), 'sem emoji no formulário');
+});
+
+teste('a11y: chips são input nativo (checkbox/radio) com foco visível no span irmão; alvo mínimo e rótulos dos botões Remover', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  for (const i of qa('#f-cats input')) igual(i.type, 'checkbox');
+  for (const i of qa('#f-ordem input, #f-lojas input')) igual(i.type, 'radio');
+  const ordem = qa('#f-ordem input');
+  igual(new Set(ordem.map(i => i.name)).size, 1, 'rádios do mesmo grupo (setas trocam a opção)');
+  const alvo = W.eval('parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--alvo"))');
+  for (const s of qa('#f-cats .chip > span, #f-dias .chip > span, #f-ordem .chip > span').slice(0, 20)) afirma(s.getBoundingClientRect().height >= alvo - 0.5, 'chip menor que o alvo: ' + s.getBoundingClientRect().height);
+  igual(q('[data-acao="rm-horario"]').getAttribute('aria-label'), 'Remover horário 1');
+  afirma(q('.resumo-erros') && q('#dspErros'), 'resumo de erros presente');
+});
+
+teste('segurança: o app não deixou nenhuma escrita sair do servidor falso e a janela de aviso do toast não vazou dado pessoal', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso());
+  await abrir('#numeros'); await abrir('#disparo');
+  igual(VIOL, [], 'escritas fora do servidor falso');
+  semDadoPessoal('o toast', toastTxt());
+});
+
+// ================================================================ G. rodada 2 (designer D1 a D14)
+teste('D1: o cartão da fila não estoura em 320 px (nome longo da regra) e o grupo não é cortado em "Gru…"', async () => {
+  const longo = 'Eletrônicos e informática: promoções da semana inteira com nome de regra muito comprido '.repeat(2);
+  E.numeros.push(numeroFalso({ grupo_nome: 'Achadinhos da Desejo de Menina' })); E.regras.push(regraFalsa({ nome: longo }));
+  E.envios.push(envioFalso({ titulo: 'Produto com um título razoavelmente longo para quebrar linha no celular' }));
+  document.getElementById('app').style.width = '320px';
+  await abrir('#disparo');
+  const c = q('#dspFilaLista article');
+  afirma(c.scrollWidth <= c.clientWidth + 1, 'o cartão rola na horizontal: ' + c.scrollWidth + ' > ' + c.clientWidth);
+  const doc = W.document.documentElement;
+  afirma(doc.scrollWidth <= doc.clientWidth + 1, 'a página rola na horizontal: ' + doc.scrollWidth + ' > ' + doc.clientWidth);
+  const nome = c.querySelector('.fnome');
+  igual(W.getComputedStyle(nome).whiteSpace, 'normal', 'o nome da regra pode quebrar');
+  afirma(nome.getBoundingClientRect().height <= 2 * 16 + 4, 'o nome ocupa no máximo 2 linhas: ' + nome.getBoundingClientRect().height);
+  const g = c.querySelector('.busca');
+  afirma(!/…$/.test(txt(g)) && txt(g) === 'Grupo: Achadinhos da Desejo de Menina', 'o grupo aparece inteiro no texto: ' + txt(g));
+  afirma(g.scrollWidth <= g.clientWidth + 1, 'o grupo não é cortado (ellipsis)');
+  igual(c.querySelector('.fsub .estado') !== null, true, 'o estado fica na linha de baixo, com o grupo');
+  afirma(!c.querySelector('[style]'), 'sem style inline no cabeçalho');
+});
+
+teste('D2: cada cartão da fila tem nome próprio (aria-labelledby no título) e botões/campo começam pelo texto visível + título', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ titulo: 'Fone JBL' }), envioFalso({ titulo: 'Mouse Logitech' }));
+  await abrir('#disparo');
+  const cards = qa('#dspFilaLista article');
+  igual(cards.length, 2);
+  const nomes = cards.map(c => {
+    const h = W.document.getElementById(c.getAttribute('aria-labelledby'));
+    afirma(h && h.tagName === 'H3' && c.contains(h), 'aria-labelledby deve apontar o <h3> do cartão');
+    return txt(h);
+  });
+  igual(new Set(nomes).size, 2, 'nomes repetidos: ' + nomes);
+  for (const c of cards) {
+    const titulo = txt(c.querySelector('h3'));
+    for (const b of c.querySelectorAll('button')) {
+      const rot = b.getAttribute('aria-label');
+      afirma(rot && rot.endsWith(titulo), 'botão sem o título do item no nome: ' + txt(b) + ' / ' + rot);
+      afirma(rot.toLowerCase().startsWith(txt(b).toLowerCase()), 'o nome acessível precisa começar pelo texto visível (WCAG 2.5.3): "' + rot + '" x "' + txt(b) + '"');
+    }
+    afirma(c.querySelector('textarea').getAttribute('aria-label').endsWith(titulo), 'textarea');
+  }
+  igual(new Set(qa('#dspFilaLista article h3').map(h => h.id)).size, 2, 'ids únicos');
+  igual(qa('#dspFilaLista [data-acao="marcar"][data-status="enviado"]').map(txt), ['Marcar como enviado', 'Marcar como enviado']);
+});
+
+teste('D3: Voltar do navegador com formulário não salvo restaura o endereço e pergunta; Cancelar mantém o que foi digitado', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo'); await abrir('#disparo/nova');
+  digitar('#f-nome', 'meio digitado');
+  W.history.back();
+  await esperar(dialogoAberto, 'confirmação ao voltar pelo navegador');
+  igual(W.location.hash, '#disparo/nova', 'o endereço foi restaurado enquanto pergunta');
+  igual(txt(q('#dlg h3')), 'Descartar alterações?');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  await dormir(80);
+  igual(W.location.hash, '#disparo/nova'); igual(q('#f-nome').value, 'meio digitado', 'continua no formulário, com o texto');
+  igual(W.eval('formSujo'), true, 'continua sujo');
+});
+
+teste('D3: Voltar do navegador + "Descartar" segue para a tela anterior e solta o aviso de alteração', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo'); await abrir('#disparo/nova');
+  digitar('#f-nome', 'meio digitado');
+  W.history.back();
+  await esperar(dialogoAberto, 'confirmação');
+  clicar(botaoDialogo(1));
+  await esperar(() => W.location.hash === '#disparo' && q('#dspRegras') && carregou(), 'ir para as regras');
+  igual(W.eval('formSujo'), false); igual(W.onbeforeunload, null);
+  igual(txt(q('#telaDisparo h2')), 'Disparo automático');
+});
+
+teste('D3: sem alteração, Voltar do navegador não pergunta nada', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo'); await abrir('#disparo/nova');
+  W.history.back();
+  await esperar(() => W.location.hash === '#disparo' && !q('#frmRegra') && carregou(), 'voltar direto');
+  igual(dialogoAberto(), false);
+});
+
+teste('D4: Ativar/Pausar devolve o foco ao botão do mesmo cartão depois de redesenhar', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'A' }), regraFalsa({ nome: 'B' }));
+  const id = E.regras[1].id;
+  await abrir('#disparo');
+  const b = acao('alternar', id); b.focus(); b.click();
+  await esperar(() => txt(acao('alternar', id)) === 'Pausar' || txt(acao('alternar', id)) === 'Ativar' && E.regras[1].ativa === 0, 'redesenhou');
+  await esperar(() => !q('#dspRegras [data-acao="alternar"][data-id="' + id + '"][disabled]'), 'botão novo');
+  const novo = acao('alternar', id);
+  afirma(W.document.activeElement === novo, 'o foco deve estar no botão do cartão ' + id + ', está em ' + (W.document.activeElement && W.document.activeElement.outerHTML.slice(0, 80)));
+});
+
+teste('D4: marcar um envio leva o foco ao próximo cartão; se era o último, ao título da seção', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso(), envioFalso());
+  await abrir('#disparo');
+  const [a, b] = qa('#dspFilaLista article');
+  const ba = a.querySelector('[data-status="enviado"]'); ba.focus(); ba.click();
+  await esperar(() => qa('#dspFilaLista article').length === 1, 'sair o 1º');
+  afirma(b.contains(W.document.activeElement) && W.document.activeElement.dataset.acao === 'copiar-msg', 'foco no próximo cartão: ' + W.document.activeElement.outerHTML.slice(0, 60));
+  const bb = b.querySelector('[data-status="pulado"]'); bb.focus(); bb.click();
+  await esperar(() => qa('#dspFilaLista article').length === 0, 'sair o 2º');
+  afirma(W.document.activeElement === q('#dspFilaT'), 'foco no título da seção');
+});
+
+teste('D4: excluir uma regra leva o foco ao cartão vizinho', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'A' }), regraFalsa({ nome: 'B' }));
+  const [ra, rb] = E.regras;
+  await abrir('#disparo');
+  q('#telaDisparo .more summary').click();
+  const del = q('[data-regra="' + ra.id + '"] [data-acao="excluir-regra"]'); del.focus(); del.click();
+  await esperar(dialogoAberto); clicar(botaoDialogo(1));
+  await esperar(() => qa('[data-regra]').length === 1, 'excluir');
+  afirma(W.document.activeElement === acao('alternar', rb.id), 'foco no cartão que sobrou');
+});
+
+teste('D4: o refresh de 30 s não redesenha as regras enquanto há foco nelas; depois do foco sair, atualiza só o que mudou', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ nome: 'A' }), regraFalsa({ nome: 'B' }));
+  await abrir('#disparo');
+  const cA = q('[data-regra="' + E.regras[0].id + '"]'), cB = q('[data-regra="' + E.regras[1].id + '"]');
+  E.regras[1].nome = 'B renomeada';
+  const botao = acao('agora', E.regras[0].id); botao.focus();
+  await W.eval('atualizarFila()');
+  afirma(q('[data-regra="' + E.regras[1].id + '"]') === cB && txt(cB).includes('B') && !txt(cB).includes('renomeada'), 'não redesenhou com foco dentro da lista');
+  afirma(W.document.activeElement === botao, 'o foco ficou onde estava');
+  botao.blur();
+  await W.eval('atualizarFila()');
+  const novoB = q('[data-regra="' + E.regras[1].id + '"]');
+  afirma(txt(novoB).includes('B renomeada'), 'depois do foco sair, atualiza');
+  afirma(q('[data-regra="' + E.regras[0].id + '"]') === cA, 'o cartão que não mudou é o mesmo nó (reconciliado por id)');
+});
+
+teste('D5: na tela de disparo saem "Copiar todas", "Adicionar links" e o contador; ficam Template e "Editar templates"; painéis abertos fecham', async () => {
+  E.numeros.push(numeroFalso());
+  q('#btnAdd').click(); afirma(q('#addBox').classList.contains('open'), 'preparação: addBox aberto');
+  const visivel = sel => { const e = q(sel); return !!e && W.getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0; };
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#tplSelect', '#btnTpl', '#btnDisparo']) afirma(visivel(sel), sel + ' visível nas ofertas');
+  await abrir('#disparo');
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#addBox']) afirma(!visivel(sel), sel + ' deveria sumir na tela de disparo');
+  for (const sel of ['#tplSelect', '#btnTpl', '#btnDisparo']) afirma(visivel(sel), sel + ' deve ficar');
+  afirma(!q('#addBox').classList.contains('open') && !q('#tplBox').classList.contains('open'), 'painéis fechados ao entrar');
+  await abrir('#disparo/nova');
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count']) afirma(!visivel(sel), sel + ' continua oculto no formulário');
+  // "Editar templates" do formulário abre o painel do cabeçalho
+  clicar('[data-acao="editar-templates"]');
+  afirma(q('#tplBox').classList.contains('open'), 'o painel de templates abre');
+  await abrir('#disparo');
+  afirma(q('#tplBox').classList.contains('open'), 'navegar dentro do disparo não fecha o painel que o dono abriu');
+  q('#telaDisparo a.voltar').click();
+  await esperar(() => tela().hidden, 'voltar');
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count']) afirma(visivel(sel), sel + ' volta nas ofertas');
+  q('#tplBox').classList.remove('open');
+});
+
+teste('D7: o formulário novo abre sem aviso vermelho de capacidade; ele aparece depois de mexer em horários, quantidade ou máximo', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  marcarChip('#f-cats', CAT1());
+  const r = q('#f-resumo');
+  afirma(txt(r).includes('Gera 1 mensagem em cada horário'), txt(r));
+  afirma(!r.classList.contains('aviso') && !txt(r).includes('Pelos horários'), 'sem aviso no começo: ' + txt(r));
+  digitar('#f-max', '12');
+  afirma(r.classList.contains('aviso') && txt(r).includes('Pelos horários, saem no máximo 1 por dia.'), txt(r));
+});
+
+teste('D8/D12: o aviso de erro usa role=alert (#toastErro) e o comum, role=status; só um aparece por vez', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  igual(q('#toast').getAttribute('role'), 'status');
+  igual(q('#toastErro').getAttribute('role'), 'alert');
+  await abrir('#disparo');
+  E.falhas.push({ re: /^PUT disparo\/regras\/\d+$/, status: 500, erro: 'não consegui salvar' });
+  clicar(acao('alternar'));
+  await esperar(() => q('#toastErro').classList.contains('show'), 'aviso de erro');
+  igual(txt(q('#toastErro')), 'não consegui salvar');
+  afirma(!q('#toast').classList.contains('show'), 'o comum fica escondido');
+  E.falhas.length = 0;
+  clicar(acao('alternar'));
+  await esperar(() => q('#toast').classList.contains('show') && /Regra (ativada|pausada)\./.test(txt(q('#toast'))), 'aviso comum');
+  afirma(!q('#toastErro').classList.contains('show'), 'o de erro some quando entra o comum');
+});
+
+teste('D10: o histórico mantém a semântica de tabela com roles explícitos (a versão de celular usa display:block)', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso({ status: 'enviado', criado_em: minAtras(1) }));
+  await abrir('#historico');
+  igual(q('table.htab').getAttribute('role'), 'table');
+  igual(qa('table.htab [role="columnheader"]').length, 4);
+  igual(qa('table.htab tbody tr').every(t => t.getAttribute('role') === 'row'), true);
+  igual(qa('table.htab tbody td').every(t => t.getAttribute('role') === 'cell'), true);
+  document.getElementById('app').style.width = '375px';
+  await dormir(80);
+  const td = q('table.htab tbody td');
+  igual(W.getComputedStyle(td).textAlign, 'left', 'em 375 px o texto fica à esquerda');
+  afirma(W.getComputedStyle(td, '::before').display === 'block', 'rótulo em cima do valor');
+});
+
+teste('D11/D14: a linha de último envio só usa Mono nos números; a ajuda do template não repete a frase da prévia', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa({ ativa: 0 }));
+  await abrir('#disparo');
+  igual(qa('[data-regra] .mono').length, 0, '"Nunca enviou" e "—" não vão em Mono');
+  E.envios.push(envioFalso({ status: 'enviado', enviado_em: minAtras(5), criado_em: minAtras(5) }));
+  await abrir('#disparo');
+  igual(qa('[data-regra] .mono').map(txt).length, 1);
+  afirma(/^(hoje|ontem) \d\d:\d\d$/.test(txt(q('[data-regra] .mono'))), txt(q('[data-regra] .mono')));
+  await abrir('#disparo/nova');
+  afirma(!txt(q('#f-template').closest('.campo')).includes('Assim a mensagem chega no grupo'), 'ajuda duplicada');
+});
+
+teste('telefone: o rótulo e a ajuda dizem DDI e DDD, como o servidor valida', async () => {
+  await abrir('#numeros/novo');
+  igual(txt(q('label[for="f-tel"]')), 'Telefone com DDI e DDD');
+  afirma(txt(q('#a-tel')).includes('55 + DDD + número') && txt(q('#a-tel')).includes('de 10 a 15 dígitos'), txt(q('#a-tel')));
+});
+
+// ================================================================ fecho
+teste('nenhuma escrita chegou à API real e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await FETCH_ORIG('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita fora do servidor falso (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    await carregarApp();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await restaurar();
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    } finally {
+      try { await restaurar(); } catch (e) { /* ignora */ }
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

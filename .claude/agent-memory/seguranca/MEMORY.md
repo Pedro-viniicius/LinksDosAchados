@@ -1,3 +1,3 @@
-- [Áreas sensíveis](areas-sensiveis.md) — dado pessoal, guardas do servidor (Host/Origin/estático), front e invariantes (afiliado, 127.0.0.1)
-- [Problemas recorrentes](problemas-recorrentes.md) — escape em innerHTML, guardas de origem, allowlist e redirect, tag repetida, tipos no corpo
-- [Riscos aceitos](riscos-aceitos.md) — R1: sem token; origens do ML podem POST/PATCH (mitigado por CA6/CA7/LNA)
+- [Áreas sensíveis](areas-sensiveis.md) — dado pessoal, guardas do servidor, disparo.py e /api/disparo, scripts que gravam no banco, coletar_ml.js, front
+- [Problemas recorrentes](problemas-recorrentes.md) — escape innerHTML, guardas de origem, allowlist, sink de url, meli.la, detecção de URL por TLD, ReDoS sem teto
+- [Riscos aceitos](riscos-aceitos.md) — R1: sem token; origens do ML podem POST/PATCH (mitigado por CA6/CA7, url do lote validada)

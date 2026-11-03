@@ -5,8 +5,16 @@ Guarda tudo em achadinhos.db (SQLite) e serve o site em http://localhost:8765/
 Uso:  python3 servidor.py
 Ambiente (opcional): ACHADINHOS_DB troca o caminho do banco e ACHADINHOS_PORTA troca a porta.
 Os testes usam as duas para nunca tocar o banco real nem o servidor em 8765.
+Disparo automático (disparo.py): ACHADINHOS_DISPARO=0 desliga o agendador, ACHADINHOS_TICK_SEG
+troca o intervalo (padrão 30 s) e ACHADINHOS_TRANSPORTE=falso com ACHADINHOS_TRANSPORTE_ARQUIVO
+liga o transporte de teste.
+
+O disparo é importado dentro das funções que o usam (criar_banco, rotas e __main__): quem importa
+este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
+mesmo numa cópia sem o disparo.py. O coletar_amazon.py chama criar_banco, então precisa do
+disparo.py ao lado e também migra o banco (só aditivo: cria numeros, regras e envios).
 """
-import json, re, sqlite3, html, os, urllib.request, urllib.parse
+import json, re, sqlite3, html, os, logging, urllib.request, urllib.parse
 from datetime import datetime
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
@@ -18,6 +26,9 @@ LOJAS = ('amazon', 'ml')
 MAX_CORPO = 5 * 1024 * 1024   # bytes; acima disso a escrita recebe 413 sem ler o corpo
 CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
           'vendas', 'frete', 'cupom', 'imagem']
+# Teto de caracteres de cada campo de data (S2 do disparo): o maior título real tem 223 e os demais
+# campos não passam de 73. Texto gigante no banco viraria mensagem gigante na análise do disparo.
+MAX_TITULO, MAX_CAMPO = 500, 200
 # Quem pode falar com o servidor (docs/produto/planos/blindar-servidor.md). Comparação exata.
 HOSTS_LOCAIS = (f'localhost:{PORT}', f'127.0.0.1:{PORT}')          # cabeçalho Host (anti DNS rebinding)
 ORIGENS_LOCAIS = tuple('http://' + h for h in HOSTS_LOCAIS)          # o index.html aberto aqui
@@ -27,6 +38,9 @@ ROTAS_ML = re.compile(r'\A/api/(items(/\d+)?|ml-sem-afiliado)\Z')
 HOSTS_AMAZON = ('www.amazon.com.br', 'amazon.com.br', 'amzn.to')        # /api/fetch e seus redirects
 ESTATICO = ('/', '/index.html')
 ESTATICO_TESTES = re.compile(r'\A/testes/[a-z0-9-]+\.test\.html\Z')
+# Preenchidos no __main__; importado como módulo, o transporte é o manual e não há agendador.
+TRANSPORTE = None
+AGENDADOR = None
 UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36'
 
 
@@ -56,7 +70,10 @@ def criar_banco():
     CREATE INDEX IF NOT EXISTS ix_items_cat ON items(cat);
     CREATE TABLE IF NOT EXISTS config (chave TEXT PRIMARY KEY, valor TEXT);
     ''')
-    con.commit(); con.close()
+    con.commit()
+    import disparo
+    disparo.migrar(con)   # numeros, regras e envios (PRAGMA user_version 1), só aditiva
+    con.close()
 
 
 def agora():
@@ -87,6 +104,28 @@ def eh_link_afiliado(url):
     return False
 
 
+HOSTS_LOJAS = ('meli.la', 'www.amazon.com.br', 'amazon.com.br', 'amzn.to')   # mais *.mercadolivre.com.br
+HOST_VALIDO = re.compile(r'\A[a-z0-9.-]+\Z')
+
+
+def eh_url_de_loja(url):
+    """url que pode ser gravada num item: https, sem usuário nem porta, num host das lojas.
+
+    O front abre essa url em "Abrir na loja": javascript:, data: ou host de fora não podem entrar.
+    """
+    if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
+        return False
+    try:
+        p = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    host = p.hostname or ''
+    # netloc igual ao host recusa usuário (@), porta (inclusive ":" vazio) e barra invertida
+    if p.scheme != 'https' or p.netloc.lower() != host or not HOST_VALIDO.match(host):
+        return False
+    return host in HOSTS_LOJAS or host.endswith('.mercadolivre.com.br')
+
+
 class ErroCliente(Exception):
     """Requisição recusada pela validação; vira {"error": msg} com o código HTTP."""
     def __init__(self, codigo, msg):
@@ -112,6 +151,9 @@ def conferir_tipos(it, campos, onde=''):
         v = d.get(c)
         if isinstance(v, bool) or not isinstance(v, (str, int, float, type(None))):
             raise ErroCliente(400, f'{onde}data.{c} deve ser texto')
+        teto = MAX_TITULO if c == 'titulo' else MAX_CAMPO
+        if isinstance(v, str) and len(v) > teto:
+            raise ErroCliente(400, f'{onde}data.{c} passa de {teto} caracteres')
         # número fora do INTEGER de 64 bits do sqlite (OverflowError) ou NaN/infinito: recusa com 400
         if isinstance(v, int) and not -2**63 <= v < 2**63 or isinstance(v, float) and v != v or v in (float('inf'), float('-inf')):
             raise ErroCliente(400, f'{onde}data.{c} tem número inválido')
@@ -128,6 +170,8 @@ def itens_do_lote(body):
         if (it.get('loja') or 'amazon') not in LOJAS:
             raise ErroCliente(400, f'item {i}: loja inválida (use amazon ou ml)')
         conferir_tipos(it, ('url', 'item_id', 'cat', 'busca'), f'item {i}: ')
+        if it.get('url') and not eh_url_de_loja(it['url']):
+            raise ErroCliente(400, f'item {i}: url precisa ser https da Amazon ou do Mercado Livre')
     return lista
 
 
@@ -317,6 +361,36 @@ class Handler(SimpleHTTPRequestHandler):
         except (ValueError, RecursionError):
             raise ErroCliente(400, 'JSON inválido')
 
+    def despachar_disparo(self):
+        """Caminho com o prefixo disparo.PREFIXO vai para disparo.rota. True se a rota era do disparo.
+
+        Fora de ROTAS_ML: o bloquear() já recusou as origens do ML com 403. Erro inesperado vira
+        500 com só o tipo no log (a mensagem de uma biblioteca pode trazer dados da query).
+        """
+        import disparo
+        if not self._caminho.startswith(disparo.PREFIXO):
+            return False
+        q = dict(urllib.parse.parse_qsl(self.path.split('?', 1)[1] if '?' in self.path else ''))
+        con = None
+        try:
+            body = self.corpo() if self.command in ('POST', 'PUT', 'PATCH') else None
+            con = conectar()
+            resposta = disparo.rota(con, self.command, self._caminho, q, body, eh_link_afiliado,
+                                    TRANSPORTE or disparo.TransporteManual(), AGENDADOR)
+        except ErroCliente as e:
+            self.json({'error': e.msg}, e.codigo)
+        except disparo.ErroDisparo as e:
+            self.json({'error': e.msg}, e.codigo)
+        except Exception as e:   # noqa: BLE001
+            self.log_message('"%s" disparo falhou: %s', self.requestline, type(e).__name__)
+            self.json({'error': 'erro interno no disparo'}, 500)
+        else:
+            self.json(resposta)
+        finally:
+            if con is not None:
+                con.close()
+        return True
+
     def do_OPTIONS(self):
         if self.bloquear():
             return
@@ -338,7 +412,7 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_HEAD()
 
     def do_GET(self):
-        if self.bloquear():
+        if self.bloquear() or self.despachar_disparo():
             return
         caminho = self._caminho
         q = dict(urllib.parse.parse_qsl(self.path.split('?', 1)[1] if '?' in self.path else ''))
@@ -372,7 +446,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'error': 'rota não encontrada'}, 404)
 
     def do_POST(self):
-        if self.bloquear():
+        if self.bloquear() or self.despachar_disparo():
             return
         if self._caminho == '/api/items':
             try:
@@ -395,7 +469,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'error': 'rota não encontrada'}, 404)
 
     def do_PATCH(self):
-        if self.bloquear():
+        if self.bloquear() or self.despachar_disparo():
             return
         m = re.match(r'^/api/items/(\d+)$', self._caminho)
         if not m:
@@ -429,7 +503,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json(linha_para_item(r) if r else None)
 
     def do_PUT(self):
-        if self.bloquear():
+        if self.bloquear() or self.despachar_disparo():
             return
         if self._caminho.startswith('/api/config/'):
             try:
@@ -444,7 +518,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'error': 'rota não encontrada'}, 404)
 
     def do_DELETE(self):
-        if self.bloquear():
+        if self.bloquear() or self.despachar_disparo():
             return
         m = re.match(r'^/api/items/(\d+)$', self._caminho)
         if not m:
@@ -453,7 +527,36 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'ok': True})
 
 
+def iniciar_disparo():
+    """Transporte pelo ambiente e, salvo ACHADINHOS_DISPARO=0, o agendador (thread daemon).
+
+    O log do agendador vai para o stderr, junto com o de acesso, e só traz contagens e tipos de erro.
+    """
+    global TRANSPORTE, AGENDADOR
+    import disparo
+    TRANSPORTE = disparo.transporte_do_ambiente()
+    log = logging.getLogger('disparo')
+    if not log.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter('%(asctime)s %(message)s', '%Y-%m-%d %H:%M:%S'))
+        log.addHandler(h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    if disparo.agendador_ligado():
+        AGENDADOR = disparo.Agendador(conectar, eh_link_afiliado, TRANSPORTE,
+                                      intervalo=disparo.intervalo_do_ambiente())
+        AGENDADOR.start()
+    log.info('disparo: agendador %s, transporte %s', 'ligado' if AGENDADOR else 'desligado', TRANSPORTE.nome)
+
+
 if __name__ == '__main__':
     criar_banco()
+    # bind antes do agendador: a porta ocupada impede uma segunda instância de disparar em dobro
+    servidor = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Site em http://localhost:{PORT}/  (banco: {DB})')
-    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    iniciar_disparo()
+    try:
+        servidor.serve_forever()
+    finally:
+        if AGENDADOR:
+            AGENDADOR.parar()

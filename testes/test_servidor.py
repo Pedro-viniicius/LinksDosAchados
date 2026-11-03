@@ -225,6 +225,16 @@ class TestLinhaDeBase(ServidorTeste):
         self.assertEqual(rotas, ['/api/', '/api/config/', '/api/fetch', '/api/items', '/api/ml-sem-afiliado'])
         self.assertIsNone(re.search(r'/api/(imagem|img|foto|proxy|copiar)', src, re.I),
                           'rota de proxy de imagem não faz parte do plano')
+        # as rotas /api/disparo/* moram no disparo.py, como sufixos do disparo.PREFIXO (R4 da revisão)
+        with open(os.path.join(RAIZ, 'disparo.py'), encoding='utf-8') as f:
+            src_disparo = f.read()
+        self.assertIn("PREFIXO = '/api/disparo/'", src_disparo)
+        self.assertIsNone(re.search(r'/api/(imagem|img|foto|proxy|copiar)', src_disparo, re.I),
+                          'rota de proxy de imagem não faz parte do plano')
+        sufixos = set(re.findall(r"resto == '([^']*)'", src_disparo))
+        sufixos |= set(re.findall(r"re\.fullmatch\('([a-z]+)/' \+ _ID", src_disparo))
+        self.assertEqual(sufixos, {'numeros', 'regras', 'previa', 'fila', 'envios', 'status'})
+        self.assertFalse([x for x in sufixos if re.search(r'imagem|img|foto|proxy|copiar', x, re.I)])
 
 
 # ================================================================ etapa 2: CA1 a CA4
@@ -710,6 +720,65 @@ class TestEscrita(ServidorTeste):
         st, _, _ = self.pedir('DELETE', f'/api/items/{alvo}', headers={**self.local(), 'Content-Type': 'application/json'})
         self.assertEqual(st, 200)
         self.assertIsNone(self.item('PATCH0001'))
+
+
+# ================================================================ S1 (revisão do coletar_ml.js): url do lote
+class TestUrlDoLote(ServidorTeste):
+    """POST /api/items só grava url https das lojas: o front abre essa url em "Abrir na loja"."""
+
+    RUINS = ['javascript:alert(1)', 'JavaScript:alert(1)', 'data:text/html,<script>alert(1)</script>',
+             'vbscript:msgbox(1)', 'http://www.amazon.com.br/dp/X', 'http://meli.la/x',
+             'https://evil.com/x', 'https://www.amazon.com/dp/X', 'https://meli.la.evil.com/x',
+             'https://mercadolivre.com.br.evil.com/x', 'https://evilmercadolivre.com.br/x',
+             'https://evil.com\\.mercadolivre.com.br/', 'https://www.amazon.com.br./dp/X',
+             'https://meli.la@evil.com/x', 'https://user@www.amazon.com.br/dp/X', 'https://a:b@amzn.to/x',
+             'https://www.amazon.com.br:443/dp/X', 'https://meli.la:8443/x', 'https://meli.la:/x',
+             'https://127.0.0.1/x', 'https://[::1]/x', 'https://localhost/x',
+             ' https://meli.la/x', 'https://meli.la/x y', 'https://meli.la/x\n', 'https://meli.la/\tx',
+             '//meli.la/x', 'meli.la/x', 'https:meli.la/x', 'https:///x']
+
+    BONS = ['https://produto.mercadolivre.com.br/MLB-4100000001-tv-_JM',   # coletar_ml.js
+            'https://www.mercadolivre.com.br/p/MLB1', 'https://lista.mercadolivre.com.br/tv',
+            'https://meli.la/abc',                                          # saveLinks do front
+            'https://www.amazon.com.br/dp/B0ABCDEFGH?tag=desejodemen01-20',   # coletar_amazon.py
+            'https://amazon.com.br/dp/B0X', 'https://amzn.to/abc']
+
+    def test_s1_url_que_nao_e_https_de_loja_da_400_e_nao_grava_o_lote(self):
+        for url in self.RUINS:
+            for nome, h in (('local', self.local()), ('ml', ml(ML_LISTA))):
+                with self.subTest(url=url, origem=nome):
+                    lote = [{'loja': 'ml', 'item_id': 'MLBURLBOA', 'url': 'https://meli.la/boa'},
+                            {'loja': 'ml', 'item_id': 'MLBURLRUIM', 'url': url}]
+                    st, _, dados = self.postar(lote, h)
+                    self.assertEqual(st, 400)
+                    self.assertIn('item 1', self.json_de(dados)['error'])
+        ids = [i['item_id'] for i in self.itens()]
+        self.assertNotIn('MLBURLBOA', ids)
+        self.assertNotIn('MLBURLRUIM', ids)
+
+    def test_s1_url_ruim_tambem_nao_troca_a_url_de_item_existente(self):
+        st, _, _ = self.postar([{'loja': 'ml', 'item_id': 'MLBEXISTE', 'url': 'https://produto.mercadolivre.com.br/MLB-1'}])
+        self.assertEqual(st, 200)
+        st, _, _ = self.postar([{'loja': 'ml', 'item_id': 'MLBEXISTE', 'url': 'javascript:alert(1)',
+                                 'data': {'titulo': 'T'}}], ml(ML_LISTA))
+        self.assertEqual(st, 400)
+        it = next(i for i in self.itens() if i['item_id'] == 'MLBEXISTE')
+        self.assertEqual(it['url'], 'https://produto.mercadolivre.com.br/MLB-1')
+
+    def test_s1_urls_das_duas_lojas_continuam_aceitas(self):
+        for n, url in enumerate(self.BONS):
+            for nome, h in (('local', self.local()), ('ml', ml(ML_LISTA))):
+                with self.subTest(url=url, origem=nome):
+                    item_id = f'BOA{n}{nome}'
+                    st, _, dados = self.postar([{'loja': 'ml' if 'amazon' not in url and 'amzn' not in url else 'amazon',
+                                                 'item_id': item_id, 'url': url}], h)
+                    self.assertEqual(st, 200, dados)
+                    self.assertEqual(next(i for i in self.itens() if i['item_id'] == item_id)['url'], url)
+
+    def test_s1_item_sem_url_continua_ignorado_sem_erro(self):
+        st, _, dados = self.postar([{'loja': 'ml', 'item_id': 'MLBSEMURL'}, {'loja': 'ml', 'item_id': 'MLBURLVAZIA', 'url': ''}])
+        self.assertEqual(st, 200, dados)
+        self.assertEqual(self.json_de(dados)['inserido'], 0)
 
 
 # ================================================================ etapa 5: CA8

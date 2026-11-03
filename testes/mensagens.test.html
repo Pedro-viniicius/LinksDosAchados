@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: mensagens (paridade buildMsg x montar_mensagem)</title>
+<!--
+  Paridade da mensagem do card (docs/produto/planos/disparo-automatico.md, etapa 2, CA8).
+  Os casos ficam no bloco <script type="application/json" id="casos"> abaixo e valem para os dois lados:
+  - esta página roda o buildMsg do /index.html real (via W.eval, trocando templates e current);
+  - testes/test_disparo.py lê o mesmo bloco deste arquivo e roda o montar_mensagem do disparo.py.
+  Os dois têm que dar o "esperado" de cada caso. Quem mudar o buildMsg ou o montar_mensagem
+  ajusta o caso aqui. Os casos com "padrao" usam o texto do DEFAULT_TEMPLATES do index.html.
+
+  Rodar com um servidor no ar (só GET; nenhum dado é gravado):
+    node testes/rodar.mjs mensagens            (porta 8765)
+    PORTA=<p> node testes/rodar.mjs mensagens  (servidor de teste)
+
+  Regras de segurança desta página: o iframe só faz GET na API (escrita é bloqueada e reprova o
+  teste); nenhum botão do app é clicado. As palavras de resultado ficam montadas por concatenação.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: mensagens</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script type="application/json" id="casos">
+[
+{"nome": "Template 1 padrão, item completo da Amazon", "padrao": "Template 1", "template": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n(43% OFF)\n⭐ Mais de 1 mil compras no mês passado\n🚚 Frete GRÁTIS\n🎫 Cupom: *FONE10*\n\n🛒 Compre aqui: https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "Template 2 padrão, item completo da Amazon", "padrao": "Template 2", "template": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*Fone de Ouvido Bluetooth JBL Tune 520BT*\n🔥 *R$ 199,90*\n💥 43% OFF\n\n🛒 https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "Template 3 padrão, item completo da Amazon", "padrao": "Template 3", "template": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "🎫 *USE O CUPOM: FONE10*\n\n*Fone de Ouvido Bluetooth JBL Tune 520BT*\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n💥 43% OFF\n\n🛒 Compre aqui: https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "Template 4 padrão, item completo da Amazon", "padrao": "Template 4", "template": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n💥 43% OFF\n⭐ Mais de 1 mil compras no mês passado\n🚚 Frete GRÁTIS\n🎫 Cupom: *FONE10*\n\n🛒 Compre aqui: https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20\n\n⏳ Preço e estoque podem mudar a qualquer momento"},
+{"nome": "Template 1 com campos vazios: as linhas somem e as quebras se juntam", "template": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "", "desconto": "-43%", "avaliacao": "", "num_avaliacoes": "", "vendas": "", "frete": "", "cupom": "", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n\n🔥 Por *R$ 199,90*\n(43% OFF)\n\n🛒 Compre aqui: https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "Template 3 sem cupom: a linha de cupom some do topo", "template": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "item": {"loja": "ml", "url": "https://meli.la/1AbCdEf", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n💥 43% OFF\n\n🛒 Compre aqui: https://meli.la/1AbCdEf"},
+{"nome": "NUMERO_VENDAS cai em num_avaliacoes + \" avaliações\"", "template": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "item": {"loja": "ml", "url": "https://meli.la/1AbCdEf", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n(43% OFF)\n⭐ 27,6 mil avaliações\n🚚 Frete GRÁTIS\n🎫 Cupom: *FONE10*\n\n🛒 Compre aqui: https://meli.la/1AbCdEf"},
+{"nome": "NUMERO_VENDAS cai na avaliação", "template": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "", "vendas": "", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "*Fone de Ouvido Bluetooth JBL Tune 520BT*\n\n😱 De ~R$ 349,00~\n🔥 Por *R$ 199,90*\n💥 43% OFF\n⭐ 4,7 de 5 estrelas\n🚚 Frete GRÁTIS\n🎫 Cupom: *FONE10*\n\n🛒 Compre aqui: https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20\n\n⏳ Preço e estoque podem mudar a qualquer momento"},
+{"nome": "desconto sem \"-\" fica igual", "template": "{DESCONTO_PRODUTO} | {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "34%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "34% | https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "desconto com dois \"-\"", "template": "{DESCONTO_PRODUTO} | {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "--10%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "-10% | https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "U+200B no título é mantido, inclusive no começo (o trim do JS não tira)", "template": "{TITULO_PRODUTO}\n{LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "\u200bFone\u200bJBL", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "\u200bFone\u200bJBL\nhttps://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "U+FEFF nas pontas sai no trim; U+0085 fica (o strip do Python tiraria)", "template": "{TITULO_PRODUTO} {LINK}\n{CUPOM}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "\ufeff\u00a0Fone", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "X\u0085\u00a0\u2028\ufeff \t", "imagem": ""}}, "esperado": "Fone https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20\nX\u0085"},
+{"nome": "data nulo: só sobram as linhas sem campo e o link", "template": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": null}, "esperado": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n🛒 https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "replaceAll do JS: $$, $&, $` e $' no título; $1 literal no cupom", "template": "*{TITULO_PRODUTO}*\n{CUPOM}\n{LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Kit $$ 2 $& un $` x $' fim $1", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "Aplicar Cupom de R$100", "imagem": ""}}, "esperado": "*Kit $ 2 {TITULO_PRODUTO} un * x *\nAplicar Cupom de R$100\nhttps://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20 fim $1*\nAplicar Cupom de R$100\nhttps://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "placeholder dentro do título é trocado depois (ordem do mapa)", "template": "{TITULO_PRODUTO} {LINK}", "item": {"loja": "amazon", "url": "https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20", "data": {"titulo": "Leve {PRECO_PRODUTO} e {LOJA} {CUPOM}", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "Frete GRÁTIS", "cupom": "FONE10", "imagem": ""}}, "esperado": "Leve R$ 199,90 e {LOJA} FONE10 https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20"},
+{"nome": "{LOJA} e linhas em branco seguidas", "template": "Na {LOJA}:\n\n\n\n\n{TITULO_PRODUTO}\n\n\n{FRETE}\n\n\n{LINK}", "item": {"loja": "ml", "url": "https://meli.la/1AbCdEf", "data": {"titulo": "Fone de Ouvido Bluetooth JBL Tune 520BT", "preco": "R$ 199,90", "preco_antigo": "R$ 349,00", "desconto": "-43%", "avaliacao": "4,7 de 5 estrelas", "num_avaliacoes": "27,6 mil", "vendas": "Mais de 1 mil compras no mês passado", "frete": "", "cupom": "FONE10", "imagem": ""}}, "esperado": "Na Mercado Livre:\n\nFone de Ouvido Bluetooth JBL Tune 520BT\n\nhttps://meli.la/1AbCdEf"}
+]
+</script>
+
+<script>
+'use strict';
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc, tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+const CASOS = JSON.parse(document.getElementById('casos').textContent);
+const VIOL = [];   // tentativas de escrita na API (devem ficar vazias)
+let W;
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  const fetchOrig = W.fetch.bind(W);
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API'));
+    }
+    return fetchOrig(entrada, opcoes);
+  };
+  // o carregamento inicial troca `templates` pelo do servidor; só depois dele os casos podem trocá-lo
+  await esperar(() => W.document.querySelectorAll('#tplSelect option').length > 0,
+    'o index.html terminar de carregar (servidor no ar? PORTA=...)');
+  afirma(typeof W.buildMsg === 'function', 'index.html não declara a function global buildMsg');
+}
+
+// Roda o buildMsg real com um template só, e devolve templates/current como estavam.
+function buildMsgCom(template, item) {
+  const antes = W.eval('[templates, current]');
+  W.__tplCaso = { caso: template };
+  try {
+    W.eval('templates = window.__tplCaso; current = "caso"');
+    return W.buildMsg(JSON.parse(JSON.stringify(item)));
+  } finally {
+    W.__tplCaso = antes;
+    W.eval('templates = window.__tplCaso[0]; current = window.__tplCaso[1]');
+    delete W.__tplCaso;
+  }
+}
+
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+
+teste('os casos cobrem os 4 templates padrão, com o texto atual do DEFAULT_TEMPLATES', () => {
+  const padrao = W.eval('DEFAULT_TEMPLATES');
+  const usados = CASOS.filter(c => c.padrao).map(c => c.padrao).sort();
+  igual(usados, Object.keys(padrao).sort(), 'templates padrão nos casos');
+  for (const c of CASOS.filter(c => c.padrao)) igual(c.template, padrao[c.padrao], 'texto de ' + c.padrao);
+});
+
+for (const c of CASOS) {
+  teste('buildMsg: ' + c.nome, () => igual(buildMsgCom(c.template, c.item), c.esperado));
+}
+
+teste('o app voltou ao template dele e nada foi gravado', () => {
+  afirma(W.eval('typeof templates[current]') === 'string', 'templates/current não foram restaurados');
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+});
+
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    await carregarApp();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  for (const t of testes) {
+    total++;
+    try {
+      await t.fn();
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

@@ -1,3 +1,5 @@
 - [Fatos dos CDNs de imagem](cdn-imagens-fatos.md) — CORS `*` na Amazon e no ML, padrões de URL, SL1000, gif "não disponível" do ML
 - [Teste do front](decisao-teste-front.md) — testes/*.test.html via node testes/rodar.mjs (CDP); lógica em function global; adotado em fcfcff8
-- [Blindar servidor](decisao-blindar-servidor.md) — allowlist Host/Origin + origens do ML, estático por lista, env DB/porta, unittest (proposta)
+- [Blindar servidor](decisao-blindar-servidor.md) — allowlist Host/Origin + origens do ML, estático por lista, env DB/porta, unittest (implementado em 11ce20e)
+- [Abas e coleta ML](decisao-eletronicos-coleta-ml.md) — abas finais do dono, migrar_categorias.py, progresso por termo (armadilha do `|`), coletar_ml.js
+- [Disparo automático](decisao-disparo-automatico.md) — transporte por interface (manual 1º), disparo.py sem importar servidor, user_version, pesquisa WhatsApp

@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Abas</title>
+<!--
+  Testes da reorganização das abas (docs/produto/planos/eletronicos-e-coleta-ml.md, etapa 7, CA9 e CA10).
+  Sem dependência. Rode sobre um banco JÁ MIGRADO (a cópia migrada do plano, nunca o achadinhos.db antes
+  da migração). Sobe o servidor com a cópia e roda o runner apontando para a porta dele:
+
+    ACHADINHOS_DB=<copia migrada> ACHADINHOS_PORTA=8766 python3 servidor.py
+    PORTA=8766 node testes/rodar.mjs abas
+
+  O runner abre o Chrome headless em tempo real (CDP) e sai com código 0 só quando a linha de
+  resultado diz "OK". Com o banco ainda sem migrar, os testes de CA9 falham de propósito: o
+  "Black Friday" antigo existe, então a abertura nele não prova nada.
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real; só GET sai para a API;
+  - fetch do iframe passa por uma guarda: POST, PUT, DELETE e PATCH em /api/ nunca saem. O único PATCH
+    que o teste provoca ("Mover para") é interceptado, gravado para conferência e respondido por um
+    Response falso: o banco não muda;
+  - nunca clica em .del, .fetch, #saveLinks nem #saveTpl; window.open e prompt são trocados.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste comentário,
+  para um grep no texto da página não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Abas</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const ELETRONICOS = 'Black Friday | Eletrônicos';
+const ELETRODOMESTICOS = 'Eletrodomésticos';
+const CASA = 'Casa e Decoração';
+const PERFUMES = 'Perfumes e Perfumaria';
+const WHATS = 'Lista WhatsApp';
+const PAGINA = 24;   // PAGE em render()
+
+let W, FETCH_ORIG, API = null, API_ANTES = null;
+const VIOL = [];      // tentativas de escrita na API real (devem ficar vazias)
+const PATCHES = [];   // PATCH interceptado de "Mover para": { url, corpo, cabecalhos }
+const REG_FETCH = [];
+
+// Abas na ordem em que aparecem nos itens, como cats() do app, mas calculadas aqui, a partir do JSON cru.
+const catsDaApi = () => [...new Set(API.map(i => i.cat))];
+const daCat = c => API.filter(i => i.cat === c);
+
+async function abrirApp(activeCat) {
+  localStorage.removeItem('activeCat');
+  if (activeCat !== undefined) localStorage.setItem('activeCat', activeCat);
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  PATCHES.length = 0; REG_FETCH.length = 0;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    REG_FETCH.push({ url, metodo });
+    if (metodo === 'PATCH' && /\/api\/items\/\d+$/.test(url)) {
+      PATCHES.push({ url, corpo: JSON.parse(opcoes.body), cabecalhos: opcoes.headers });
+      return Promise.resolve(new W.Response('{}', { headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0,
+    'o index.html carregar os itens (servidor da cópia migrada no ar? PORTA=...)');
+  await dormir(30);   // unhandledrejection só dispara depois do fim da microtask
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+const abas = () => [...W.document.querySelectorAll('#tabs .tab')];
+// Texto do botão sem o contador (o <span class="muted">N</span> no fim).
+const nomeDaAba = b => b.firstChild.textContent.replace(/\s+$/, '');
+const contadorDaAba = b => +b.querySelector('.muted').textContent;
+const abaAtiva = () => abas().filter(b => b.classList.contains('active'));
+const abaPorNome = nome => abas().find(b => b.dataset.c === nome);
+const catAtiva = () => W.eval('activeCat');
+const cartoes = () => [...W.document.querySelectorAll('#grid .card')];
+const totalFiltrado = () => W.eval('filtrada().length');
+const tituloPager = () => W.document.querySelector('.pager').textContent.replace(/\s+/g, ' ').trim();
+
+function clicar(botao) { botao.click(); }
+function escolher(select, valor) {
+  select.value = valor;
+  select.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+
+// ================================================================ precondição
+teste('o banco da cópia está migrado: as abas são as finais, na ordem do plano, e nenhuma antiga', async () => {
+  await abrirApp();
+  const cs = catsDaApi();
+  afirma(!cs.includes('Black Friday') && !cs.includes('Casa Nova'),
+    'o banco ainda tem "Black Friday"/"Casa Nova": rode a página sobre a cópia JÁ migrada (' + JSON.stringify(cs) + ')');
+  // "Lista WhatsApp" some depois do classificar_lista.py (disparo-automatico, etapa 6): com ou sem ela vale.
+  const base = [ELETRONICOS, ELETRODOMESTICOS, CASA];
+  const esperadas = cs[0] === WHATS ? [WHATS, ...base] : base;
+  igual(cs.slice(0, esperadas.length), esperadas);
+  afirma(cs.length === esperadas.length || (cs.length === esperadas.length + 1 && cs[esperadas.length] === PERFUMES),
+    'abas inesperadas: ' + JSON.stringify(cs));
+  igual(abas().map(nomeDaAba), cs, 'os botões do front são as abas dos itens, na mesma ordem');
+});
+
+// ================================================================ CA9
+const PRIMEIRA = () => catsDaApi()[0];
+
+async function abreNaPrimeira(valorGuardado, descricao) {
+  afirma(!catsDaApi().includes(valorGuardado), 'precondição: "' + valorGuardado + '" não pode ser uma aba existente');
+  await abrirApp(valorGuardado);
+  igual(catAtiva(), PRIMEIRA(), descricao + ': activeCat');
+  igual(abaAtiva().map(b => b.dataset.c), [PRIMEIRA()], descricao + ': só a primeira aba fica ativa');
+  igual(abaAtiva()[0].getAttribute('aria-pressed'), 'true');
+  afirma(cartoes().length > 0, descricao + ': a grade tem que mostrar os itens da primeira aba');
+  igual(localStorage.getItem('activeCat'), PRIMEIRA(), 'o activeCat gravado é corrigido para a primeira aba');
+  igual(totalFiltrado(), daCat(PRIMEIRA()).length);
+}
+
+teste('CA9: com activeCat "Black Friday" o front abre na primeira aba existente, sem erro', async () => {
+  await abreNaPrimeira('Black Friday', 'activeCat "Black Friday"');
+  afirma([WHATS, ELETRONICOS].includes(PRIMEIRA()), 'a primeira aba é a Lista WhatsApp ou, sem ela, Black Friday | Eletrônicos: ' + PRIMEIRA());
+});
+
+teste('CA9: o mesmo vale para "Casa Nova", valor vazio, nome parecido e nome inexistente', async () => {
+  for (const [valor, desc] of [['Casa Nova', 'Casa Nova'], ['', 'vazio'],
+                                ['black friday | eletrônicos', 'caixa diferente'],
+                                [ELETRONICOS + ' ', 'com espaço no fim'],
+                                ['Categoria que nunca existiu', 'inexistente']]) {
+    await abreNaPrimeira(valor, desc);
+  }
+});
+
+teste('CA9: sem activeCat guardado, abre na primeira aba', async () => {
+  await abrirApp();
+  igual(catAtiva(), PRIMEIRA());
+  afirma(cartoes().length > 0, 'grade vazia');
+});
+
+// ================================================================ CA10
+teste('CA10: existe um botão com o texto exato "Black Friday | Eletrônicos" e a contagem certa', async () => {
+  await abrirApp(ELETRODOMESTICOS);   // outra aba ativa: assim "Black Friday | Eletrônicos" não é a ativa
+  const b = abaPorNome(ELETRONICOS);
+  afirma(b, 'não achei a aba "' + ELETRONICOS + '"');
+  igual(nomeDaAba(b), ELETRONICOS, 'texto do botão (sem o contador)');
+  igual(b.textContent.replace(/\s+/g, ' ').trim(), ELETRONICOS + ' ' + daCat(ELETRONICOS).length, 'texto + contador');
+  igual(contadorDaAba(b), daCat(ELETRONICOS).length);
+  igual(b.getAttribute('aria-pressed'), 'false');
+  // todas as abas: texto exato e contador igual ao do banco
+  for (const c of catsDaApi()) {
+    const x = abaPorNome(c);
+    afirma(x, 'sem aba para "' + c + '"');
+    igual(nomeDaAba(x), c);
+    igual(contadorDaAba(x), daCat(c).length, 'contador de "' + c + '"');
+  }
+  igual(abas().reduce((s, x) => s + contadorDaAba(x), 0), API.length, 'a soma dos contadores é o total');
+});
+
+teste('CA10: o clique em "Black Friday | Eletrônicos" lista só itens dessa aba, com a contagem certa', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRONICOS));
+  igual(catAtiva(), ELETRONICOS);
+  igual(abaAtiva().map(b => b.dataset.c), [ELETRONICOS]);
+  igual(localStorage.getItem('activeCat'), ELETRONICOS, 'o nome com "|" e acento é guardado inteiro');
+  const esperadas = daCat(ELETRONICOS);
+  igual(totalFiltrado(), esperadas.length);
+  igual(W.eval('filtrada()').every(i => i.cat === ELETRONICOS), true, 'item de outra aba na lista');
+  const cs = cartoes();
+  igual(cs.length, Math.min(PAGINA, esperadas.length), 'cartões na primeira página');
+  for (const c of cs) {
+    igual(c.querySelector('select.mv').value, ELETRONICOS, 'cada cartão da aba tem a aba como "Mover para" atual');
+  }
+  afirma(tituloPager().includes(esperadas.length + ' itens'), 'o pager deve dizer "' + esperadas.length + ' itens": ' + tituloPager());
+  // última página: o resto da divisão
+  const paginas = Math.ceil(esperadas.length / PAGINA);
+  W.document.querySelector('.pager .pg[data-p="' + paginas + '"]').click();
+  igual(cartoes().length, esperadas.length - PAGINA * (paginas - 1), 'cartões na última página');
+  for (const c of cartoes()) igual(c.querySelector('select.mv').value, ELETRONICOS);
+});
+
+teste('CA10: as buscas da aba aparecem no filtro e cada uma filtra os itens certos', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRONICOS));
+  const itens = daCat(ELETRONICOS);
+  const buscas = [...new Set(itens.map(i => i.busca).filter(Boolean))];
+  afirma(buscas.length >= 60, 'a aba deveria ter os 60 termos (mais o alias do ML): ' + buscas.length);
+  const sel = W.document.getElementById('fBusca');
+  const opcoes = [...sel.options].map(o => o.textContent);
+  igual(opcoes[0], 'Todas as buscas (' + buscas.length + ')');
+  igual(opcoes.slice(1), buscas);
+  for (const b of buscas) {
+    escolher(sel, b);
+    igual(sel.value, b, 'o select aceita o valor "' + b + '" (option sem value)');
+    const esperados = itens.filter(i => i.busca === b).length;
+    igual(totalFiltrado(), esperados, 'itens da busca "' + b + '"');
+    igual(W.eval('filtrada()').every(i => i.cat === ELETRONICOS && i.busca === b), true, 'filtro de "' + b + '" deixou item errado');
+  }
+  // um filtro na tela: os cartões mostram só aquela busca
+  escolher(sel, 'iPhone 17');
+  const cs = cartoes();
+  afirma(cs.length > 0, 'iPhone 17 sem cartões');
+  for (const c of cs) igual(c.querySelector('.busca').textContent, 'iPhone 17');
+  escolher(sel, '');
+  igual(totalFiltrado(), itens.length, 'voltar para "Todas as buscas"');
+});
+
+teste('CA10: o alias do ML ("Caixa inteligente assistente virtual") fica na aba, só com ML, e filtra', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRONICOS));
+  const alias = daCat(ELETRONICOS).filter(i => i.busca === 'Caixa inteligente assistente virtual');
+  afirma(alias.length > 0, 'o alias do ML tem que estar na aba');
+  igual(alias.every(i => i.loja === 'ml'), true);
+  const sel = W.document.getElementById('fBusca');
+  escolher(sel, 'Caixa inteligente assistente virtual');
+  igual(totalFiltrado(), alias.length);
+  escolher(W.document.getElementById('fLoja'), 'amazon');
+  igual(totalFiltrado(), 0, 'combinado com a loja Amazon não sobra nada');
+});
+
+teste('CA10: trocar de aba zera o filtro de busca e a página', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRONICOS));
+  const sel = W.document.getElementById('fBusca');
+  escolher(sel, 'iPhone 17');
+  clicar(abaPorNome(ELETRODOMESTICOS));
+  igual(catAtiva(), ELETRODOMESTICOS);
+  igual(sel.value, '');
+  igual(totalFiltrado(), daCat(ELETRODOMESTICOS).length);
+  const buscas = [...new Set(daCat(ELETRODOMESTICOS).map(i => i.busca).filter(Boolean))];
+  igual([...sel.options].slice(1).map(o => o.textContent), buscas, 'as buscas são as da aba nova');
+});
+
+teste('CA10: "Mover para" lista as abas com value igual ao nome, inclusive "Black Friday | Eletrônicos"', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRODOMESTICOS));
+  const sel = cartoes()[0].querySelector('select.mv');
+  const cs = catsDaApi();
+  const comNome = [...sel.options].filter(o => o.value !== '__new');
+  igual(comNome.map(o => o.textContent), cs, 'as opções são as abas, na ordem');
+  for (const o of comNome) igual(o.value, o.textContent, 'o value de "' + o.textContent + '" tem que ser o nome exato');
+  igual(sel.value, ELETRODOMESTICOS, 'a opção marcada é a aba atual');
+  const opt = comNome.find(o => o.textContent === ELETRONICOS);
+  afirma(opt, 'falta a opção "' + ELETRONICOS + '"');
+  igual(opt.value, ELETRONICOS);
+  igual([...sel.options].pop().value, '__new', 'a opção "+ nova..." continua no fim');
+});
+
+teste('CA10: "Mover para" Black Friday | Eletrônicos manda o PATCH com o nome exato e muda as contagens', async () => {
+  await abrirApp();
+  clicar(abaPorNome(ELETRODOMESTICOS));
+  const alvo = W.eval('filtrada()[0]');
+  const idAlvo = alvo.id;
+  const nEletronicos = daCat(ELETRONICOS).length, nEletro = daCat(ELETRODOMESTICOS).length;
+  escolher(cartoes()[0].querySelector('select.mv'), ELETRONICOS);
+  await esperar(() => PATCHES.length === 1, 'o PATCH do "Mover para"');
+  igual(PATCHES[0].url, '/api/items/' + idAlvo);
+  igual(PATCHES[0].corpo, { cat: ELETRONICOS });
+  igual(PATCHES[0].cabecalhos['Content-Type'], 'application/json');
+  await esperar(() => contadorDaAba(abaPorNome(ELETRONICOS)) === nEletronicos + 1, 'contador da aba destino');
+  igual(contadorDaAba(abaPorNome(ELETRODOMESTICOS)), nEletro - 1, 'contador da aba de origem');
+  igual(W.eval('items.find(i => i.id === ' + idAlvo + ').cat'), ELETRONICOS);
+  igual(W.eval('filtrada().some(i => i.id === ' + idAlvo + ')'), false, 'o item saiu da aba de origem');
+  clicar(abaPorNome(ELETRONICOS));
+  igual(W.eval('filtrada().some(i => i.id === ' + idAlvo + ')'), true, 'o item aparece na aba destino');
+  igual(totalFiltrado(), nEletronicos + 1);
+  // e o banco não mudou: o PATCH foi interceptado
+  igual(await (await FETCH_ORIG('/api/items')).text(), API_ANTES, 'o banco real mudou');
+});
+
+teste('CA10: com activeCat "Black Friday | Eletrônicos" guardado, o front reabre nessa aba', async () => {
+  await abrirApp(ELETRONICOS);
+  igual(catAtiva(), ELETRONICOS);
+  igual(abaAtiva().map(b => b.dataset.c), [ELETRONICOS]);
+  igual(totalFiltrado(), daCat(ELETRONICOS).length);
+  igual(W.document.getElementById('addCat').value, ELETRONICOS, 'o select "Adicionar em" acompanha a aba');
+  igual([...W.document.getElementById('addCat').options].map(o => o.textContent), catsDaApi());
+});
+
+teste('CA10: o cabeçalho conta o total e as lojas, e as abas finais somam o total', async () => {
+  await abrirApp();
+  const txt = W.document.getElementById('count').textContent;
+  igual(txt, API.length + ' itens no total · ' + API.filter(i => i.loja === 'amazon').length + ' Amazon · ' +
+    API.filter(i => i.loja === 'ml').length + ' Mercado Livre');
+});
+
+// ================================================================ fecho: a API real não mudou
+teste('só GET saiu para a API e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    API = JSON.parse(API_ANTES);
+    afirma(Array.isArray(API) && API.length > 0, '/api/items vazio');
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

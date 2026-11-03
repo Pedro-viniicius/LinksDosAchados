@@ -1,2 +1,7 @@
 - [Chrome headless nos testes do front](chrome-headless-testes.md) — virtual-time trava decode de imagem; runner `node testes/rodar.mjs`; clipboard real com grantPermissions
 - [Testes do servidor.py](servidor-testes.md) — rede só via proxy morto; mutantes numa cópia; órfãos; `//` no 3.14; front na 8766 com cópia
+- [Escapes \u nas ferramentas](escapes-unicode-ferramentas.md) — Write/Edit gravam \uXXXX como caractere literal; grave via node e confira com grep -P
+- [Testes do coletar_ml.js](coletar-ml-testes.md) — vm e realms, timer do Promise.race segura 5 s, node:http ignora proxy, mutantes
+- [Backup sqlite e migração](sqlite-backup-migracao.md) — backup trava com BEGIN IMMEDIATE na origem; `ls|tail -1` pega o backup errado; reuso de M; guarda numa cópia
+- [Testes do disparo.py](disparo-testes.md) — paridade gerada no node; manual expira; test_ca6 lê literais /api/; cópias do servidor sem disparo.py
+- [Tela Disparo e seu teste](disparo-tela-testes.md) — servidor falso no iframe; corrida de hash no abrir(); dialog close atrasado; classes que colidem

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Abrir na loja e Adicionar links</title>
+<!--
+  Testes da correção do achado S1 (seguranca) no index.html: o botão "Abrir na loja" só abre https, com
+  noopener,noreferrer, e o "Adicionar" (#saveLinks) só envia https, mostra o erro do servidor e não
+  escreve "undefined". Sem dependência. Rodar com o servidor no ar (python3 servidor.py):
+
+    node testes/rodar.mjs abrir-e-adicionar          (PORTA=8766 para outra porta)
+
+  O runner abre o Chrome headless em tempo real (CDP) e sai com código 0 só quando a linha de
+  resultado diz "OK".
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real; só GET sai para a API real;
+  - fetch do iframe passa por uma guarda: POST, PATCH, PUT e DELETE em /api/ nunca saem. O único que o
+    teste provoca (POST de #saveLinks) é desviado para um stub (IMPL_POST), que registra o pedido e
+    responde por conta própria; sem stub, a tentativa vira VIOL e o teste falha;
+  - window.open é trocado por um registrador; os itens são falsos (ids 9xxxxxxxx), montados num div solto;
+  - nunca clica em .del, .mv, .fetch, #saveTpl.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste comentário,
+  para um grep no texto da página não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Abrir na loja e Adicionar links</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+let W, FETCH_ORIG, API_ANTES = null;
+let IMPL_POST = null;       // stub do POST de #saveLinks: (url, opcoes) => Response
+const POSTS = [];           // POST desviado para o stub no teste corrente
+const VIOL = [];            // escrita na API real sem stub (deve ficar vazia)
+const OPENS = [];           // chamadas a window.open do iframe
+const cartoes = [];
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html'; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      if (metodo === 'POST' && /\/api\/items$/.test(url) && IMPL_POST) {
+        POSTS.push({ url, metodo, opcoes, corpo: JSON.parse(opcoes.body) });
+        return Promise.resolve(IMPL_POST(url, opcoes));
+      }
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { OPENS.push(a); return null; };
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0,
+    'o index.html carregar os itens do servidor (servidor no ar?)');
+}
+
+function restaurar() {
+  IMPL_POST = null;
+  POSTS.length = 0; OPENS.length = 0;
+  while (cartoes.length) cartoes.pop().remove();
+  const t = W.document.getElementById('toast'); if (t) t.textContent = '';
+  W.document.getElementById('addLinks').value = '';
+  W.document.getElementById('addCatNew').value = '';
+}
+
+const json = (corpo, status = 200) => new W.Response(JSON.stringify(corpo), { status, headers: { 'content-type': 'application/json' } });
+
+let seq = 0;
+function itemFalso(url) {
+  const n = ++seq;
+  return { id: 900000000 + n, loja: 'ml', cat: 'QA', busca: 'qa', url,
+    data: { titulo: 'Produto de teste ' + n, preco: 'R$ 99,90', imagem: 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-E.webp' } };
+}
+function montarCard(it) {
+  const card = W.document.createElement('div');
+  card.className = 'card';
+  W.document.body.appendChild(card);
+  cartoes.push(card);
+  W.renderCard(card, it);
+  return { card, btn: card.querySelector('.open'), st: card.querySelector('.status') };
+}
+
+const toastTxt = () => W.document.getElementById('toast').textContent;
+const caixa = () => W.document.getElementById('addLinks');
+function adicionar(textoDaCaixa, cat = 'QA teste') {
+  caixa().value = textoDaCaixa;
+  W.document.getElementById('addCatNew').value = cat;
+  W.document.getElementById('saveLinks').click();
+}
+
+// ================================================================ (a) "Abrir na loja" recusa o que não é https
+const RUINS = [
+  ['javascript:alert(document.cookie)', 'javascript:'],
+  ['data:text/html,<b>x<\/b>', 'data:'],
+  ['http://www.amazon.com.br/dp/B0TESTE0001', 'http: (sem https)'],
+  ['ftp://exemplo.com/arquivo', 'ftp:'],
+  ['file:///etc/passwd', 'file:'],
+  ['isto nao e uma url', 'lixo'],
+  ['//meli.la/abc', 'sem protocolo'],
+  ['', 'vazia'],
+  [null, 'nula']
+];
+for (const [url, rotulo] of RUINS) {
+  teste('S1: "Abrir na loja" com url ' + rotulo + ' não abre nada e mostra o erro no cartão', async () => {
+    const c = montarCard(itemFalso(url));
+    c.btn.click();
+    await dormir(20);
+    igual(OPENS, [], 'window.open foi chamado');
+    afirma(c.st.classList.contains('err'), '.status deveria ter a classe err: "' + c.st.className + '"');
+    igual(c.st.textContent, 'Erro: link da loja inválido, não abri.');
+  });
+}
+
+// ================================================================ (b) https abre com noopener,noreferrer
+teste('S1: "Abrir na loja" com https://meli.la/abc abre em _blank com noopener,noreferrer e sem erro', async () => {
+  const c = montarCard(itemFalso('https://meli.la/abc'));
+  c.btn.click();
+  igual(OPENS, [['https://meli.la/abc', '_blank', 'noopener,noreferrer']]);
+  afirma(!c.st.classList.contains('err'), 'não deveria mostrar erro');
+  igual(c.st.textContent, '');
+});
+
+teste('S1: link da Amazon com a tag de afiliado abre inteiro e o esquema em maiúsculas abre normalizado', async () => {
+  const a = 'https://www.amazon.com.br/dp/B0TESTE0002?tag=desejodemen01-20';
+  montarCard(itemFalso(a)).btn.click();
+  montarCard(itemFalso('HTTPS://meli.la/xyz')).btn.click();
+  igual(OPENS, [[a, '_blank', 'noopener,noreferrer'], ['https://meli.la/xyz', '_blank', 'noopener,noreferrer']]);
+});
+
+// ================================================================ (c) #saveLinks
+teste('S1: o POST responde {error}: o toast mostra o erro, a caixa fica como estava e só https foi enviado', async () => {
+  IMPL_POST = () => json({ error: 'link recusado pelo servidor' }, 400);
+  const texto = 'https://meli.la/a1\nhttp://exemplo.com/b2';
+  adicionar(texto);
+  await esperar(() => toastTxt().includes('Nenhum link adicionado'), 'toast de erro');
+  afirma(toastTxt().includes('link recusado pelo servidor'), 'o toast deve trazer o erro do servidor: ' + toastTxt());
+  afirma(!/undefined/.test(toastTxt()), 'toast com "undefined": ' + toastTxt());
+  igual(caixa().value, texto, 'a caixa deve ficar como estava');
+  igual(POSTS.length, 1);
+  igual(POSTS[0].corpo.items.map(i => i.url), ['https://meli.la/a1'], 'o http não pode ir no POST');
+});
+
+teste('S1: POST 200 {inserido:1}: toast "1 links adicionados" sem "undefined", e a caixa fica só com os http', async () => {
+  IMPL_POST = () => json({ inserido: 1, atualizado: 0 });
+  adicionar('https://meli.la/ok1\nhttp://exemplo.com/sem-https', 'QA teste');
+  await esperar(() => /links adicionados/.test(toastTxt()), 'toast de sucesso');
+  afirma(toastTxt().includes('1 links adicionados em "QA teste"'), toastTxt());
+  afirma(!/undefined/.test(toastTxt()), 'toast com "undefined": ' + toastTxt());
+  igual(caixa().value, 'http://exemplo.com/sem-https', 'só os http voltam para a caixa');
+  igual(POSTS.length, 1);
+  const p = POSTS[0];
+  igual(p.opcoes.headers['Content-Type'], 'application/json');
+  igual(p.corpo, { items: [{ url: 'https://meli.la/ok1', cat: 'QA teste', loja: 'ml', item_id: 'https://meli.la/ok1' }] });
+  igual(W.document.getElementById('addCatNew').value, '', 'o campo de categoria nova é limpo');
+});
+
+teste('S1: erro "item N: ..." do servidor: o toast traz o link recusado (found[N], só https) e não o http da frente', async () => {
+  const erro = 'url precisa ser https da Amazon ou do Mercado Livre';
+  const texto = 'http://exemplo.com/antes-do-ruim\nhttps://meli.la/ruim\nhttps://meli.la/bom';
+  for (const [n, recusado] of [[0, 'https://meli.la/ruim'], [1, 'https://meli.la/bom']]) {
+    W.document.getElementById('toast').textContent = '';
+    IMPL_POST = () => json({ error: 'item ' + n + ': ' + erro }, 400);
+    adicionar(texto);
+    await esperar(() => toastTxt().includes('Nenhum link adicionado'), 'toast de erro (item ' + n + ')');
+    afirma(toastTxt().includes(erro), 'o toast deve trazer o motivo: ' + toastTxt());
+    afirma(toastTxt().includes(recusado), 'o toast deve trazer ' + recusado + ': ' + toastTxt());
+    afirma(!toastTxt().includes('antes-do-ruim'), 'o toast mostrou o http em vez do link recusado: ' + toastTxt());
+    afirma(!/undefined/.test(toastTxt()), toastTxt());
+    igual(caixa().value, texto, 'a caixa deve ficar como estava');
+  }
+  igual(POSTS.length, 2);
+  igual(POSTS[0].corpo.items.map(i => i.url), ['https://meli.la/ruim', 'https://meli.la/bom'], 'o http não pode ir no POST');
+});
+
+teste('S1: caixa só com http: nenhum POST, toast avisa e a caixa não muda', async () => {
+  IMPL_POST = () => json({ inserido: 99 });
+  const texto = 'http://exemplo.com/a\nhttp://exemplo.com/b';
+  adicionar(texto);
+  await esperar(() => toastTxt().includes('Nenhum link adicionado'), 'toast de aviso');
+  await dormir(150);
+  igual(POSTS.length, 0, 'houve POST');
+  igual(caixa().value, texto);
+  afirma(!/undefined/.test(toastTxt()), toastTxt());
+  igual(VIOL, []);
+});
+
+// ================================================================ fecho
+teste('nenhuma escrita chegou à API real e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await FETCH_ORIG('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita sem stub (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    await carregarApp();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      restaurar();
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    } finally {
+      try { restaurar(); } catch (e) { /* ignora */ }
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

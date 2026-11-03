@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes de integração: tela Disparo automático</title>
+<!--
+  Integração REAL da tela "Disparo automático" com o servidor (plano docs/produto/planos/disparo-automatico.md, etapa 5:
+  CA1, CA2, CA9, CA10, CA11). Diferente de disparo.test.html, aqui NADA é falso: o iframe do /index.html fala com
+  as rotas /api/disparo/* de verdade e GRAVA no banco. Por isso só roda contra um servidor com banco temporário:
+
+    cp <copia do banco, já migrada> /tmp/x.db
+    ACHADINHOS_DB=/tmp/x.db ACHADINHOS_DISPARO=0 ACHADINHOS_PORTA=8767 python3 servidor.py &
+    PORTA=8767 node testes/rodar.mjs disparo-integracao
+
+  Guardas: recusa a porta 8765 e recusa um banco que já tenha número ou regra de disparo (rode num banco novo a cada vez).
+  ACHADINHOS_DISPARO=0 desliga o agendador: só a ação do dono ("Disparar agora") gera envios.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste comentário.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes de integração: tela Disparo automático</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 800, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const FONE = '00000000001', GID = '120363012345678901@g.us';
+let W, ORIG;
+const LOG = [];
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => (el ? el.textContent : '').replace(/\s+/g, ' ').trim();
+const toastTxt = () => W.document.getElementById('toast').textContent;
+const tela = () => W.document.getElementById('telaDisparo');
+const api = async (caminho, metodo = 'GET', corpo) => {
+  const r = await ORIG('/api/' + caminho, { method: metodo, headers: { 'Content-Type': 'application/json' }, body: corpo === undefined ? undefined : JSON.stringify(corpo) });
+  const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch (e) { /* texto puro */ }
+  return { status: r.status, dados: d, texto: t };
+};
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html'; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  ORIG = W.fetch.bind(W);
+  const o = W.fetch.bind(W);
+  W.fetch = (entrada, opcoes) => {
+    const url = typeof entrada === 'string' ? entrada : entrada.url;
+    LOG.push({ metodo: String((opcoes && opcoes.method) || 'GET').toUpperCase(), url, corpo: opcoes && opcoes.body ? JSON.parse(opcoes.body) : undefined });
+    return o(entrada, opcoes);
+  };
+  W.open = () => null;
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0, 'o index.html carregar os itens');
+}
+const carregou = () => { const c = q('#dspCorpo'); return !!c && !/Carregando…/.test(c.textContent); };
+async function abrir(hash) {
+  const antes = q('#dspTitulo');
+  if (W.location.hash === hash) W.eval('rotear()'); else W.location.hash = hash;
+  await esperar(() => !tela().hidden && q('#dspTitulo') && q('#dspTitulo') !== antes && carregou(), 'a tela ' + hash + ' carregar');
+}
+function digitar(sel, valor) {
+  const el = typeof sel === 'string' ? q(sel) : sel;
+  afirma(el, 'campo não existe: ' + sel);
+  el.value = valor; el.dispatchEvent(new W.Event('input', { bubbles: true })); el.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+const marcar = (grupo, valor, v = true) => { const i = qa(grupo + ' input').find(x => x.value === String(valor)); afirma(i, 'chip ' + valor + ' não existe em ' + grupo); if (i.checked !== v) i.click(); };
+const clicar = sel => { const b = typeof sel === 'string' ? q(sel) : sel; afirma(b, 'botão não existe: ' + sel); b.click(); };
+const acao = (nome, id) => q('[data-acao="' + nome + '"]' + (id !== undefined ? '[data-id="' + id + '"]' : ''));
+const dialogoAberto = () => q('#dlg').open;
+const botaoDialogo = r => q('#dlg button[data-r="' + r + '"]');
+const stubClip = () => { const c = { text: [] }; Object.defineProperty(W.navigator, 'clipboard', { value: { writeText: async t => { c.text.push(t); } }, configurable: true }); return c; };
+
+let CAT = null, NUM = null, REGRA = null, ENV = [];
+const AMAZON_COM_TAG = /^https:\/\/www\.amazon\.com\.br\/dp\/[A-Z0-9]{10}\?tag=desejodemen01-20\b/;
+
+// ================================================================ roteiro (os testes dependem uns dos outros, em ordem)
+teste('guarda: servidor de teste (não é a 8765) e banco novo, sem número nem regra', async () => {
+  afirma(W.location.port !== '8765', 'recusado: esta página grava no banco; rode num servidor de teste com banco temporário');
+  const n = await api('disparo/numeros'), r = await api('disparo/regras'), f = await api('disparo/fila');
+  igual([n.status, r.status, f.status], [200, 200, 200], 'o servidor tem as rotas de disparo?');
+  igual([n.dados, r.dados, f.dados], [[], [], []], 'banco novo (sem números, regras nem fila)');
+  const s = await api('disparo/status');
+  igual(s.dados.agendador, 'desligado', 'ACHADINHOS_DISPARO=0');
+  igual(s.dados.transporte, 'manual');
+  CAT = W.eval('cats()').find(c => W.eval('items').filter(i => i.cat === c && i.loja === 'amazon' && i.data && i.data.titulo && i.data.preco).length >= 12);
+  afirma(CAT, 'uma categoria com 12 itens da Amazon');
+});
+
+teste('CA1: cadastrar o número pela tela grava no servidor com o telefone inteiro; a lista mostra mascarado', async () => {
+  await abrir('#numeros');
+  clicar(acao('novo-numero'));
+  await esperar(() => q('#f-tel'), 'formulário do número');
+  digitar('#f-nome', 'Loja QA'); digitar('#f-tel', '(00) 00000-0001'); digitar('#f-grupo', 'Achadinhos QA'); digitar('#f-gid', GID); digitar('#f-lim', '3');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#numeros' && q('[data-numero]'), 'volta para a lista');
+  const lista = (await api('disparo/numeros')).dados;
+  igual(lista.length, 1);
+  NUM = lista[0];
+  igual([NUM.nome, NUM.telefone, NUM.grupo_nome, NUM.grupo_id, NUM.limite_diario, NUM.ativo], ['Loja QA', FONE, 'Achadinhos QA', GID, 3, 1]);
+  const t = txt(q('[data-numero]'));
+  afirma(t.includes('(00) ·····-0001') && t.includes('120···@g.us'), 'mascarado: ' + t);
+  afirma(!W.document.documentElement.outerHTML.includes(FONE) && !W.document.documentElement.outerHTML.includes('363012345678901'), 'telefone ou grupo inteiro no HTML');
+  afirma(LOG.filter(l => l.metodo !== 'GET').every(l => !l.url.includes('0000000')), 'dado pessoal na URL');
+});
+
+teste('CA2: criar a regra pelo formulário (nasce pausada), com os campos certos no banco', async () => {
+  await abrir('#disparo');
+  clicar(acao('nova-regra'));
+  await esperar(() => q('#f-nome'), 'formulário da regra');
+  digitar('#f-nome', 'Regra A');
+  digitar('#f-numero', String(NUM.id));
+  marcar('#f-cats', CAT);
+  marcar('#f-lojas', 'amazon');
+  marcar('#f-ordem', 'desconto');
+  digitar('#f-por', '2'); digitar('#f-max', '3'); digitar('#f-rep', '7');
+  const h = q('input[name="horario"]'); digitar(h, '09:00');
+  await esperar(() => /Cerca de/.test(txt(q('#f-contador'))), 'contador de itens');
+  await esperar(() => q('#dspPrevia pre.msg'), 'prévia do servidor');
+  afirma(AMAZON_COM_TAG.test(q('#dspPrevia pre.msg').textContent.match(/https:\/\/\S+/)[0]), 'a prévia traz link de afiliado: ' + q('#dspPrevia pre.msg').textContent);
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && q('[data-regra]'), 'salvou');
+  const regras = (await api('disparo/regras')).dados;
+  igual(regras.length, 1);
+  REGRA = regras[0];
+  igual([REGRA.nome, REGRA.numero_id, REGRA.cats, REGRA.lojas, REGRA.ordem, REGRA.por_disparo, REGRA.max_por_dia, REGRA.repetir_apos_dias, REGRA.horarios, REGRA.ativa],
+    ['Regra A', NUM.id, [CAT], ['amazon'], 'desconto', 2, 3, 7, ['09:00'], 0]);
+  afirma(txt(q('[data-regra] .estado')).includes('Pausada'), 'cartão Pausada');
+});
+
+teste('CA2: ativar e pausar pelo cartão mudam a regra no servidor (o agendador está desligado: nada é gerado)', async () => {
+  clicar(acao('alternar', REGRA.id));
+  await esperar(() => txt(q('[data-regra] .estado')).includes('Ativa'), 'Ativa');
+  igual((await api('disparo/regras')).dados[0].ativa, 1);
+  afirma((await api('disparo/regras')).dados[0].proximo, 'regra ativa tem próximo horário');
+  igual((await api('disparo/fila')).dados.length, 0);
+  clicar(acao('alternar', REGRA.id));
+  await esperar(() => txt(q('[data-regra] .estado')).includes('Pausada'), 'Pausada');
+  igual((await api('disparo/regras')).dados[0].ativa, 0);
+});
+
+teste('CA11 e CA6: "Disparar agora" gera por_disparo (2), depois só o que cabe em max_por_dia (3), depois nada', async () => {
+  const confirmarAgora = async () => {
+    await dormir(1100);   // o slot de "Disparar agora" tem resolução de 1 s (dois cliques no mesmo segundo viram um slot só)
+    clicar(acao('agora', REGRA.id)); await esperar(dialogoAberto, 'diálogo');
+    const corpo = txt(q('#dlg'));
+    clicar(botaoDialogo(1)); await esperar(() => !dialogoAberto(), 'fechar');
+    return corpo;
+  };
+  const c1 = await confirmarAgora();
+  afirma(c1.includes('Achadinhos QA'), 'o diálogo cita o grupo: ' + c1);
+  await esperar(() => qa('#dspFilaLista article').length === 2, 'dois envios na fila');
+  igual(toastTxt(), '2 mensagens entraram na fila.');
+  igual((await api('disparo/fila')).dados.length, 2);
+  await confirmarAgora();
+  await esperar(() => qa('#dspFilaLista article').length === 3, 'o terceiro (limite de 3 por dia)');
+  igual(toastTxt(), '1 mensagem entrou na fila.');
+  await confirmarAgora();
+  await esperar(() => /Nada foi gerado/.test(toastTxt()), 'aviso de limite');
+  igual((await api('disparo/fila')).dados.length, 3, 'max_por_dia não pode ser passado');
+  ENV = (await api('disparo/fila')).dados;
+  igual(new Set(ENV.map(e => e.item_pk)).size, 3, 'nenhum item repetido');
+});
+
+teste('CA8/CA9: cada cartão da fila traz a mensagem do servidor, igual ao buildMsg do mesmo item, com link de afiliado e sem telefone', async () => {
+  const cartoes = qa('#dspFilaLista article');
+  igual(cartoes.length, 3);
+  for (const e of ENV) {
+    const c = q('#dspFilaLista [data-envio="' + e.id + '"]');
+    igual(c.querySelector('textarea').value, e.mensagem, 'textarea = mensagem do servidor');
+    const it = W.eval('items').find(i => i.id === e.item_pk);
+    afirma(it, 'item ' + e.item_pk + ' existe no front');
+    W.eval('current = ' + JSON.stringify(REGRA.template) + ';');
+    igual(W.buildMsg(it), e.mensagem, 'mensagem do servidor == buildMsg do front para o item ' + e.item_pk);
+    afirma(AMAZON_COM_TAG.test(it.url) && e.mensagem.includes(it.url), 'link de afiliado na mensagem');
+    afirma(!e.mensagem.includes(FONE) && !e.mensagem.includes(GID), 'sem dado pessoal');
+    igual(e.status, 'pendente'); igual(e.transporte, 'manual');
+    igual(e.titulo, it.data.titulo);
+  }
+  const bruto = [(await api('disparo/fila')).texto, (await api('disparo/regras')).texto, (await api('disparo/envios')).texto].join('\n');
+  afirma(!bruto.includes(FONE) && !bruto.includes('363012345678901'), 'fila, regras e histórico do servidor não devolvem telefone nem grupo');
+});
+
+teste('CA9: Copiar mensagem copia o texto do cartão; Enviado e Pular gravam o status no servidor e tiram o cartão', async () => {
+  const clip = stubClip();
+  const [a, b, c] = qa('#dspFilaLista article');
+  const ta = a.querySelector('textarea'); const original = ta.value;
+  clicar(a.querySelector('[data-acao="copiar-msg"]'));
+  await esperar(() => clip.text.length === 1, 'copiar');
+  igual(clip.text[0], original);
+  clicar(a.querySelector('[data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 2, 'sai o enviado');
+  clicar(b.querySelector('[data-acao="marcar"][data-status="pulado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 1, 'sai o pulado');
+  const todos = (await api('disparo/envios')).dados;
+  const por = Object.fromEntries(todos.map(e => [e.id, e.status]));
+  igual([por[+a.dataset.envio], por[+b.dataset.envio], por[+c.dataset.envio]], ['enviado', 'pulado', 'pendente']);
+  const e = todos.find(x => x.id === +a.dataset.envio);
+  afirma(e.enviado_em, 'enviado_em gravado');
+});
+
+teste('CA6: o limite diário do número (3) vale para todas as regras dele; "pulado" libera a vaga, "enviado" e na fila ocupam', async () => {
+  const r = await api('disparo/regras', 'POST', { ...REGRA, id: undefined, nome: 'Regra B', por_disparo: 5, max_por_dia: 50, ativa: 0, proximo: undefined, aviso: undefined, criado_em: undefined, atualizado_em: undefined });
+  igual(r.status, 200, JSON.stringify(r.dados));
+  const idB = r.dados.id;
+  await abrir('#disparo');
+  const disparar = async () => {
+    await dormir(1100);
+    clicar(acao('agora', idB)); await esperar(dialogoAberto, 'diálogo');
+    clicar(botaoDialogo(1) || botaoDialogo(0)); await esperar(() => !dialogoAberto(), 'fechar');
+    await dormir(150);
+    return (await api('disparo/envios')).dados.filter(e => e.regra_id === idB).length;
+  };
+  // hoje: 1 enviado + 1 na fila ocupam 2 das 3 vagas do número; o pulado não ocupa. Sobra 1, apesar de por_disparo 5 e max 50.
+  igual(await disparar(), 1, 'sobrava 1 vaga no número');
+  igual(await disparar(), 1, 'agora o número está no limite (3): nada novo, mesmo com max_por_dia 50');
+  const ocupam = (await api('disparo/envios')).dados.filter(e => ['enviado', 'pendente'].includes(e.status)).length;
+  igual(ocupam, 3);
+});
+
+teste('CA2: editar a regra pela tela grava no servidor (PUT) e preserva o estado ativa', async () => {
+  await abrir('#disparo/regra/' + REGRA.id);
+  digitar('#f-nome', 'Regra A renomeada');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvou');
+  const r = (await api('disparo/regras')).dados.find(x => x.id === REGRA.id);
+  igual([r.nome, r.ativa, r.por_disparo, r.max_por_dia], ['Regra A renomeada', 0, 2, 3]);
+});
+
+teste('CA10: o histórico mostra os 4 envios com status em texto, filtra por status e cita a regra', async () => {
+  await abrir('#historico');
+  await esperar(() => qa('#dspHist tbody tr').length === 4, 'quatro linhas');
+  const t = txt(q('#dspHist'));
+  afirma(t.includes('Enviado') && t.includes('Pulado') && t.includes('Na fila'), t);
+  afirma(t.includes('Regra A renomeada') && t.includes('Regra B'), 'nome das regras');
+  const st = q('#hStatus'); st.value = 'enviado'; st.dispatchEvent(new W.Event('change'));
+  await esperar(() => qa('#dspHist tbody tr').length === 1, 'filtro enviado');
+  afirma(LOG.some(l => /envios\?.*status=enviado/.test(l.url)), 'o filtro vai ao servidor');
+  st.value = 'erro'; st.dispatchEvent(new W.Event('change'));
+  await esperar(() => /Nenhum envio/.test(txt(q('#dspHist'))), 'vazio');
+});
+
+teste('CA1/CA2: número em uso não se exclui (explicação); excluir a regra mantém o histórico; depois o número sai', async () => {
+  await abrir('#numeros');
+  clicar(acao('excluir-numero', NUM.id)); await esperar(dialogoAberto, 'diálogo');
+  afirma(txt(q('#dlg')).includes('Pause ou mude as regras'), txt(q('#dlg')));
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual((await api('disparo/numeros')).dados.length, 1);
+  const rawDel = await api('disparo/numeros/' + NUM.id, 'DELETE');
+  igual(rawDel.status, 409, 'o servidor também recusa');
+  await abrir('#disparo');
+  const regras = (await api('disparo/regras')).dados;
+  for (const r of regras) {
+    clicar(acao('excluir-regra', r.id)); await esperar(dialogoAberto, 'confirmar exclusão');
+    clicar(botaoDialogo(1)); await esperar(() => !dialogoAberto(), 'fechar');
+    await esperar(() => !q('[data-regra="' + r.id + '"]'), 'cartão some');
+  }
+  igual((await api('disparo/regras')).dados.length, 0);
+  const env = (await api('disparo/envios')).dados;
+  igual(env.length, 4, 'o histórico continua');
+  await abrir('#historico');
+  afirma(txt(q('#dspHist')).includes('Regra excluída'), 'regra excluída no histórico');
+  await abrir('#numeros');
+  clicar(acao('excluir-numero', NUM.id)); await esperar(dialogoAberto, 'diálogo');
+  clicar(botaoDialogo(1)); await esperar(() => !dialogoAberto(), 'fechar');
+  await esperar(() => /Nenhum número cadastrado/.test(txt(q('#dspCorpo'))), 'lista vazia');
+  igual((await api('disparo/numeros')).dados.length, 0);
+});
+
+teste('atualizar a página mantém a tela e o estado do servidor (recarrega em #historico)', async () => {
+  W.location.hash = '#historico';
+  await carregarApp();   // recarrega o iframe com o hash atual
+  await dormir(100);
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try { await carregarApp(); }
+  catch (e) { log(PREF_F + 'preparação — ' + (e && e.message || e)); linhas.shift(); log(PREF_R + 'FALH' + 'OU (preparação)'); return; }
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+      if (/^guarda/.test(t.nome)) break;   // sem a guarda, nada mais roda
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

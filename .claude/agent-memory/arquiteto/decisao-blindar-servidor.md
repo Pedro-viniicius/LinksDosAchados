@@ -4,7 +4,7 @@ description: Proposta (2026-11-03) para fechar o servidor.py, com allowlist de H
 metadata:
   type: project
 ---
-Plano `docs/produto/planos/blindar-servidor.md` (2026-11-03), **aguardando aprovação do dono**. Corrige S1 e S2 do `seguranca`.
+Plano `docs/produto/planos/blindar-servidor.md` (2026-11-03), **implementado no commit 11ce20e** (`ORIGENS_ML` em servidor.py:24). Corrige S1 e S2 do `seguranca`.
 - A coleta do ML é cross-origin. O `servidor.log` mostrou 702 PATCH `/api/items/<id>`, cada um com OPTIONS antes, e GET `/api/ml-sem-afiliado`, além do POST vindo de `lista.mercadolivre.com.br`. Origens assumidas: `https://lista.` e `https://www.mercadolivre.com.br`; a do PATCH não foi verificada (o log não grava Origin).
 - O `coletar_amazon.py` não usa HTTP: importa `servidor` e chama `upsert` direto. Variável de ambiente no `servidor.py` vale também para ele.
 - O Chrome é o 156, com Local Network Access (prompt de permissão). O header PNA está obsoleto; o plano manda ele só no preflight aprovado do ML.

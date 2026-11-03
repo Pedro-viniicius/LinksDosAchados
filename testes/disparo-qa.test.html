@@ -1,0 +1,892 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes de QA: tela Disparo automático</title>
+<!--
+  Testes de QA da tela "Disparo automático" (plano docs/produto/planos/disparo-automatico.md, etapa 5: CA1, CA2, CA9, CA10,
+  CA11). Complementa testes/disparo.test.html com bordas: limites de formulário, dados pessoais em qualquer lugar da página,
+  HTML injetado em todos os pontos que mostram texto da API, falhas de rede nas ações da fila, histórico, "Disparar agora"
+  cancelado, beforeunload e o selo "· atenção". Sem dependência. Rodar com um servidor no ar:
+
+    node testes/rodar.mjs disparo-qa            (porta 8765; PORTA=<n> troca a porta)
+
+  (O nome tem hífen porque o servidor só serve /testes/[a-z0-9-]+.test.html.)
+
+  Mesmas regras de segurança do disparo.test.html: o iframe carrega o /index.html real, toda rota /api/disparo/* e o
+  GET/PUT de /api/config/templates são atendidos por um servidor FALSO em memória (função falso), só GET real nas demais
+  rotas, escrita fora do servidor falso vira VIOL. A integração com o servidor de verdade fica em
+  testes/disparo-integracao.test.html (só contra um servidor com banco temporário).
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste comentário.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes de QA: tela Disparo automático</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 800, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- dados de teste
+const FONE = '00000000001', FONE_FMT = '(00) 00000-0001', FONE_MASC = '(00) ·····-0001';   // número fictício
+const GID = '120363012345678901@g.us', GID_MASC = '120···@g.us';
+const URL_ML = 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-E.webp';
+const XSS = '<img src=x onerror="window.__xss=1">';
+
+// ---------------------------------------------------------------- ambiente
+let W, FETCH_ORIG, API_ANTES = null, PNG_BLOB = null;
+let E;                       // estado do servidor falso
+const LOG = [];              // pedidos do iframe: {metodo, url, corpo}
+const VIOL = [];             // escrita fora do servidor falso (deve ficar vazia)
+const SPY = { set: [], clear: [] };   // setInterval/clearInterval do iframe
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => (el ? el.textContent : '').replace(/\s+/g, ' ').trim();
+// o aviso de erro (role=alert) é outro elemento (#toastErro); toastTxt lê o que está aparecendo
+const toastTxt = () => {
+  const e = W.document.getElementById('toastErro'), t = W.document.getElementById('toast');
+  return e.classList.contains('show') && e.textContent ? e.textContent : t.textContent;
+};
+const tela = () => W.document.getElementById('telaDisparo');
+const reqs = (metodo, re) => LOG.filter(r => r.metodo === metodo && re.test(r.url));
+
+function novoEstado() {
+  return { templates: null, numeros: [], regras: [], envios: [], seqN: 0, seqR: 0, seqE: 0, falhas: [], previa: null, agora: null };
+}
+const json = (corpo, status = 200) => new W.Response(JSON.stringify(corpo), { status, headers: { 'content-type': 'application/json' } });
+const iso = (d = new Date()) => {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+};
+const minAtras = n => iso(new Date(Date.now() - n * 60000));
+const dataLocal = d => iso(d).slice(0, 10);
+
+function numeroFalso(s = {}) {
+  return { id: ++E.seqN, nome: 'Loja 1', telefone: FONE, grupo_nome: 'Achadinhos', grupo_id: GID, limite_diario: 40, ativo: 1, criado_em: iso(), atualizado_em: iso(), ...s };
+}
+function regraFalsa(s = {}) {
+  return { id: ++E.seqR, nome: 'Eletrônicos de manhã', numero_id: E.numeros[0] ? E.numeros[0].id : 1, ativa: 1, cats: [CAT1()], lojas: ['amazon', 'ml'],
+    palavras: [], desconto_min: 0, ordem: 'desconto', template: 'Template 1', com_foto: 1, dias: [0, 1, 2, 3, 4], horarios: ['09:00', '12:00'],
+    por_disparo: 1, max_por_dia: 20, repetir_apos_dias: 7, intervalo_seg: 60, aviso: '', criado_em: iso(), atualizado_em: iso(), ...s };
+}
+function envioFalso(s = {}) {
+  const n = ++E.seqE;
+  return { id: n, regra_id: E.regras[0] ? E.regras[0].id : 1, numero_id: E.numeros[0] ? E.numeros[0].id : 1, item_pk: ITEM1().id, slot: '2026-11-03T09:00#' + n,
+    status: 'pendente', mensagem: '*Produto ' + n + '*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/QA' + n, imagem: URL_ML, titulo: 'Produto ' + n,
+    motivo: '', transporte: 'manual', criado_em: minAtras(n), enviado_em: null, ...s };
+}
+const CAT1 = () => W.eval('cats()[0]');
+const ITEM1 = () => W.eval('items[0]');
+
+// Servidor falso: devolve Response ou null (= não é comigo; GET segue para o servidor real, o resto é VIOL)
+function falso(url, opcoes) {
+  const u = new URL(url, 'http://x');
+  const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+  const caminho = u.pathname.replace(/^\/api\//, '');
+  if (!/^\/api\//.test(u.pathname)) return null;
+  const corpo = opcoes && opcoes.body ? JSON.parse(opcoes.body) : undefined;
+  const pedido = { metodo, url: u.pathname + u.search, corpo };
+  if (caminho === 'config/templates' || caminho.startsWith('disparo/')) {
+    LOG.push(pedido);
+    for (const f of E.falhas) if (f.re.test(metodo + ' ' + caminho)) return f.erro === '__rede' ? 'rede' : json({ error: f.erro }, f.status);
+  }
+  if (caminho === 'config/templates') {
+    if (metodo === 'GET') return json(E.templates);
+    if (metodo === 'PUT') { E.templates = corpo; return json({ ok: true }); }
+  }
+  if (!caminho.startsWith('disparo/')) return null;
+  const r = caminho.slice(8);
+  let m;
+  const achar = (lista, id) => lista.find(x => x.id === +id);
+  if (r === 'numeros') {
+    if (metodo === 'GET') return json(E.numeros);
+    if (metodo === 'POST') { const n = numeroFalso(corpo); E.numeros.push(n); return json(n, 201); }
+  }
+  if ((m = /^numeros\/(\d+)$/.exec(r))) {
+    const n = achar(E.numeros, m[1]);
+    if (!n) return json({ error: 'número não encontrado' }, 404);
+    if (metodo === 'PUT') { Object.assign(n, corpo); return json(n); }
+    if (metodo === 'DELETE') {
+      if (E.regras.some(x => x.numero_id === n.id)) return json({ error: 'este número é usado por uma regra: mude ou exclua a regra primeiro' }, 409);
+      E.numeros.splice(E.numeros.indexOf(n), 1); return json({ ok: true });
+    }
+  }
+  if (r === 'regras') {
+    if (metodo === 'GET') return json(E.regras.map(x => ({ ...x, proximo: x.ativa ? iso(new Date(Date.now() + 86400000)).slice(0, 11) + '09:00:00' : null })));
+    if (metodo === 'POST') { const x = regraFalsa(corpo); E.regras.push(x); return json(x, 201); }
+  }
+  if ((m = /^regras\/(\d+)$/.exec(r))) {
+    const x = achar(E.regras, m[1]);
+    if (!x) return json({ error: 'regra não encontrada' }, 404);
+    if (metodo === 'PUT') { Object.assign(x, corpo); return json(x); }
+    if (metodo === 'DELETE') { E.regras.splice(E.regras.indexOf(x), 1); return json({ ok: true }); }
+  }
+  if ((m = /^regras\/(\d+)\/agora$/.exec(r)) && metodo === 'POST') {
+    const novos = (E.agora || [envioFalso({ regra_id: +m[1] })]).map(e => ({ ...e }));
+    E.envios.push(...novos);
+    return json({ criados: novos.length, envios: novos });
+  }
+  if (r === 'previa' && metodo === 'POST') {
+    return json(E.previa || [
+      { item_pk: 1, titulo: 'Item A', mensagem: '*Item A*\n🔥 Por *R$ 10,00*\n🛒 https://meli.la/AAA', imagem: URL_ML },
+      { item_pk: 2, titulo: 'Item B', mensagem: '*Item B*\n🛒 https://meli.la/BBB', imagem: '' },
+      { item_pk: 3, titulo: 'Item C', mensagem: '*Item C*\n🛒 https://meli.la/CCC', imagem: URL_ML }]);
+  }
+  if (r === 'fila' && metodo === 'GET') return json(E.envios.filter(e => e.status === 'pendente' || e.status === 'incerto').sort((a, b) => a.criado_em < b.criado_em ? -1 : a.criado_em > b.criado_em ? 1 : a.id - b.id));
+  if ((m = /^envios\/(\d+)$/.exec(r)) && metodo === 'PATCH') {
+    const e = achar(E.envios, m[1]);
+    if (!e) return json({ error: 'envio não encontrado' }, 404);
+    if (!['pendente', 'incerto'].includes(e.status)) return json({ error: 'este envio não pode mais ser marcado assim' }, 409);
+    e.status = corpo.status; if (corpo.status === 'enviado') e.enviado_em = iso();
+    return json(e);
+  }
+  if (r === 'envios' && metodo === 'GET') {
+    const desde = u.searchParams.get('desde'), st = u.searchParams.get('status');
+    return json(E.envios.filter(e => (!desde || e.criado_em >= desde) && (!st || e.status === st)).sort((a, b) => b.criado_em < a.criado_em ? -1 : 1).slice(0, 500));
+  }
+  return json({ error: 'rota não encontrada' }, 404);
+}
+
+async function pngBlob() {
+  const cv = W.document.createElement('canvas'); cv.width = 8; cv.height = 8;
+  const c = cv.getContext('2d'); c.fillStyle = '#c00'; c.fillRect(0, 0, 8, 8);
+  return new Promise(r => cv.toBlob(r, 'image/png'));
+}
+
+function instalarStubs(janela) {
+  const orig = janela.fetch.bind(janela);
+  FETCH_ORIG = FETCH_ORIG || orig;
+  janela.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+    if (/^https:\/\/http2\.mlstatic\.com\//.test(url)) return Promise.resolve(new W.Response(PNG_BLOB, { status: 200, headers: { 'content-type': 'image/png' } }));
+    const f = falso(url, opcoes);
+    if (f === 'rede') return Promise.reject(new janela.TypeError('Failed to fetch'));
+    if (f) return Promise.resolve(f);
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new janela.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return orig(entrada, opcoes);
+  };
+  janela.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  // espia os timers da fila (a atualização é de 30 s)
+  const si = janela.setInterval.bind(janela), ci = janela.clearInterval.bind(janela);
+  janela.setInterval = (fn, ms, ...r) => { const id = si(fn, ms, ...r); SPY.set.push({ id, ms }); return id; };
+  janela.clearInterval = id => { SPY.clear.push(id); return ci(id); };
+}
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html'; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  E = novoEstado();
+  PNG_BLOB = await pngBlob();
+  instalarStubs(W);
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0,
+    'o index.html carregar os itens do servidor (servidor no ar?)');
+}
+
+let clip;
+function stubClipboard() {
+  clip = { write: [], text: [] };
+  const cb = {
+    write: async arr => {
+      clip.write.push(arr.map(it => Array.from(it.types)));
+      await Promise.all(arr.flatMap(it => Array.from(it.types).map(t => it.getType(t))));
+    },
+    writeText: async t => { clip.text.push(t); }
+  };
+  Object.defineProperty(W.navigator, 'clipboard', { value: cb, configurable: true });
+}
+
+async function restaurar() {
+  try { delete W.navigator.clipboard; } catch (e) { /* ignora */ }
+  const d = W.document.getElementById('dlg'); if (d && d.open) d.close('0');
+  E = novoEstado();
+  LOG.length = 0; SPY.set.length = 0; SPY.clear.length = 0;
+  for (const id of ['toast', 'toastErro']) { const t = W.document.getElementById(id); if (t) { t.textContent = ''; t.classList.remove('show'); } }
+  document.getElementById('app').style.width = '';
+  W.eval('templatesGarantidos = false; rascunhoRegra = null;');
+  delete W.__xss;
+  W.eval('marcarSujo(false); confirmandoRota = false');   // antes de mudar o hash: formulário sujo pergunta (D3)
+  if (W.location.hash) { W.location.hash = ''; await esperar(() => tela().hidden, 'voltar às ofertas'); }
+}
+
+// ---------------------------------------------------------------- ajudantes de tela
+const carregou = () => { const c = q('#dspCorpo'); return !!c && !/Carregando…/.test(c.textContent); };
+// Navega e espera a tela NOVA (o <h2> é recriado a cada rota); no mesmo hash não há hashchange, então recarrega a rota
+async function abrir(hash) {
+  const antes = q('#dspTitulo');
+  if (W.location.hash === hash) W.eval('rotear()'); else W.location.hash = hash;
+  await esperar(() => !tela().hidden && q('#dspTitulo') && q('#dspTitulo') !== antes && carregou(), 'a tela ' + hash + ' carregar');
+}
+function digitar(sel, valor) {
+  const el = typeof sel === 'string' ? q(sel) : sel;
+  afirma(el, 'campo não existe: ' + sel);
+  el.value = valor; el.dispatchEvent(new W.Event('input', { bubbles: true }));
+}
+const chip = (grupo, valor) => qa(grupo + ' input').find(i => i.value === String(valor));
+function marcarChip(grupo, valor, v = true) {
+  const i = chip(grupo, valor); afirma(i, 'chip ' + valor + ' não existe em ' + grupo);
+  if (i.checked !== v) i.click();
+}
+const clicar = sel => { const b = typeof sel === 'string' ? q(sel) : sel; afirma(b, 'botão não existe: ' + sel); b.click(); };
+const acao = (nome, id) => q('[data-acao="' + nome + '"]' + (id !== undefined ? '[data-id="' + id + '"]' : ''));
+const dialogoAberto = () => q('#dlg').open;
+const botaoDialogo = r => q('#dlg button[data-r="' + r + '"]');
+const textoTela = () => txt(tela());
+const semDadoPessoal = (onde, texto) => {
+  for (const s of [FONE, FONE_FMT, GID, '00000-0001', '363012345678901']) afirma(!String(texto).includes(s), 'dado pessoal "' + s + '" apareceu em ' + onde);
+};
+// preenche o formulário de regra com o mínimo válido
+function preencherRegra(sobre = {}) {
+  digitar('#f-nome', sobre.nome || 'Regra de teste');
+  if (sobre.numero !== false) { const s = q('#f-numero'); if (!s.value) { s.value = String(E.numeros[0].id); s.dispatchEvent(new W.Event('change', { bubbles: true })); } }
+  if (sobre.cats !== false) marcarChip('#f-cats', sobre.cat || CAT1());
+}
+
+// ================================================================ ajudantes de QA
+const XSS_ATTR = '" autofocus onfocus="window.__xss=2" x="';
+const PAYLOADS = [XSS, XSS_ATTR];
+const todoTexto = () => W.document.documentElement.outerHTML;
+// Varre a página inteira (texto, atributos, título, URL, armazenamento) atrás de telefone e id de grupo inteiros.
+// `permitirValue` deixa passar o atributo value dos campos do formulário de edição (o único lugar permitido).
+function semDadoPessoalNaPagina(onde, { permitirValue = false } = {}) {
+  let html = todoTexto();
+  if (permitirValue) html = html.replace(/ value="[^"]*"/g, ' value="…"');
+  const lixo = [W.document.title, W.location.href, W.location.hash, JSON.stringify(W.localStorage), JSON.stringify(W.sessionStorage), W.name, toastTxt()].join('\n');
+  for (const s of [FONE, FONE_FMT, GID, '00000-0001', '363012345678901', '0000000']) {
+    afirma(!html.includes(s), 'dado pessoal "' + s + '" no HTML de ' + onde);
+    afirma(!lixo.includes(s), 'dado pessoal "' + s + '" em título/URL/armazenamento/toast de ' + onde);
+  }
+}
+const injecao = () => ({ xss: W.__xss, imgs: qa('img[src="x"]').length, onerror: qa('[onerror],[onfocus],[autofocus]').length });
+function semInjecao(onde) {
+  const i = injecao();
+  igual(i, { xss: undefined, imgs: 0, onerror: 0 }, 'HTML injetado em ' + onde);
+}
+const nSemantico = (re, metodo) => LOG.filter(r => (!metodo || r.metodo === metodo) && re.test(r.url)).length;
+async function abrirDialogoEsperando(fn) { fn(); await esperar(dialogoAberto, 'o diálogo abrir'); }
+
+// ================================================================ 1. formulário da regra: limites e bordas
+teste('regra sem categorias: o erro aparece sob o campo, no resumo e nada é enviado', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  digitar('#f-nome', 'Sem categoria');
+  clicar('#btnSalvar');
+  igual(txt(q('#e-cats')), 'Escolha ao menos uma categoria.');
+  afirma(qa('#f-cats input').every(i => i.getAttribute('aria-invalid') === 'true'), 'os chips ganham aria-invalid');
+  afirma(txt(q('#dspErros')).includes('Escolha ao menos uma categoria.'), 'resumo no topo');
+  igual(nSemantico(/regras$/, 'POST'), 0);
+  igual(txt(q('#f-contador')), 'Escolha ao menos uma categoria para ver quantos itens combinam.');
+});
+
+teste('horários inválidos: "25:00" (o campo time o descarta) e duplicados são recusados, e "24:00" também', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  const h = q('input[name="horario"]');
+  h.value = '25:00'; h.dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(h.value, '', 'o campo time não guarda 25:00');
+  clicar('#btnSalvar');
+  igual(txt(q('#e-horarios')), 'Preencha todos os horários (hora e minuto).');
+  h.value = '24:00'; h.dispatchEvent(new W.Event('input', { bubbles: true }));
+  clicar('#btnSalvar');
+  afirma(txt(q('#e-horarios')) !== '', '24:00 não vale: ' + h.value);
+  h.value = '09:00'; h.dispatchEvent(new W.Event('input', { bubbles: true }));
+  clicar(acao('add-horario'));
+  const segundo = qa('input[name="horario"]')[1];
+  segundo.value = '09:00'; segundo.dispatchEvent(new W.Event('input', { bubbles: true }));
+  clicar('#btnSalvar');
+  igual(txt(q('#e-horarios')), 'Há horários repetidos. Cada horário só pode aparecer uma vez.');
+  igual(nSemantico(/regras$/, 'POST'), 0);
+  segundo.value = '09:01'; segundo.dispatchEvent(new W.Event('input', { bubbles: true }));
+  clicar('#btnSalvar');
+  await esperar(() => nSemantico(/regras$/, 'POST') === 1, 'POST com horários distintos');
+  igual(reqs('POST', /regras$/)[0].corpo.horarios, ['09:00', '09:01']);
+});
+
+teste('repetir_apos_dias: 0 e 366 são recusados; 1 e 365 passam; "Nunca repetir" manda null e guarda o valor ao desmarcar', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  for (const ruim of ['0', '366', '-1', '2,5', '', '1e2x']) {
+    digitar('#f-rep', ruim); clicar('#btnSalvar');
+    igual(txt(q('#e-rep')), 'Informe de 1 a 365 dias, ou marque "Nunca repetir".', 'valor ' + JSON.stringify(ruim));
+    igual(nSemantico(/regras$/, 'POST'), 0, 'valor ' + JSON.stringify(ruim));
+  }
+  for (const bom of [1, 365]) {
+    digitar('#f-rep', String(bom)); clicar('#btnSalvar');
+    await esperar(() => nSemantico(/regras$/, 'POST') === (bom === 1 ? 1 : 2), 'POST com ' + bom);
+    igual(reqs('POST', /regras$/).pop().corpo.repetir_apos_dias, bom);
+    await esperar(() => W.location.hash === '#disparo' && acao('nova-regra'), 'voltar à lista depois de salvar');
+    await abrir('#disparo/nova'); preencherRegra();
+  }
+});
+
+teste('max_por_dia menor que por_disparo: o formulário aceita e envia os dois (o servidor é quem limita), com o resumo coerente', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  digitar('#f-por', '5'); digitar('#f-max', '2');
+  afirma(/até 2 por dia/.test(txt(q('#f-resumo'))), 'resumo: ' + txt(q('#f-resumo')));
+  clicar('#btnSalvar');
+  await esperar(() => nSemantico(/regras$/, 'POST') === 1, 'POST');
+  const c = reqs('POST', /regras$/)[0].corpo;
+  igual([c.por_disparo, c.max_por_dia], [5, 2]);
+});
+
+teste('limites dos campos numéricos: por_disparo 0 e 11, max_por_dia 0 e 201, desconto 96 e -1, intervalo 29 e 3601', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  q('details.filtros summary').click(); q('details.filtros:last-of-type summary').click();
+  const casos = [['#f-por', '0', 'e-por'], ['#f-por', '11', 'e-por'], ['#f-max', '0', 'e-max'], ['#f-max', '201', 'e-max'],
+    ['#f-desc', '96', 'e-desc'], ['#f-desc', '-1', 'e-desc'], ['#f-intervalo', '29', 'e-intervalo'], ['#f-intervalo', '3601', 'e-intervalo']];
+  for (const [campo, valor, erro] of casos) {
+    const original = q(campo).value;
+    digitar(campo, valor); clicar('#btnSalvar');
+    afirma(txt(q('#' + erro)) !== '', campo + '=' + valor + ' deveria ser recusado');
+    igual(nSemantico(/regras$/, 'POST'), 0, campo + '=' + valor);
+    digitar(campo, original);
+  }
+});
+
+teste('palavras: 21 palavras e uma de 41 letras são recusadas; repetidas viram uma só; o nome com 81 letras é recusado', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  q('details.filtros summary').click();
+  digitar('#f-palavras', Array.from({ length: 21 }, (_, i) => 'p' + i).join(', ')); clicar('#btnSalvar');
+  afirma(txt(q('#e-palavras')) !== '', '21 palavras');
+  digitar('#f-palavras', 'x'.repeat(41)); clicar('#btnSalvar');
+  afirma(txt(q('#e-palavras')) !== '', 'palavra com 41 letras');
+  digitar('#f-palavras', 'tv, TV, tv ,  ,notebook');
+  digitar('#f-nome', 'n'.repeat(81)); clicar('#btnSalvar');
+  afirma(txt(q('#e-nome')) !== '', 'nome com 81 letras');
+  igual(nSemantico(/regras$/, 'POST'), 0);
+  digitar('#f-nome', 'n'.repeat(80)); clicar('#btnSalvar');
+  await esperar(() => nSemantico(/regras$/, 'POST') === 1, 'POST');
+  igual(reqs('POST', /regras$/)[0].corpo.palavras, ['tv', 'TV', 'notebook']);
+});
+
+teste('salvar regra com clique duplo manda um POST só e o botão fica "Salvando…" enquanto espera', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  let solta;
+  const trava = new Promise(r => { solta = r; });
+  const origFalso = W.fetch;
+  W.fetch = function (url, op) {
+    if (/\/api\/disparo\/regras$/.test(String(url)) && op && op.method === 'POST') return trava.then(() => origFalso.call(W, url, op));
+    return origFalso.call(W, url, op);
+  };
+  const b = q('#btnSalvar');
+  b.click(); b.click(); b.click();
+  await dormir(30);
+  igual(txt(b), 'Salvando…');
+  afirma(b.disabled, 'botão desabilitado');
+  solta();
+  await esperar(() => W.location.hash === '#disparo', 'voltar à lista');
+  igual(nSemantico(/regras$/, 'POST'), 1, 'POST duplicado');
+  W.fetch = origFalso;
+});
+
+teste('erro de rede ao salvar a regra: mensagem no resumo, formulário e botão intactos, e dá para tentar de novo', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra({ nome: 'Falha de rede' });
+  E.falhas.push({ re: /^POST disparo\/regras$/, erro: '__rede' });
+  clicar('#btnSalvar');
+  await esperar(() => txt(q('#dspErros')).includes('Não consegui falar com o servidor'), 'aviso de rede');
+  igual(q('#f-nome').value, 'Falha de rede');
+  igual(txt(q('#btnSalvar')), 'Salvar regra');
+  afirma(!q('#btnSalvar').disabled);
+  E.falhas.length = 0;
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvou depois');
+});
+
+// ================================================================ 2. dado pessoal em qualquer lugar da página
+teste('telefone e id do grupo nunca aparecem inteiros em nenhuma tela, diálogo, título, URL, armazenamento ou toast', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ aviso: 'aviso de teste' }));
+  E.envios.push(envioFalso(), envioFalso({ status: 'incerto' }), envioFalso({ status: 'erro', motivo: 'falhou' }));
+  await abrir('#disparo'); semDadoPessoalNaPagina('#disparo');
+  await abrir('#numeros'); semDadoPessoalNaPagina('#numeros');
+  await abrir('#historico'); semDadoPessoalNaPagina('#historico');
+  await abrir('#disparo/nova'); semDadoPessoalNaPagina('#disparo/nova (select do número)');
+  await abrir('#disparo/regra/' + E.regras[0].id); semDadoPessoalNaPagina('editar regra');
+  await abrir('#numeros'); // diálogo de exclusão (há regra usando o número)
+  await abrirDialogoEsperando(() => clicar(acao('excluir-numero', E.numeros[0].id)));
+  semDadoPessoalNaPagina('diálogo "não dá para excluir"');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  await abrir('#disparo');
+  await abrirDialogoEsperando(() => clicar(acao('agora', E.regras[0].id)));
+  semDadoPessoalNaPagina('diálogo "Disparar agora"');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  await abrirDialogoEsperando(() => clicar(acao('excluir-regra', E.regras[0].id)));
+  semDadoPessoalNaPagina('diálogo "Excluir regra"');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  // pedidos: o telefone só vai no corpo de /numeros; nunca em URL nem no corpo de regras, prévia ou envios
+  for (const r of LOG) {
+    afirma(!r.url.includes('0000000') && !r.url.includes('363012'), 'dado pessoal na URL ' + r.url);
+    if (!/\/numeros/.test(r.url)) afirma(!JSON.stringify(r.corpo || '').includes('0000000'), 'telefone no corpo de ' + r.metodo + ' ' + r.url);
+  }
+});
+
+teste('o telefone inteiro só existe no campo de edição, e some do HTML ao sair', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#numeros/' + E.numeros[0].id);
+  igual(q('#f-tel').value, FONE, 'campo de edição mostra o número');
+  igual(q('#f-gid').value, GID);
+  semDadoPessoalNaPagina('edição do número', { permitirValue: true });
+  clicar('[data-acao="cancelar"]');
+  await esperar(() => W.location.hash === '#numeros', 'cancelar');
+  await esperar(() => q('[data-numero]'), 'lista de números');
+  semDadoPessoalNaPagina('lista de números depois da edição');
+});
+
+teste('toast do cadastro e da edição de número não repete telefone nem grupo', async () => {
+  await abrir('#numeros/novo');
+  digitar('#f-nome', 'Loja 2'); digitar('#f-tel', FONE_FMT); digitar('#f-grupo', 'Grupo Teste'); digitar('#f-gid', GID);
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#numeros' && q('[data-numero]'), 'salvar número');
+  igual(toastTxt(), 'Número salvo.');
+  semDadoPessoalNaPagina('depois de salvar');
+  const corpo = reqs('POST', /numeros$/)[0].corpo;
+  igual(corpo.telefone, FONE, 'o corpo leva só dígitos');
+  igual(reqs('POST', /numeros$/)[0].url, '/api/disparo/numeros', 'sem dado na URL');
+});
+
+teste('número sem telefone: o cartão diz "Sem telefone", o cadastro sem telefone é aceito e o leitor de tela não ganha "final" vazio', async () => {
+  E.numeros.push(numeroFalso({ telefone: '' }));
+  E.regras.push(regraFalsa());
+  await abrir('#numeros');
+  afirma(txt(q('[data-numero]')).includes('Sem telefone'), txt(q('[data-numero]')));
+  afirma(!txt(q('[data-numero]')).includes('final'), 'não pode anunciar um final inexistente');
+  await abrir('#disparo');
+  afirma(txt(q('[data-regra]')).includes('Sem telefone'), txt(q('[data-regra]')));
+  await abrir('#numeros/novo');
+  digitar('#f-nome', 'Sem fone'); digitar('#f-grupo', 'G'); clicar('#btnSalvar');
+  await esperar(() => nSemantico(/numeros$/, 'POST') === 1, 'POST do número sem telefone');
+  igual(reqs('POST', /numeros$/)[0].corpo.telefone, '');
+});
+
+teste('contador "N itens combinam": acompanha loja, desconto mínimo e palavras (sem acento nem caixa), com o total calculado à parte', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova'); preencherRegra();
+  const cat = CAT1();
+  const itens = W.eval('items');
+  const pct = d => parseInt(String(d || '').replace(/\D/g, '')) || 0;
+  const sa = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const esperado = (lojas, min, pal) => itens.filter(i => i.data && i.data.titulo && i.data.preco && i.cat === cat && lojas.includes(i.loja)
+    && pct(i.data.desconto) >= min && (!pal.length || pal.some(p => sa(i.data.titulo).includes(sa(p))))).length;
+  const lido = () => { const t = txt(q('#f-contador')); const m = /Cerca de ([\d.]+)/.exec(t); return m ? +m[1].replace(/\./g, '') : (/Nenhum item combina/.test(t) ? 0 : NaN); };
+  const todos = esperado(['amazon', 'ml'], 0, []);
+  afirma(todos > 5, 'a categoria de teste precisa ter itens: ' + todos);
+  igual(lido(), todos, 'sem filtro');
+  q('details.filtros summary').click();
+  digitar('#f-desc', '50');
+  const comDesc = esperado(['amazon', 'ml'], 50, []);
+  igual(lido(), comDesc, 'desconto mínimo 50');
+  afirma(comDesc < todos, 'o filtro de desconto tem que reduzir (senão o teste não prova nada)');
+  digitar('#f-desc', '0');
+  igual(lido(), todos, 'voltou');
+  const palavra = sa(itens.find(i => i.cat === cat && i.data && i.data.titulo).data.titulo).split(/\s+/).find(p => p.length > 3);
+  digitar('#f-palavras', palavra.toUpperCase());
+  igual(lido(), esperado(['amazon', 'ml'], 0, [palavra]), 'palavra ' + palavra);
+  digitar('#f-palavras', 'palavra-que-nao-existe-em-titulo');
+  igual(lido(), 0);
+  afirma(txt(q('#f-contador')).includes('Nenhum item combina'), txt(q('#f-contador')));
+  digitar('#f-palavras', '');
+  marcarChip('#f-lojas', 'amazon');
+  igual(lido(), esperado(['amazon'], 0, []), 'só Amazon');
+  marcarChip('#f-lojas', 'ml');
+  igual(lido(), esperado(['ml'], 0, []), 'só Mercado Livre');
+});
+
+teste('editar o número: o PUT vai para /numeros/<id> sem query, com o telefone só no corpo e só dígitos', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#numeros/' + E.numeros[0].id);
+  digitar('#f-nome', 'Renomeado'); digitar('#f-tel', FONE_FMT);
+  clicar('#btnSalvar');
+  await esperar(() => nSemantico(/numeros\/\d+$/, 'PUT') === 1, 'PUT');
+  const p = reqs('PUT', /numeros\/\d+$/)[0];
+  igual(p.url, '/api/disparo/numeros/' + E.numeros[0].id);
+  igual(p.corpo.telefone, FONE);
+  afirma(!JSON.stringify(LOG.map(r => r.url)).includes('0000000'), 'telefone em alguma URL');
+});
+
+// ================================================================ 3. HTML injetado em todos os pontos
+teste('esc: nome de regra, número, grupo, categoria, título, motivo e aviso com HTML ou aspas nunca viram marcação (todas as telas e diálogos)', async () => {
+  for (const carga of PAYLOADS) {
+    E = novoEstado();
+    E.numeros.push(numeroFalso({ nome: carga, grupo_nome: carga }));
+    E.regras.push(regraFalsa({ nome: carga, aviso: carga, cats: [carga] }));
+    E.envios.push(envioFalso({ titulo: carga, mensagem: carga, motivo: carga }), envioFalso({ titulo: carga, status: 'erro', motivo: carga }));
+    E.previa = [{ item_pk: 1, titulo: carga, mensagem: carga, imagem: '' }];
+    await abrir('#disparo'); semInjecao('#disparo');
+    await abrir('#historico'); semInjecao('#historico');
+    await abrir('#numeros'); semInjecao('#numeros');
+    await abrir('#disparo/regra/' + E.regras[0].id); semInjecao('formulário da regra (edição)');
+    await abrir('#numeros/' + E.numeros[0].id); semInjecao('formulário do número');
+    await abrir('#disparo');
+    await abrirDialogoEsperando(() => clicar(acao('excluir-regra', E.regras[0].id)));
+    semInjecao('diálogo excluir regra'); clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+    await abrirDialogoEsperando(() => clicar(acao('agora', E.regras[0].id)));
+    semInjecao('diálogo disparar agora'); clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+    await abrir('#numeros');
+    await abrirDialogoEsperando(() => clicar(acao('excluir-numero', E.numeros[0].id)));
+    semInjecao('diálogo número em uso'); clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+    // erro do servidor no resumo do formulário
+    await abrir('#disparo/nova'); preencherRegra();
+    E.falhas.push({ re: /^POST disparo\/regras$/, erro: carga, status: 400 });
+    clicar('#btnSalvar'); await esperar(() => txt(q('#dspErros')).includes('Não salvou'), 'erro do servidor');
+    semInjecao('resumo de erro'); afirma(txt(q('#dspErros')).includes(carga), 'o texto aparece literal');
+    W.eval('marcarSujo(false)');   // o formulário sujo pediria confirmação ao sair (D3)
+    await dormir(40);
+  }
+});
+
+teste('esc: erro do servidor mostrado em toast (marcar envio, disparar agora, ativar) é texto puro', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso());
+  await abrir('#disparo');
+  E.falhas.push({ re: /^PATCH disparo\/envios/, erro: XSS, status: 409 });
+  clicar(q('#dspFilaLista [data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => toastTxt() === XSS, 'toast com o erro');
+  semInjecao('toast');
+});
+
+// ================================================================ 4. rotas inválidas
+teste('rotas: id enorme, não numérico ou número de regra/número inexistente não quebram a tela', async () => {
+  for (const h of ['#disparo/regra/1234567890', '#disparo/regra/abc', '#disparo/regra/-1', '#numeros/abc', '#disparo/nova/x', '#historico/x']) {
+    W.location.hash = h;
+    await esperar(() => tela().hidden, h + ' volta às ofertas');
+    afirma(!q('#telaOfertas').hidden, h);
+  }
+  E.numeros.push(numeroFalso());
+  await abrir('#numeros/999');
+  afirma(txt(q('#dspCorpo [role="alert"]')).includes('Número não encontrado'), 'número inexistente');
+  afirma(q('#dspCorpo a[data-nav][href="#numeros"]'), 'link de volta');
+  await abrir('#disparo/regra/999');
+  afirma(txt(q('#dspCorpo [role="alert"]')).includes('Regra não encontrada'), 'regra inexistente');
+  const link = q('#dspCorpo a[data-nav][href="#disparo"]'); afirma(link, 'link de volta às regras');
+  link.click(); await esperar(() => W.location.hash === '#disparo' && acao('nova-regra'), 'volta');
+});
+
+// ================================================================ 5. fila
+teste('fila: Enviado/Pular com erro de rede mostram o aviso, reabilitam os botões e mantêm o cartão e o texto editado', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso());
+  await abrir('#disparo');
+  const c = q('#dspFilaLista article'), ta = c.querySelector('textarea');
+  ta.value = ta.value + '\nEDITADO';
+  for (const status of ['enviado', 'pulado']) {
+    E.falhas.length = 0; E.falhas.push({ re: /^PATCH disparo\/envios/, erro: '__rede' });
+    clicar(c.querySelector('[data-acao="marcar"][data-status="' + status + '"]'));
+    await esperar(() => toastTxt().includes('Não consegui falar com o servidor'), 'aviso de rede (' + status + ')');
+    await esperar(() => [...c.querySelectorAll('button')].every(b => !b.disabled), 'botões reabilitados (' + status + ')');
+    igual(qa('#dspFilaLista article').length, 1, 'o cartão não some');
+    afirma(ta.value.endsWith('EDITADO'), 'texto editado preservado');
+    for (const id of ['toast', 'toastErro']) { const t = W.document.getElementById(id); if (t) t.textContent = ''; }
+  }
+  E.falhas.length = 0;
+  clicar(c.querySelector('[data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 0, 'agora sai');
+});
+
+teste('fila: marcar um envio que sumiu do servidor (404) mostra o erro e não deixa o cartão preso', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso());
+  await abrir('#disparo');
+  E.envios.length = 0;
+  clicar(q('#dspFilaLista [data-acao="marcar"][data-status="pulado"]'));
+  await esperar(() => toastTxt() === 'envio não encontrado', 'toast do 404');
+  afirma([...q('#dspFilaLista article').querySelectorAll('button')].every(b => !b.disabled), 'botões reabilitados');
+});
+
+teste('fila: "Copiar mensagem" quando a área de transferência recusa mostra o erro no cartão e não marca como copiado', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa()); E.envios.push(envioFalso());
+  await abrir('#disparo');
+  Object.defineProperty(W.navigator, 'clipboard', { value: { writeText: () => Promise.reject(new W.DOMException('x', 'NotAllowedError')) }, configurable: true });
+  const c = q('#dspFilaLista article');
+  clicar(c.querySelector('[data-acao="copiar-msg"]'));
+  await esperar(() => c.querySelector('.status.err'), 'erro no cartão');
+  igual(txt(c.querySelector('.status')), 'Não consegui copiar. Clique na página e tente de novo.');
+  afirma(!c.classList.contains('done'), 'não marca como copiado');
+});
+
+teste('fila: com vários envios mantém a ordem (mais antigo primeiro), o contador e o refresh traz o novo sem recriar os cartões', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso(), envioFalso(), envioFalso());
+  await abrir('#disparo');
+  const ids = qa('#dspFilaLista article').map(a => +a.dataset.envio);
+  igual(ids, [...E.envios].sort((a, b) => a.criado_em < b.criado_em ? -1 : 1).map(e => e.id));
+  igual(txt(q('#dspFilaN')), '(3)');
+  const primeiro = q('#dspFilaLista article');
+  primeiro.querySelector('textarea').value = 'editado à mão';
+  E.envios.push(envioFalso({ criado_em: iso() }));
+  await W.eval('atualizarFila()');
+  igual(qa('#dspFilaLista article').length, 4);
+  afirma(q('#dspFilaLista article') === primeiro && primeiro.querySelector('textarea').value === 'editado à mão', 'cartão antigo preservado');
+  igual(txt(q('#dspFilaN')), '(4)');
+});
+
+teste('fila: o refresh de 30 s não roda fora da tela de regras e para ao sair; ao voltar à aba do navegador atualiza uma vez', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  afirma(SPY.set.some(s => s.ms === 30000), 'timer de 30 s ligado');
+  await abrir('#historico');
+  const antes = nSemantico(/fila$/, 'GET');
+  await W.eval('atualizarFila()'); await dormir(30);
+  igual(nSemantico(/fila$/, 'GET'), antes + 1, 'o pedido ainda sai, mas não redesenha');
+  igual(q('#dspFilaLista'), null, 'sem fila no histórico');
+});
+
+// ================================================================ 6. histórico
+teste('histórico: período "Hoje" e "Todo o período" montam desde=; status combinado; filtro trocado volta a 50 linhas', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  for (let i = 0; i < 120; i++) E.envios.push(envioFalso({ status: i % 2 ? 'enviado' : 'erro', motivo: i % 2 ? '' : 'falha ' + i, criado_em: minAtras(i) }));
+  await abrir('#historico');
+  const get = () => reqs('GET', /envios\?|envios$/).pop().url;
+  igual(get(), '/api/disparo/envios?desde=' + dataLocal(new Date(Date.now() - 6 * 86400000)));
+  igual(qa('#dspHist tbody tr').length, 50);
+  clicar(acao('mais-historico')); igual(qa('#dspHist tbody tr').length, 100);
+  clicar(acao('mais-historico')); igual(qa('#dspHist tbody tr').length, 120);
+  afirma(!acao('mais-historico'), 'sem botão quando acabou');
+  const sel = q('#hPeriodo'); sel.value = 'hoje'; sel.dispatchEvent(new W.Event('change'));
+  await esperar(() => get().includes('desde=' + dataLocal(new Date())), 'desde=hoje');
+  sel.value = 'tudo'; sel.dispatchEvent(new W.Event('change'));
+  await esperar(() => get() === '/api/disparo/envios', 'sem desde');
+  const st = q('#hStatus'); st.value = 'erro'; st.dispatchEvent(new W.Event('change'));
+  await esperar(() => get() === '/api/disparo/envios?status=erro', 'status=erro');
+  await esperar(() => qa('#dspHist tbody tr').length === 50, 'volta a 50 linhas ao trocar o filtro');
+  afirma(qa('#dspHist tbody tr .estado').every(e => e.textContent.includes('Falhou')), 'só falhas na tela');
+  sel.value = '30'; sel.dispatchEvent(new W.Event('change'));
+  await esperar(() => /status=erro/.test(get()) && /desde=/.test(get()), 'período e status juntos');
+});
+
+teste('histórico: erro de rede no filtro mostra a mensagem com "Tentar de novo", e nome de regra excluída vira "Regra excluída"', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ regra_id: 9999 }), envioFalso());
+  await abrir('#historico');
+  afirma(txt(q('#dspHist')).includes('Regra excluída'), 'regra apagada');
+  E.falhas.push({ re: /^GET disparo\/envios/, erro: '__rede' });
+  const st = q('#hStatus'); st.value = 'enviado'; st.dispatchEvent(new W.Event('change'));
+  await esperar(() => q('#dspHist [role="alert"]'), 'erro de carga');
+  afirma(q('#dspHist [data-acao="tentar"]'), 'tentar de novo');
+  E.falhas.length = 0;
+  clicar(q('#dspHist [data-acao="tentar"]'));
+  await esperar(() => !q('#dspHist [role="alert"]') && qa('#dspHist tbody tr').length > 0 || q('#dspHist .vazio'), 'recarregou');
+});
+
+teste('histórico: todos os status têm rótulo em texto (não só cor) e o filtro oferece cada um', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  const status = ['pendente', 'enviando', 'enviado', 'pulado', 'erro', 'incerto', 'expirado'];
+  status.forEach(s => E.envios.push(envioFalso({ status: s })));
+  await abrir('#historico');
+  const rotulos = qa('#dspHist tbody .estado').map(e => e.textContent.trim());
+  igual(rotulos.length, 7);
+  afirma(rotulos.every(r => /[A-Za-zÀ-ú]{4}/.test(r)), 'rótulos em texto: ' + rotulos);
+  igual([...q('#hStatus').options].map(o => o.value).slice(1), status);
+});
+
+// ================================================================ 7. "Disparar agora"
+teste('"Disparar agora": Cancelar e Esc não geram nada, o botão volta ao normal e nada entra na fila', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  const b = acao('agora', E.regras[0].id);
+  clicar(b); await esperar(dialogoAberto, 'diálogo');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  clicar(b); await esperar(dialogoAberto, 'diálogo de novo');
+  q('#dlg').dispatchEvent(new W.Event('cancel')); q('#dlg').close('0');
+  await esperar(() => !dialogoAberto());
+  await dormir(60);
+  igual(nSemantico(/agora$/, 'POST'), 0, 'POST /agora saiu mesmo cancelado');
+  igual(nSemantico(/previa$/, 'POST'), 2);
+  igual(txt(b), 'Disparar agora'); afirma(!b.disabled);
+  igual(qa('#dspFilaLista article').length, 0);
+});
+
+teste('"Disparar agora": a prévia vai com n = por_disparo (no máximo 20) e o diálogo mostra "hoje" contra max_por_dia', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ por_disparo: 3, max_por_dia: 7 }));
+  E.envios.push(envioFalso({ status: 'enviado', enviado_em: iso() }), envioFalso({ status: 'pendente' }));
+  await abrir('#disparo');
+  clicar(acao('agora', E.regras[0].id)); await esperar(dialogoAberto, 'diálogo');
+  const p = reqs('POST', /previa$/)[0].corpo;
+  igual(p.n, 3);
+  afirma(txt(q('#dlg')).includes('(2 de 7)'), 'envios de hoje contra o máximo: ' + txt(q('#dlg')));
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+});
+
+teste('"Disparar agora": servidor sem itens gerados (envios vazios) e erro de rede na prévia avisam, sem diálogo preso', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  await abrir('#disparo');
+  E.falhas.push({ re: /^POST disparo\/previa$/, erro: '__rede' });
+  const b = acao('agora', E.regras[0].id);
+  clicar(b);
+  await esperar(() => toastTxt().includes('Não consegui falar com o servidor'), 'aviso');
+  afirma(!dialogoAberto(), 'sem diálogo');
+  igual(txt(b), 'Disparar agora'); afirma(!b.disabled);
+  E.falhas.length = 0; E.previa = [];
+  clicar(b); await esperar(dialogoAberto, 'diálogo sem itens');
+  afirma(!botaoDialogo(1), 'sem botão de confirmar quando nada combina');
+  clicar(botaoDialogo(0)); await esperar(() => !dialogoAberto());
+  igual(nSemantico(/agora$/, 'POST'), 0);
+});
+
+// ================================================================ 8. beforeunload e atenção
+teste('beforeunload: liga ao digitar, o evento pede confirmação, e desliga ao salvar, descartar ou sair', async () => {
+  E.numeros.push(numeroFalso());
+  await abrir('#disparo/nova');
+  igual(W.onbeforeunload, null, 'formulário limpo não segura a saída');
+  digitar('#f-nome', 'sujo');
+  const ev = new W.Event('beforeunload', { cancelable: true });
+  W.dispatchEvent(ev);
+  igual(ev.defaultPrevented, true, 'o evento é cancelado enquanto há alteração');
+  preencherRegra({ nome: 'sujo' });
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo', 'salvou');
+  igual(W.onbeforeunload, null, 'desligado depois de salvar');
+  const ev2 = new W.Event('beforeunload', { cancelable: true }); W.dispatchEvent(ev2);
+  igual(ev2.defaultPrevented, false);
+  await abrir('#numeros/novo'); digitar('#f-nome', 'x');
+  afirma(typeof W.onbeforeunload === 'function', 'formulário de número também segura a saída');
+  clicar('[data-acao="cancelar"]'); await esperar(dialogoAberto, 'confirmação ao cancelar com alteração');
+  clicar(botaoDialogo(1)); await esperar(() => !dialogoAberto() && W.location.hash === '#numeros', 'descartou');
+  igual(W.onbeforeunload, null, 'desligado depois de descartar');
+});
+
+teste('"· atenção" no botão do cabeçalho: sem abrir a tela, some quando o problema some, e não aparece sem problema', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ aviso: '' }));
+  await W.eval('atualizarAtencao()');
+  igual(txt(q('#btnDisparo')), 'Disparo automático');
+  E.regras[0].aviso = 'template apagado';
+  await W.eval('atualizarAtencao()');
+  igual(txt(q('#btnDisparo')), 'Disparo automático · atenção');
+  E.regras[0].aviso = '';
+  E.envios.push(envioFalso({ status: 'incerto' }));
+  await W.eval('atualizarAtencao()');
+  igual(txt(q('#btnDisparo')), 'Disparo automático · atenção');
+  E.envios[0].status = 'enviado';
+  await W.eval('atualizarAtencao()');
+  igual(txt(q('#btnDisparo')), 'Disparo automático');
+  E.falhas.push({ re: /^GET disparo\/regras/, erro: '__rede' });
+  E.regras[0].aviso = 'x';
+  await W.eval('atualizarAtencao()');
+  igual(txt(q('#btnDisparo')), 'Disparo automático', 'servidor fora: o cabeçalho fica como estava');
+});
+
+teste('"· atenção" some ao marcar o último envio incerto como enviado', async () => {
+  E.numeros.push(numeroFalso()); E.regras.push(regraFalsa());
+  E.envios.push(envioFalso({ status: 'incerto' }));
+  await abrir('#disparo');
+  igual(txt(q('#btnDisparo')), 'Disparo automático · atenção');
+  clicar(q('#dspFilaLista [data-acao="marcar"][data-status="enviado"]'));
+  await esperar(() => qa('#dspFilaLista article').length === 0, 'cartão sai');
+  igual(txt(q('#btnDisparo')), 'Disparo automático');
+});
+
+// ================================================================ 9. templates
+teste('templates: a tela grava os padrões uma vez por sessão mesmo passando por várias telas, e não sobrescreve os do dono', async () => {
+  await abrir('#numeros'); await abrir('#historico'); await abrir('#disparo'); await abrir('#numeros');
+  igual(reqs('PUT', /config\/templates/).length, 1, 'grava uma vez');
+  igual(reqs('PUT', /config\/templates/)[0].corpo, W.eval('DEFAULT_TEMPLATES'));
+  await restaurar();
+  E.templates = { 'Meu template': 'x {LINK}' };
+  await abrir('#numeros');
+  igual(reqs('PUT', /config\/templates/).length, 0, 'não sobrescreve os templates do dono');
+});
+
+teste('templates: se gravar os padrões falha, a tela segue funcionando e o erro do servidor aparece só ao salvar a regra', async () => {
+  E.numeros.push(numeroFalso());
+  E.falhas.push({ re: /^PUT config\/templates/, erro: 'disco cheio', status: 500 });
+  await abrir('#disparo');
+  afirma(acao('nova-regra'), 'a lista carrega mesmo assim');
+  await abrir('#disparo/nova'); afirma(q('#f-nome'), 'formulário abre');
+});
+
+
+// ================================================================ fecho
+teste('nenhuma escrita chegou à API real e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await FETCH_ORIG('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita fora do servidor falso (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    await carregarApp();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await restaurar();
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    } finally {
+      try { await restaurar(); } catch (e) { /* ignora */ }
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>
