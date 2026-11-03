@@ -1,0 +1,2 @@
+- [UI do index.html](ui-index-html.md) — estrutura do cabeçalho/barra de lista, capturas via CDP, armadilhas de teste
+- [UI do index.html](index-html-ui.md) — onde ficam tokens/componentes e armadilhas recorrentes

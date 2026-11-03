@@ -157,6 +157,7 @@ teste('CA2: criar a regra pelo formulário (nasce pausada), com os campos certos
   marcar('#f-cats', CAT);
   marcar('#f-lojas', 'ml', false); marcar('#f-lojas', 'shopee', false);   // regra nova abre com as três lojas: fica só a Amazon
   marcar('#f-ordem', 'desconto');
+  marcar('#f-publico', 'feminino');   // CAT não separa por público: o servidor guarda a escolha, mas a regra continua enviando tudo
   digitar('#f-por', '2'); digitar('#f-max', '3'); digitar('#f-rep', '7');
   const h = q('input[name="horario"]'); digitar(h, '09:00');
   await esperar(() => /Cerca de/.test(txt(q('#f-contador'))), 'contador de itens');
@@ -169,6 +170,8 @@ teste('CA2: criar a regra pelo formulário (nasce pausada), com os campos certos
   REGRA = regras[0];
   igual([REGRA.nome, REGRA.numero_id, REGRA.cats, REGRA.lojas, REGRA.ordem, REGRA.por_disparo, REGRA.max_por_dia, REGRA.repetir_apos_dias, REGRA.horarios, REGRA.ativa],
     ['Regra A', NUM.id, [CAT], ['amazon'], 'desconto', 2, 3, 7, ['09:00'], 0]);
+  igual(REGRA.generos, ['feminino'], 'o servidor guardou o público escolhido na tela');
+  afirma(/Feminino/.test(txt(q('[data-regra] .meta'))), 'o cartão cita o público: ' + txt(q('[data-regra] .meta')));
   afirma(txt(q('[data-regra] .estado')).includes('Pausada'), 'cartão Pausada');
 });
 

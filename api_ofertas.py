@@ -7,12 +7,15 @@ devolve o objeto da resposta ou levanta `ErroApi` (código HTTP e frase em portu
 
 Só biblioteca padrão. Não importa `servidor` (mesmo padrão do disparo.py): quem chama passa a
 conexão e o `eh_afiliado` (o eh_link_afiliado do servidor). Nada é gravado e não há migração.
+O público (`genero`) vem do genero.py (docs/produto/planos/genero-nas-categorias.md, etapa 5): a
+correção manual é só lida (tabela `generos_manuais`; banco sem ela dá tudo automático).
 """
 import math
 import re
 from datetime import datetime, timedelta
 
 import disparo as D
+import genero as G
 
 PREFIXO = '/api/v1/'
 VERSAO = 1
@@ -23,10 +26,10 @@ LIMITE_PADRAO, LIMITE_MAX = 50, 200
 MAX_CATS, MAX_CAT = 20, 200
 MAX_Q, MAX_TERMOS = 200, 10
 ORDENS = ('atualizacao', 'relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes')
-PARAMETROS = ('cat', 'loja', 'q', 'desconto_min', 'ordem', 'limite', 'cursor')
-REPETIVEIS = ('cat', 'loja')
-# Pedido válido tem no máximo 20 cat + 3 loja + 5 parâmetros; acima disso nem vale olhar.
-MAX_PARES = MAX_CATS + len(D.LOJAS) + len(PARAMETROS) - len(REPETIVEIS)
+PARAMETROS = ('cat', 'loja', 'q', 'desconto_min', 'ordem', 'limite', 'cursor', 'genero')
+REPETIVEIS = ('cat', 'loja', 'genero')
+# Pedido válido tem no máximo 20 cat + 3 loja + 4 genero + 5 parâmetros; acima disso nem vale olhar.
+MAX_PARES = MAX_CATS + len(D.LOJAS) + len(G.GENEROS) + len(PARAMETROS) - len(REPETIVEIS)
 # Horário como o servidor grava (datetime.isoformat(timespec='seconds')): ISO local, sem fuso.
 _HORA = '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
 _RE_HORA = re.compile(_HORA)
@@ -55,13 +58,17 @@ def _numero_ok(v):
     return math.isfinite(v) and v > 0
 
 
-def oferta(row, eh_afiliado):
+def oferta(row, eh_afiliado, manuais=None):
     """A linha de `items` no formato da oferta v1, ou None se ela não pode sair (CA2).
 
     Sai só com: tem_dados=1, loja conhecida, título, preço numérico finito > 0, horários no
     formato do servidor, link de afiliado da própria loja (disparo.link_da_loja_ok) e nenhuma
     candidata a link (disparo.urls_da_mensagem) no título, no cupom, na categoria, na busca ou no
     item_id (que pode ser o próprio link). A imagem fora do CDN da loja vira None.
+
+    `genero` (genero.do_item) só é calculado depois de todas essas condições: o filtro por público
+    nunca traz uma linha que não sairia sem ele. `manuais` é o genero.manuais(con), lido uma vez por
+    pedido; None (quem chama com 2 argumentos) vale como nenhuma correção.
     """
     if row['tem_dados'] != 1:
         return None
@@ -100,6 +107,7 @@ def oferta(row, eh_afiliado):
         vendas, num_avaliacoes = D.contagem(t['vendas']), D.contagem(t['num_avaliacoes'])
     except (ValueError, OverflowError):
         return None
+    publico, _origem = G.do_item(row['id'], t['cat'], t['busca'], t['titulo'], manuais)
     return {
         'id': row['id'], 'chave': f"{t['loja']}:{t['item_id']}", 'loja': t['loja'], 'item_id': t['item_id'],
         'categoria': t['cat'], 'busca': t['busca'], 'titulo': t['titulo'], 'link': t['url'],
@@ -110,6 +118,7 @@ def oferta(row, eh_afiliado):
         'num_avaliacoes': num_avaliacoes,
         'frete_gratis': 'gratis' in D._sem_acento(t['frete']),
         'cupom': t['cupom'], 'criado_em': t['criado_em'], 'atualizado_em': t['atualizado_em'],
+        'genero': publico,
     }
 
 
@@ -122,8 +131,8 @@ def _inteiro(valor, nome, minimo, maximo):
 def filtros(pares):
     """Confere os parâmetros da query (a lista do parse_qsl, para enxergar repetição). ErroApi 400.
 
-    Devolve {'cats', 'lojas', 'termos', 'desconto_min', 'ordem', 'limite', 'cursor'}; `termos` já
-    vem sem acento e sem caixa; `cursor` é None, (atualizado_em, id) ou o deslocamento (int).
+    Devolve {'cats', 'lojas', 'generos', 'termos', 'desconto_min', 'ordem', 'limite', 'cursor'};
+    `termos` já vem sem acento e sem caixa; `cursor` é None, (atualizado_em, id) ou o deslocamento (int).
     """
     pares = list(pares or ())
     if len(pares) > MAX_PARES:
@@ -150,6 +159,10 @@ def filtros(pares):
     lojas = vistos.get('loja', [])
     if not all(l in D.LOJAS for l in lojas) or len(set(lojas)) != len(lojas):
         raise _invalido('loja deve ser ' + ', '.join(D.LOJAS) + ', sem repetir')
+
+    generos = vistos.get('genero', [])
+    if not all(g in G.GENEROS for g in generos) or len(set(generos)) != len(generos):
+        raise _invalido('genero deve ser ' + ', '.join(G.GENEROS) + ', sem repetir')
 
     termos = []
     if 'q' in vistos:
@@ -183,12 +196,15 @@ def filtros(pares):
         if cursor is None:
             raise _invalido('cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem')
 
-    return {'cats': cats, 'lojas': lojas, 'termos': termos, 'desconto_min': desconto_min,
+    return {'cats': cats, 'lojas': lojas, 'generos': generos, 'termos': termos, 'desconto_min': desconto_min,
             'ordem': ordem, 'limite': limite, 'cursor': cursor}
 
 
 def _casa(o, f):
-    """Filtros que dependem da oferta pronta: q (basta um termo no título) e desconto_min."""
+    """Filtros que dependem da oferta pronta: genero (exato: qualquer um dos pedidos), q (basta um
+    termo no título) e desconto_min."""
+    if f['generos'] and o['genero'] not in f['generos']:
+        return False
     if o['desconto_pct'] < f['desconto_min']:
         return False
     if f['termos']:
@@ -218,9 +234,10 @@ def listar(con, f, eh_afiliado, agora):
     else:
         sql += ' ORDER BY id'   # entrada estável para o desempate por posicao do disparo.ordenar
 
+    manuais = G.manuais(con)
     validas = []
     for r in con.execute(sql, args):
-        o = oferta(r, eh_afiliado)
+        o = oferta(r, eh_afiliado, manuais)
         if o is not None and _casa(o, f):
             validas.append((r, o))
 
@@ -242,16 +259,21 @@ def listar(con, f, eh_afiliado, agora):
 
 
 def categorias(con, eh_afiliado):
-    """GET /api/v1/categorias (CA5): cada aba com o total e a contagem por loja das ofertas que
-    passam no CA2, em ordem alfabética (sem diferenciar acento e caixa)."""
+    """GET /api/v1/categorias (CA5): cada aba com o total e as contagens por loja e por público
+    (as 4 chaves de genero.GENEROS, sempre) das ofertas que passam no CA2, em ordem alfabética (sem
+    diferenciar acento e caixa)."""
+    manuais = G.manuais(con)
     contas = {}
     for r in con.execute(_SQL_BASE):
-        o = oferta(r, eh_afiliado)
+        o = oferta(r, eh_afiliado, manuais)
         if o is None:
             continue
-        contas.setdefault(o['categoria'], dict.fromkeys(D.LOJAS, 0))[o['loja']] += 1
-    lista = [{'nome': nome, 'total': sum(lojas.values()), 'lojas': lojas}
-             for nome, lojas in sorted(contas.items(), key=lambda kv: (D._sem_acento(kv[0]), kv[0]))]
+        lojas, generos = contas.setdefault(o['categoria'],
+                                           (dict.fromkeys(D.LOJAS, 0), dict.fromkeys(G.GENEROS, 0)))
+        lojas[o['loja']] += 1
+        generos[o['genero']] += 1
+    lista = [{'nome': nome, 'total': sum(lojas.values()), 'lojas': lojas, 'generos': generos}
+             for nome, (lojas, generos) in sorted(contas.items(), key=lambda kv: (D._sem_acento(kv[0]), kv[0]))]
     return {'versao': VERSAO, 'categorias': lista, 'total': sum(c['total'] for c in lista)}
 
 

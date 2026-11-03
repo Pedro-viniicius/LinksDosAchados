@@ -57,6 +57,15 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - Consumidor: Achadinho Turbo (Node, 3737, outro repo; não acessar). Texto sai cru: o consumidor escapa (no contrato). `api_cabecalho.txt` (cabeçalho com o token, para `curl -H @`) também é segredo e está no `.gitignore`. Testes antigos apontam `ACHADINHOS_API_TOKEN_ARQUIVO` para caminho inexistente.
 - Contrato: `docs/produto/referencias/api-ofertas.md` (guia do Turbo manda regerar o link do ML; Shopee segue "como veio").
 
+**Público/gênero (plano genero-nas-categorias, E2-E5 e front revisados em 2026-11-03)**
+- `genero.py` puro: gênero derivado na leitura (cat/busca/titulo), regex lineares (medido 500k chars < 0,1 s). Só a correção do dono persiste em `generos_manuais` (`user_version` 2, `CHECK` na lista; `ALTER TABLE regras ADD COLUMN generos`). Gênero de produto, não de pessoa: sem dado pessoal novo.
+- `PUT /api/items/<id>/genero` (`ROTA_GENERO`, fora de `ROTAS_ML`; PUT nem está em `METODOS_ML`): testado 403 para ML, preflight, `null`, cross/same-site; corpo só `{"genero"}`; 400 fora da aba com gênero; grava só `generos_manuais` + `items.atualizado_em`. DELETE do item apaga a correção (ids AUTOINCREMENT, sem reuso).
+- v1: `genero` calculado no `oferta()` só depois do CA2; filtro aplicado em `_casa`; `MAX_PARES` 32; `G.manuais` é só SELECT (compatível com `query_only`).
+- `null` no PUT genero vale em qualquer aba (apaga a correção guardada); valor só na aba com gênero (decisão do lead, rodada 2).
+- Etapa 4 (revisada em 2026-11-03): `regras.generos` validada em `validar_regra` (lista de 0 a 4 de `GENEROS`, sem repetir, normalizada; erro sem eco); `elegiveis` filtra só itens de `ABAS_COM_GENERO`, depois do `link_da_loja_ok` (só estreita).
+- Front (`index.html`): `GENEROS`/`ABAS_COM_GENERO` espelhados (teste `test_front_constantes.py`); selo, campo e controle "Público" só com constantes + `esc()`; `copiarGenero` aceita só valor de `GENEROS`; `localStorage` `genero:<aba>` validado por `generoEscolhido`; `carregarJson`/estado de erro com texto fixo. `generosDoForm` devolve o `data-original` da regra sem filtrar (já validado pelo servidor, que revalida).
+- Origem do ML muda o gênero automático indiretamente (título/busca por POST/PATCH): coberto por R1.
+
 **Invariantes**
 - Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`).
 - Servidor só em 127.0.0.1; toda resposta leva `X-Frame-Options: SAMEORIGIN` e `frame-ancestors 'self'` (o teste embute o index.html); sem outra CSP.

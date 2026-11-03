@@ -5,3 +5,4 @@
 - [Disparo automático](decisao-disparo-automatico.md) — transporte por interface (manual 1º), disparo.py sem importar servidor, user_version, pesquisa WhatsApp
 - [Shopee e perfumaria](decisao-shopee-perfumaria.md) — Shopee via Open API (não console), chave ordem|<ordem>|<termo>, 42 termos, fatos dos links Shopee
 - [API para o Achadinho Turbo](decisao-api-achadinho-turbo.md) — /api/v1 pull, Bearer em api_token.txt, cursor (atualizado_em,id), fatos do Turbo (oferta, fontes, segredos)
+- [Gênero nas categorias](decisao-genero-categorias.md) — gênero derivado em genero.py, generos_manuais (user_version 2), só Perfumaria, medições por aba

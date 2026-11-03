@@ -49,6 +49,7 @@
   .row{display:flex;flex-wrap:wrap;gap:var(--s3);align-items:center;max-width:1200px;margin:0 auto}
   .bar{justify-content:space-between}
   .bar .grp{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+  #btnVoltarCab{display:none;align-items:center}
   h1{font:var(--t-subtitulo);font-weight:600;margin:0}
   h1 .logo{display:block;height:28px;width:auto;overflow:visible}
   h1 .logo .tag{fill:var(--etiqueta)}
@@ -79,6 +80,27 @@
   .tab .muted{font-family:var(--mono);font-variant-numeric:tabular-nums}
   .tab.active{background:var(--etiqueta-clara);border-color:var(--etiqueta-escura);font-weight:600}
   .tab.active .muted{color:var(--tinta)}
+  .total{margin:calc(-1*var(--s2)) 0 var(--s3)}
+  /* Barra da lista: o que só afeta a mensagem dos cartões (Template, editar, copiar a página) */
+  .barra-lista{margin-bottom:var(--s3);gap:var(--s2) var(--s3)}
+  .barra-lista .lbl select{font:var(--t-corpo);letter-spacing:0;text-transform:none;color:var(--tinta)}
+  .barra-lista #btnCopyAll{margin-left:auto}
+  /* Controle "Público" (aba com gênero): segmentado e neutro, sem o acento Etiqueta. Só o essencial; o acabamento fino é do designer. */
+  .seg-filtro{border:0;margin:0 0 var(--s3);padding:0;min-width:0}
+  .seg-filtro legend{padding:0;margin-bottom:var(--s1);font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
+  .seg-filtro .opcoes{display:flex;flex-wrap:wrap}
+  .seg-filtro label>span{line-height:20px}
+  .seg-filtro label{position:relative;display:flex}
+  .seg-filtro label>span{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--alvo);padding:0 var(--s3);margin-left:-1px;border:1px solid var(--linha-campo);background:var(--superficie);color:var(--tinta);cursor:pointer;user-select:none}
+  .seg-filtro label:first-child>span{margin-left:0;border-radius:var(--r) 0 0 var(--r)}
+  .seg-filtro label:last-child>span{border-radius:0 var(--r) var(--r) 0}
+  .seg-filtro label>span:hover{border-color:var(--mudo);z-index:1}
+  .seg-filtro .num{font:var(--t-mono-p);color:var(--mudo);font-variant-numeric:tabular-nums}
+  .seg-filtro input:checked+span{background:var(--tinta);border-color:var(--tinta);color:var(--sobre-tinta);font-weight:600}
+  .seg-filtro input:checked+span::before{content:"✓" / ""}
+  .seg-filtro input:checked+span .num{color:inherit}
+  .seg-filtro input:checked+span::before{flex:none}
+  .seg-filtro input:focus-visible+span{outline:2px solid var(--foco);outline-offset:2px;z-index:2}
   .filters{margin-bottom:var(--s4);gap:var(--s2)}
   .filters input{flex:1;min-width:180px}
   .pager{gap:var(--s2);margin-bottom:var(--s4)}
@@ -90,6 +112,7 @@
   .card.done{border-color:var(--enviado)}
   .top{display:flex;align-items:center;gap:var(--s2);min-width:0}
   .badge{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo);white-space:nowrap}
+  .top>.selo-genero::before,.top>.busca:not(:empty)::before{content:"·" / "";margin-right:var(--s2)}
   .busca{font:var(--t-legenda);color:var(--mudo);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
   .feito{display:none;margin-left:auto;font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--enviado);white-space:nowrap}
   .card.done .feito{display:inline}
@@ -103,7 +126,7 @@
   .price .off{color:var(--etiqueta-escura);font:var(--t-mono-m)}
   .meta{font:var(--t-legenda);color:var(--mudo);margin-top:var(--s1)}
   .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-  textarea{width:100%;min-height:200px;resize:vertical;background:var(--papel);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:var(--s3);white-space:pre-wrap;line-height:22px}
+  textarea{width:100%;min-height:132px;resize:vertical;background:var(--papel);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r);padding:var(--s3);white-space:pre-wrap;line-height:22px}
   .card textarea{flex:1 0 auto}
   textarea:focus-visible,input:focus-visible,select:focus-visible{outline-offset:0;border-color:var(--foco)}
   .actions{display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center}
@@ -120,7 +143,12 @@
   .more[open] summary::after{content:"▴" / ""}
   .more summary:hover{background:var(--linha);color:var(--tinta)}
   .more .rare{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);padding-top:var(--s2);border-top:1px solid var(--linha);margin-top:var(--s1)}
-  .more .rare .lbl{margin-left:auto}
+  .more .rare .lbl{display:grid;grid-template-columns:88px minmax(0,1fr);width:100%;margin-left:0}
+  .more .rare select:disabled{opacity:.6;cursor:progress}
+  .gen-msg{flex:1 0 100%;margin:0;font:var(--t-legenda);color:var(--mudo)}
+  .gen-msg:empty{position:absolute}
+  .gen-msg.err{color:var(--falhou)}
+  .card .status:not(:empty){font:var(--t-corpo);overflow-wrap:anywhere}
   .box{display:none;max-width:1200px;margin:var(--s3) auto 0;background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4)}
   .box.open{display:block}
   .box textarea{min-height:140px}
@@ -132,12 +160,24 @@
   .toast{position:fixed;bottom:var(--s5);left:50%;transform:translateX(-50%);background:var(--tinta);color:var(--sobre-tinta);padding:var(--s3) var(--s5);border-radius:var(--r-pill);font-weight:500;box-shadow:var(--sombra);opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;max-width:calc(100vw - 32px)}
   .toast.show{opacity:1}
   @media (max-width:600px){
-    header{padding:var(--s3)}
+    header{position:static;max-height:none;overflow:visible;padding:var(--s3)}
     main{padding:var(--s4) var(--s3) var(--s6)}
     .bar .grp{width:100%}
-    .bar .grp .lbl{width:100%}
-    .bar .grp .lbl select{flex:1}
+    .bar .grp button{flex:1 1 0;min-height:44px;padding:0 var(--s2)}
+    /* abas em 2 colunas: o texto quebra em 2 linhas, a contagem fica à direita */
+    .tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+    .tab{min-height:44px;padding:var(--s1) var(--s3);flex-direction:column;align-items:flex-start;justify-content:center;gap:0;border-radius:var(--r);text-align:left;min-width:0;overflow-wrap:anywhere}
+    .more .rare .lbl{grid-template-columns:minmax(0,1fr);gap:var(--s1)}
+    .barra-lista .lbl{width:100%}
+    .barra-lista .lbl select{flex:1;min-height:44px}
+    .barra-lista button{flex:1 1 0;min-height:44px;padding:0 var(--s2)}
+    .barra-lista #btnCopyAll{margin-left:0}
+    .seg-filtro .opcoes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s2)}
+    .seg-filtro label:last-child:nth-child(odd){grid-column:1/-1}
+    .seg-filtro label>span,.seg-filtro label:first-child>span,.seg-filtro label:last-child>span{width:100%;margin-left:0;border-radius:var(--r);justify-content:flex-start;gap:var(--s1);padding:0 var(--s2);min-height:44px}
+    .seg-filtro .num{margin-left:auto}
   }
+
   /* ---- Tela "Disparo automático" (regras, fila, histórico, números). Só tokens existentes. ---- */
   .dsp{max-width:720px;margin:0 auto}
   .dsp h2{font:var(--t-titulo);margin:0}
@@ -176,6 +216,10 @@
   .estado.ok{color:var(--enviado)}
   .estado.ruim{color:var(--falhou)}
   .vazio{background:var(--superficie);border:1px dashed var(--linha-campo);border-radius:var(--r-lg);padding:var(--s5);display:flex;flex-direction:column;gap:var(--s3);align-items:flex-start}
+  /* Estados da lista de ofertas (carregando, erro, sem resultado). Sem dados, só o bloco do estado aparece; a altura mínima evita o salto quando a lista chega. */
+  #estadoLista:empty{display:none}
+  #estadoLista .vazio{min-height:144px;justify-content:center}
+  #telaOfertas.sem-dados>:not(#estadoLista):not(#anuncioLista){display:none}
   .dsp fieldset{border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);margin:0 0 var(--s4);min-width:0;background:var(--superficie)}
   .dsp legend{font:var(--t-subtitulo);padding:0 var(--s2)}
   .dsp .ajuda{font:var(--t-legenda);color:var(--mudo);margin-bottom:var(--s3)}
@@ -237,8 +281,10 @@
   .htab .quando{white-space:nowrap}
   .filtros-hist{display:flex;flex-wrap:wrap;gap:var(--s3);margin-bottom:var(--s4)}
   .atencao{color:var(--falhou)}
-  /* na tela de disparo, o que só vale para as ofertas sai do cabeçalho; Template e "Editar templates" ficam (a regra usa templates) */
-  body.em-disparo #btnCopyAll,body.em-disparo #btnAdd,body.em-disparo #count,body.em-disparo #addBox{display:none}
+  /* na tela de disparo o cabeçalho fica só com o logo e "← Voltar às ofertas" (o link do corpo é o mesmo destino); Template e "Editar templates" têm cópia no formulário da regra */
+  body.em-disparo #btnAdd,body.em-disparo #btnDisparo,body.em-disparo #addBox,body.em-disparo .dsp .voltar{display:none}
+  body.em-disparo #btnVoltarCab{display:inline-flex}
+  body.em-disparo .bar{justify-content:flex-start;gap:var(--s5)}
   @media (max-width:600px){
     .dsp fieldset{padding:var(--s3)}
     .barra-form{position:sticky;bottom:0;background:var(--papel);padding:var(--s3) 0;border-top:1px solid var(--linha);z-index:2}
@@ -259,14 +305,11 @@
   <div class="row bar">
     <div class="grp">
       <h1><svg class="logo" role="img" aria-label="Etiqueta" viewBox="524 259 1512 364" focusable="false"><path fill="currentColor" d="M629.2 566.7Q598 566.7 575 553.2Q552 539.8 539.5 515.2Q527 490.6 527 457.9Q527 425.1 539.5 400.7Q552 376.4 574.8 362.7Q597.6 349.1 628 349.1Q657.7 349.1 680.1 362.3Q702.5 375.6 714.6 400.5Q726.7 425.5 726.7 460.6V471.9H578.9Q580.4 499.2 593.9 513.1Q607.3 526.9 629.6 526.9Q646.3 526.9 657.5 519.3Q668.6 511.7 672.9 498L724 501.2Q715.4 531.6 690.2 549.1Q665.1 566.7 629.2 566.7ZM578.9 438.4H675.2Q673.6 413 660.8 400.7Q647.9 388.4 628 388.4Q608.1 388.4 595.1 401.3Q582 414.2 578.9 438.4ZM842.2 562Q811 562 796.4 547.6Q781.8 533.1 781.8 502.3V305H831.7V497.6Q831.7 512.1 837.9 517.7Q844.2 523.4 857.4 523.4H886.7V562ZM749 392.4V353.7H886.7V392.4ZM916 562V353.7H965.9V562ZM1199.7 620.5H1149.8V517.9L1154.4 521.8Q1150.5 535.5 1141 545.6Q1131.4 555.8 1118 561.2Q1104.5 566.7 1088.9 566.7Q1059.3 566.7 1039.6 551.9Q1019.9 537 1009.9 512.5Q1000 487.9 1000 457.9Q1000 427.8 1009.8 403.3Q1019.5 378.7 1039.2 363.9Q1058.9 349.1 1088.5 349.1Q1112.3 349.1 1130.3 361Q1148.2 372.9 1155.6 395.9L1150.5 398.2L1151.7 353.7H1199.7ZM1100.6 526.1Q1116.2 526.1 1127.1 518.5Q1138.1 510.9 1143.9 495.7Q1149.8 480.5 1149.8 457.9Q1149.8 435.2 1143.7 420Q1137.7 404.8 1126.8 397.2Q1115.8 389.6 1100.6 389.6Q1078 389.6 1064.9 407.8Q1051.9 425.9 1051.9 457.9Q1051.9 489.9 1064.9 508Q1078 526.1 1100.6 526.1ZM1310.6 566.7Q1279 566.7 1260.5 545.8Q1242 525 1242 487.9V353.7H1291.9V475.4Q1291.9 501.6 1300.7 513.8Q1309.5 526.1 1327.4 526.1Q1347.7 526.1 1358.8 512.7Q1369.9 499.2 1369.9 473.5V353.7H1419.8V562H1374.2L1373 504.7L1379.3 506.6Q1374.6 536.3 1357.1 551.5Q1339.5 566.7 1310.6 566.7ZM1554.2 566.7Q1523 566.7 1500 553.2Q1477 539.8 1464.5 515.2Q1452 490.6 1452 457.9Q1452 425.1 1464.5 400.7Q1477 376.4 1499.8 362.7Q1522.6 349.1 1553 349.1Q1582.7 349.1 1605.1 362.3Q1627.5 375.6 1639.6 400.5Q1651.7 425.5 1651.7 460.6V471.9H1503.9Q1505.4 499.2 1518.9 513.1Q1532.3 526.9 1554.6 526.9Q1571.3 526.9 1582.5 519.3Q1593.6 511.7 1597.9 498L1649 501.2Q1640.4 531.6 1615.2 549.1Q1590.1 566.7 1554.2 566.7ZM1503.9 438.4H1600.2Q1598.6 413 1585.8 400.7Q1572.9 388.4 1553 388.4Q1533.1 388.4 1520.1 401.3Q1507 414.2 1503.9 438.4ZM1767.2 562Q1736 562 1721.4 547.6Q1706.8 533.1 1706.8 502.3V305H1756.7V497.6Q1756.7 512.1 1762.9 517.7Q1769.2 523.4 1782.4 523.4H1811.7V562ZM1674 392.4V353.7H1811.7V392.4ZM1902.5 566.7Q1869.8 566.7 1849.9 551.7Q1830 536.6 1830 509.7Q1830 482.8 1846.8 467.6Q1863.5 452.4 1897.9 445.8L1966.9 432.1Q1966.9 409.9 1956.8 398.8Q1946.6 387.7 1926.7 387.7Q1908.8 387.7 1898.4 396.1Q1888.1 404.4 1884.2 420L1833.5 417.7Q1839.8 384.5 1863.9 366.8Q1888.1 349.1 1926.7 349.1Q1971.2 349.1 1994 371.5Q2016.8 393.9 2016.8 435.6V511.3Q2016.8 519.5 2019.7 522.6Q2022.7 525.7 2028.5 525.7H2035.1V562Q2032.8 562.8 2027.5 563.2Q2022.3 563.6 2016.8 563.6Q2003.9 563.6 1993.8 559.5Q1983.7 555.4 1978.2 545Q1972.7 534.7 1972.7 516.8L1977 519.9Q1973.9 533.5 1963.6 544.3Q1953.2 555 1937.6 560.8Q1922 566.7 1902.5 566.7ZM1912.7 530.4Q1929.5 530.4 1941.5 523.8Q1953.6 517.1 1960.3 505.4Q1966.9 493.8 1966.9 477.8V466.1L1913.1 477Q1896.3 480.5 1889.1 487.3Q1881.9 494.1 1881.9 505.1Q1881.9 517.1 1889.9 523.8Q1897.9 530.4 1912.7 530.4Z"/><path class="tag" fill-rule="evenodd" d="M978 263a4 4 0 0 1 4 4V320a4 4 0 0 1-4 4H923L900 296a3 3 0 0 1 0-5L922 263.5Q923 263 925 263ZM921 287.5a5.5 5.5 0 1 0 .01 0Z"/></svg></h1>
-      <span class="muted" id="count"></span>
     </div>
     <div class="grp">
-      <label class="lbl">Template <select id="tplSelect"></select></label>
-      <button class="ghost" id="btnTpl">Editar templates</button>
       <button class="ghost" id="btnAdd">Adicionar links</button>
       <button class="ghost" id="btnDisparo">Disparo automático</button>
-      <button class="secondary" id="btnCopyAll">Copiar todas da página</button>
+      <button class="ghost" id="btnVoltarCab" type="button">← Voltar às ofertas</button>
     </div>
   </div>
 
@@ -294,16 +337,25 @@
   </div>
 </header>
 
-<main>
-<div id="telaOfertas">
+<main aria-busy="true">
+<div id="telaOfertas" class="sem-dados">
   <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
+  <p class="muted total" id="count"></p>
+  <div id="publicoBox"></div>
+  <p class="sr" id="anuncioLista" role="status" aria-live="polite"></p>
   <div class="row filters">
     <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option></select>
     <select id="fBusca" aria-label="Filtrar por busca"><option value="">Todas as buscas</option></select>
     <select id="fOrdem" aria-label="Ordenar por"><option value="">Ordem de coleta</option><option value="desc">Maior desconto</option><option value="preco">Menor preço</option></select>
     <input type="search" id="fTexto" aria-label="Filtrar pelo título" placeholder="Filtrar pelo título">
   </div>
+  <div class="barra-lista row" role="group" aria-label="Mensagens desta lista">
+    <label class="lbl">Template <select id="tplSelect"></select></label>
+    <button class="ghost" id="btnTpl">Editar templates</button>
+    <button class="secondary" id="btnCopyAll">Copiar todas da página</button>
+  </div>
   <div class="pager row"></div>
+  <div id="estadoLista"></div>
   <div class="grid" id="grid"></div>
   <div class="pager row bottom"></div>
 </div>
@@ -317,6 +369,29 @@
 const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
 // Lojas na ordem fixa do app (filtro, contador, resumo da regra). Nome exibido; a Shopee é rótulo neutro, sem cor.
 const LOJA = {amazon:'Amazon', ml:'Mercado Livre', shopee:'Shopee'};
+// Público (gênero) dos itens. ABAS_COM_GENERO espelha genero.ABAS_COM_GENERO do servidor (aba nova: mude lá e aqui) e GENEROS, genero.GENEROS.
+// Fora dessas abas todo item é "sem" e nada filtra por público. Cada constante fica numa linha só: testes/test_front_constantes.py confere com o genero.py.
+const ABAS_COM_GENERO = ['Perfumes e Perfumaria'];
+const GENEROS = ['feminino','masculino','unissex','sem'];
+const NOME_GENERO = {feminino:'Feminino', masculino:'Masculino', unissex:'Unissex', sem:'Sem gênero'};
+const OPCOES_PUBLICO = [['todos','Todos'],['feminino','Feminino'],['masculino','Masculino'],['unissex','Unissex'],['sem','Sem gênero']];
+const TXT_GENERO = {
+  legenda:'Público', corrigido:'corrigido', tituloCorrigido:'Público corrigido à mão', automatico:'Automático',
+  salvo:'Público salvo: ', voltou:'Público voltou ao automático.',
+  semServidor:'Não consegui falar com o servidor. Verifique se ele está aberto e tente de novo.',
+  naoExiste:'Este item não existe mais. Recarregue a página.',
+  naoSalvou:'Não consegui salvar o público. Tente de novo.',
+};
+// Estados da lista de ofertas: carregando, erro de carga, sem resultado e sem nenhuma oferta
+const TXT_LISTA = {
+  carregando:'Carregando as ofertas…',
+  erro:'Não consegui carregar as ofertas. Verifique se o servidor está aberto e tente de novo.',
+  tentar:'Tentar de novo',
+  semResultado:'Nenhuma oferta com esses filtros.',
+  semResultadoPublico:'Nenhuma oferta para {PUBLICO} com esses filtros.',
+  limpar:'Limpar filtros',
+  semOfertas:'Esta categoria ainda não tem ofertas. Use Adicionar links para incluir.',
+};
 // Hosts dos links por loja, espelho do servidor.py (HOSTS_LOJAS e HOSTS_AFILIADO_SHOPEE); o ML também aceita só os subdomínios de SUFIXO_ML
 // (o domínio nu mercadolivre.com.br o servidor recusa). Cada constante fica numa linha só: testes/test_front_constantes.py lê estas linhas e confere com o servidor.
 // O host final da Shopee será confirmado com um link real do dono: é só trocar aqui e no servidor.py.
@@ -357,6 +432,32 @@ let page=1;
 const cats = ()=>[...new Set(items.map(i=>i.cat))];
 const num = p=>parseFloat(String(p||'').replace(/[^\d,]/g,'').replace(',','.'))||0;
 const pct = d=>parseInt(String(d||'').replace(/\D/g,''))||0;
+
+// ---- Público (gênero). Funções com `function` para o iframe dos testes alcançar.
+function abaTemGenero(cat){ return ABAS_COM_GENERO.includes(cat); }
+function generoDe(it){ return GENEROS.includes(it && it.genero) ? it.genero : 'sem'; }
+// O item passa no público? `generos` vazio = todos. Só vale nas abas com gênero; nas outras passa sempre (como no servidor).
+function casaGenero(it, generos){
+  if (!generos || !generos.length || !abaTemGenero(it.cat)) return true;
+  return generos.includes(generoDe(it));
+}
+// Contagem por público de uma lista de itens: todos (soma, com os sem gênero) e cada valor
+function contarGeneros(lista){
+  const c = {todos:lista.length, feminino:0, masculino:0, unissex:0, sem:0};
+  for (const i of lista) c[generoDe(i)]++;
+  return c;
+}
+// Público lembrado por aba (localStorage `genero:<aba>`); valor que não existe mais, ou aba sem gênero, é "Todos" ('')
+function generoEscolhido(cat){
+  if (!abaTemGenero(cat)) return '';
+  const v = localStorage.getItem('genero:'+cat);
+  return GENEROS.includes(v) ? v : '';
+}
+function guardarGenero(cat, v){ if (v) localStorage.setItem('genero:'+cat, v); else localStorage.removeItem('genero:'+cat); }
+// Resposta do servidor (PATCH/PUT) traz o público do item: copia só estes campos para o item da tela
+function copiarGenero(it, r){
+  if (r && GENEROS.includes(r.genero)) Object.assign(it, {genero:r.genero, genero_origem:r.genero_origem || '', genero_auto:r.genero_auto});
+}
 
 function buildMsg(it){
   const d = it.data || {};
@@ -477,11 +578,12 @@ async function copiarImagem(it, card, btn){
 }
 
 function renderCard(card, it){
+  card.dataset.id = it.id;   // corrigirGenero acha o cartão que está na tela por este id, mesmo se render() recriou o cartão
   const d = it.data;
   const meta = d ? [d.avaliacao, d.num_avaliacoes, d.vendas].filter(Boolean).map(esc).join(' · ') : '';
   const rotImg = d&&d.titulo ? ` aria-label="Copiar imagem de ${esc(d.titulo)}"` : '';
   card.innerHTML = `
-    <div class="top"><span class="badge ${esc(it.loja)}">${esc(LOJA[it.loja]||it.loja)}</span><span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Mensagem copiada</span></div>
+    <div class="top"><span class="badge ${esc(it.loja)}">${esc(LOJA[it.loja]||it.loja)}</span>${htmlSeloGenero(it)}<span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Mensagem copiada</span></div>
     ${d ? `<div class="info">${d.imagem?`<img loading="lazy" alt="" src="${esc(d.imagem)}">`:''}<div class="t"><h2 class="name" title="${esc(d.titulo)}">${esc(d.titulo)}</h2><div class="price"><span class="now">${esc(d.preco)}</span>${d.preco_antigo?'<s class="old"><span class="sr">Preço antigo </span>'+esc(d.preco_antigo)+'</s>':''}${d.desconto?'<span class="off">'+esc(d.desconto)+'</span>':''}</div>${meta?'<div class="meta">'+meta+'</div>':''}</div></div>` : ''}
     <textarea aria-label="Mensagem para copiar"></textarea>
     <div class="status" role="status"></div>
@@ -489,7 +591,7 @@ function renderCard(card, it){
       <button class="cta copy">Copiar</button>
       ${d&&d.imagem
         ? `<button type="button" class="secondary copyimg"${rotImg}>${TXT_IMG.botao}</button>`
-        : `<button type="button" class="secondary copyimg" aria-disabled="true" aria-describedby="semfoto-${esc(it.id)}"${rotImg}>${TXT_IMG.botao}</button><span class="sr" id="semfoto-${esc(it.id)}">${TXT_IMG.semFoto}</span>`}
+        : `<button type="button" class="secondary copyimg" aria-disabled="true" aria-describedby="semfoto-${esc(it.id)}" title="${TXT_IMG.semFoto}"${rotImg}>${TXT_IMG.botao}</button><span class="sr" id="semfoto-${esc(it.id)}">${TXT_IMG.semFoto}</span>`}
       <button class="ghost open"${LOJA[it.loja] ? ` aria-label="Abrir na loja ${esc(LOJA[it.loja])}"` : ''}>Abrir na loja</button>
       <details class="more">
         <summary>Mais ações</summary>
@@ -497,6 +599,7 @@ function renderCard(card, it){
           ${it.loja==='amazon'?'<button class="secondary fetch">Atualizar preço</button>':''}
           <button class="secondary reset">Recarregar</button>
           <label class="lbl">Mover para <select class="mv">${cats().map(c=>`<option ${c===it.cat?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ nova...</option></select></label>
+          ${htmlCampoGenero(it)}
           <button class="danger del">Excluir</button>
         </div>
       </details>
@@ -512,23 +615,107 @@ function renderCard(card, it){
   };
   card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };
   card.querySelector('.del').onclick = async()=>{ await api('items/'+it.id,'DELETE'); items.splice(items.indexOf(it),1); render(); };
-  card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } c=c.trim(); await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; render(); };
+  card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } c=c.trim(); const r=await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; copiarGenero(it, r); render(); };
+  const gs = card.querySelector('select.gen'); if (gs) gs.onchange = ()=>corrigirGenero(it, card, gs);
 }
 
+// Selo do público no topo do cartão: só em "Todos" (com um público escolhido todos os cartões teriam o mesmo) e só se o item tem público;
+// item corrigido à mão ganha "corrigido" (o único selo, se o público estiver escolhido ou for "sem gênero"). Texto, sem cor.
+function htmlSeloGenero(it){
+  if (!abaTemGenero(it.cat)) return '';
+  const g = generoDe(it), manual = it.genero_origem === 'manual', partes = [];
+  if (!generoEscolhido(it.cat) && g !== 'sem') partes.push(esc(NOME_GENERO[g]));
+  if (manual) partes.push(TXT_GENERO.corrigido);
+  if (!partes.length) return '';
+  return `<span class="badge selo-genero" data-genero="${esc(g)}"${manual ? ` title="${esc(TXT_GENERO.tituloCorrigido)}"` : ''}>${partes.join(' · ')}</span>`;
+}
+function atualizarSeloGenero(card, it){
+  const velho = card.querySelector('.selo-genero'); if (velho) velho.remove();
+  const h = htmlSeloGenero(it); if (h) card.querySelector('.top .badge').insertAdjacentHTML('afterend', h);
+}
+// "Automático (Feminino)": o valor automático vem do servidor (genero_auto); sem ele, só "Automático"
+function rotuloAutomatico(it){
+  const auto = it.genero_origem === 'manual' ? it.genero_auto : generoDe(it);
+  return GENEROS.includes(auto) ? `${TXT_GENERO.automatico} (${NOME_GENERO[auto]})` : TXT_GENERO.automatico;
+}
+// Campo "Público" de "Mais ações": só em cartão de aba com gênero. Valor '' = automático.
+function htmlCampoGenero(it){
+  if (!abaTemGenero(it.cat)) return '';
+  const atual = it.genero_origem === 'manual' ? generoDe(it) : '', titulo = it.data && it.data.titulo;
+  return `<label class="lbl">${esc(TXT_GENERO.legenda)} <select class="gen" data-anterior="${esc(atual)}" aria-describedby="gen-msg-${esc(it.id)}"${titulo ? ` aria-label="${esc(TXT_GENERO.legenda+' de '+titulo)}"` : ''}><option value=""${atual === '' ? ' selected' : ''}>${esc(rotuloAutomatico(it))}</option>${GENEROS.map(g=>`<option value="${g}"${g === atual ? ' selected' : ''}>${esc(NOME_GENERO[g])}</option>`).join('')}</select></label><p class="gen-msg" id="gen-msg-${esc(it.id)}" role="status"></p>`;
+}
+// Resultado da correção, logo abaixo do campo (o .status do cartão fica longe do campo com "Mais ações" aberto no celular).
+// O papel é definido antes do texto: erro vira alert (lido na hora), o resto é status.
+function mostrarMsgGenero(card, texto, erro=false){
+  const m = card.querySelector('.gen-msg'); if (!m) return;
+  m.setAttribute('role', erro ? 'alert' : 'status');
+  m.className = 'gen-msg'+(erro ? ' err' : '');
+  m.textContent = texto;
+}
+// O que a resposta do servidor muda no cartão: selo e campo (valor, opção "Automático (...)" e valor anterior)
+function aplicarGeneroNoCartao(card, it){
+  const sel = card.querySelector('select.gen'); if (!sel) return;
+  sel.dataset.anterior = it.genero_origem === 'manual' ? generoDe(it) : '';
+  sel.value = sel.dataset.anterior; sel.options[0].textContent = rotuloAutomatico(it);
+  atualizarSeloGenero(card, it);
+}
+// Corrige o público do item (PUT /api/items/<id>/genero). Não recria o cartão: preserva "✓ Mensagem copiada", o foco e "Mais ações" aberto.
+async function corrigirGenero(it, card, sel){
+  const anterior = sel.dataset.anterior || '';
+  const novo = sel.value === '' ? null : sel.value, tinhaFoco = document.activeElement === sel;
+  sel.disabled = true; sel.setAttribute('aria-busy','true'); mostrarMsgGenero(card, '');
+  const falhou = texto=>{ sel.value = anterior; mostrarMsgGenero(card, texto, true); toast(texto, true); };
+  try{
+    let r;
+    try{ r = await fetch('/api/items/'+encodeURIComponent(it.id)+'/genero', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({genero:novo})}); }
+    catch{ falhou(TXT_GENERO.semServidor); return; }
+    let d = null; try{ d = await r.json(); }catch{ /* corpo vazio ou não-JSON */ }
+    if (!r.ok){ falhou(r.status === 404 ? TXT_GENERO.naoExiste : TXT_GENERO.naoSalvou); return; }
+    if (!d || !GENEROS.includes(d.genero)){ falhou(TXT_GENERO.naoSalvou); return; }
+    copiarGenero(it, d);
+    // render() pode ter recriado o cartão enquanto o PUT andava (trocar de aba e voltar): atualiza todos os cartões deste item que estão na tela
+    const vivos = new Set([card, ...document.querySelectorAll('.card[data-id="'+it.id+'"]')]);
+    const escolhido = generoEscolhido(it.cat);   // antes de atualizarPublico(), que pode apagar a escolha
+    vivos.forEach(c=>aplicarGeneroNoCartao(c, it));
+    atualizarPublico();
+    toast(novo === null ? TXT_GENERO.voltou : TXT_GENERO.salvo+NOME_GENERO[generoDe(it)]+'.');
+    // o cartão fica onde está, mesmo que o novo público o tire da lista; sai no próximo render()
+    if (escolhido && !casaGenero(it, [escolhido])){
+      const msg = `Agora é ${NOME_GENERO[generoDe(it)]}. Sai desta lista quando você trocar de página ou de filtro.`;
+      vivos.forEach(c=>mostrarMsgGenero(c, msg));
+    }
+  } finally {
+    sel.disabled = false; sel.removeAttribute('aria-busy');
+    if (tinhaFoco) sel.focus();
+  }
+}
+
+// Itens da aba ativa que passam nos filtros. semGenero e semBusca servem às contagens do controle "Público" (loja e título valem; o próprio público e a busca não).
+function filtrarItens({semGenero=false, semBusca=false}={}){
+  const loja=$('#fLoja').value, busca=semBusca?'':$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), g=semGenero?'':generoEscolhido(activeCat);
+  return items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)) && (!g||casaGenero(i,[g])));
+}
 function filtrada(){
-  const loja=$('#fLoja').value, busca=$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), ordem=$('#fOrdem').value;
-  let l = items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)));
+  const ordem=$('#fOrdem').value;
+  let l = filtrarItens();
   if(ordem==='desc') l=[...l].sort((a,b)=>pct(b.data&&b.data.desconto)-pct(a.data&&a.data.desconto));
   if(ordem==='preco') l=[...l].sort((a,b)=>(num(a.data&&a.data.preco)||1e12)-(num(b.data&&b.data.preco)||1e12));
   return l;
 }
 
 function render(){
+  if (!ofertasProntas) return;   // carregando ou com erro de carga: o bloco do estado fica, nada de lista
+  const foco = guardarFoco();
   const cs = cats(); if(!cs.includes(activeCat)) activeCat = cs[0] || '';
   localStorage.setItem('activeCat', activeCat);
-  $('#tabs').innerHTML = cs.map(c=>`<button type="button" class="tab ${c===activeCat?'active':''}" data-c="${esc(c)}" aria-pressed="${c===activeCat}">${esc(c)} <span class="muted">${items.filter(i=>i.cat===c).length}</span></button>`).join('');
+  $('#tabs').innerHTML = cs.map(c=>`<button type="button" class="tab ${c===activeCat?'active':''}" data-c="${esc(c)}" aria-pressed="${c===activeCat}">${esc(c)} <span class="muted">${fmtNum(items.filter(i=>i.cat===c).length)}</span></button>`).join('');
   document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{activeCat=t.dataset.c; page=1; $('#fBusca').value=''; render();});
-  const buscas=[...new Set(items.filter(i=>i.cat===activeCat).map(i=>i.busca).filter(Boolean))];
+  // "Sem gênero" que zerou (com a loja e o título de agora) cai em "Todos" antes de filtrar
+  if (abaTemGenero(activeCat) && generoEscolhido(activeCat)==='sem' && !contarGeneros(filtrarItens({semGenero:true, semBusca:true})).sem) guardarGenero(activeCat, '');
+  atualizarPublico();
+  // o select de buscas só lista as buscas que têm item no público escolhido
+  const gSel=generoEscolhido(activeCat);
+  const buscas=[...new Set(items.filter(i=>i.cat===activeCat && (!gSel||casaGenero(i,[gSel]))).map(i=>i.busca).filter(Boolean))];
   const bsel=$('#fBusca'), bval=bsel.value;
   bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+buscas.map(b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`).join('');
   const list = filtrada();
@@ -537,12 +724,108 @@ function render(){
   $('#count').innerHTML = partes.map((t,i)=>`<span class="nb">${esc(t)}${i < partes.length-1 ? ' ·' : ''}</span>`).join(' ');
   const PAGE=24, pages=Math.max(1,Math.ceil(list.length/PAGE));
   if(page>pages) page=pages; if(page<1) page=1;
-  const pagerHtml = pages>1 ? `<button class="secondary pg" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : `<span class="muted">${list.length} itens</span>`;
+  const pagerHtml = pages>1 ? `<button class="secondary pg" data-a="primeira" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-a="anterior" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-a="proxima" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-a="ultima" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : `<span class="muted">${list.length} itens</span>`;
   document.querySelectorAll('.pager').forEach(el=>{ el.innerHTML=pagerHtml; el.querySelectorAll('.pg').forEach(b=>b.onclick=()=>{page=+b.dataset.p; render(); window.scrollTo({top:0,behavior:'smooth'});}); });
   const grid=$('#grid'); grid.innerHTML='';
   list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; renderCard(c,it); grid.appendChild(c); });
   $('#addCat').innerHTML = cs.map(c=>`<option ${c===activeCat?'selected':''}>${esc(c)}</option>`).join('');
+  // sem nenhuma oferta: só o aviso; filtro que zera a lista: aviso no lugar do grid, com a saída
+  const g = generoEscolhido(activeCat);
+  if (!items.length) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), true);
+  else if (!list.length) definirEstadoLista(htmlEstadoLista('status', g ? TXT_LISTA.semResultadoPublico.replace('{PUBLICO}', NOME_GENERO[g]) : TXT_LISTA.semResultado, 'limpar', TXT_LISTA.limpar), false);
+  else definirEstadoLista('', false);
+  devolverFoco(foco);
 }
+// ---- Estados da lista (M3). `#estadoLista` mostra o bloco; com `sem-dados` o resto da tela (abas, filtros, paginação, grade) fica escondido.
+let ofertasProntas = false, disparoIniciado = false;
+const htmlEstadoLista = (papel, texto, acao, rotulo)=>`<div class="vazio" role="${papel}"><p>${esc(texto)}</p>${acao ? `<button type="button" class="secondary" data-acao="${acao}">${esc(rotulo)}</button>` : ''}</div>`;
+function definirEstadoLista(html, semDados){
+  $('#estadoLista').innerHTML = html;
+  $('#telaOfertas').classList.toggle('sem-dados', semDados);
+}
+// Volta loja, busca, ordem, título e público ao padrão; a aba fica
+function limparFiltros(){
+  for (const s of ['#fLoja','#fBusca','#fOrdem','#fTexto']) $(s).value = '';
+  guardarGenero(activeCat, ''); page = 1; render();
+  $('#fTexto').focus({preventScroll:true});   // o botão que tinha o foco saiu da tela
+}
+$('#estadoLista').addEventListener('click', ev=>{
+  const b = ev.target.closest('button[data-acao]'); if (!b) return;
+  if (b.dataset.acao === 'tentar') carregarOfertas(); else if (b.dataset.acao === 'limpar') limparFiltros();
+});
+// GET que falha em erro de rede e em resposta que não é 2xx (o `api()` devolve o corpo de erro como se fosse dado)
+async function carregarJson(caminho){
+  const r = await fetch('/api/'+caminho);
+  if (!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+async function carregarOfertas(){
+  const doEstado = $('#estadoLista').contains(document.activeElement);   // "Tentar de novo" tinha o foco
+  ofertasProntas = false;
+  $('main').setAttribute('aria-busy','true');
+  definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.carregando), true);
+  if (doEstado){ const b = $('#estadoLista .vazio'); b.tabIndex = -1; b.focus({preventScroll:true}); }
+  let it, tp, cur;
+  try{
+    [it, tp, cur] = await Promise.all([carregarJson('items'), carregarJson('config/templates'), carregarJson('config/currentTpl')]);
+    if (!Array.isArray(it)) throw new Error('lista de itens inválida');
+  }catch{
+    $('main').removeAttribute('aria-busy');
+    definirEstadoLista(htmlEstadoLista('alert', TXT_LISTA.erro, 'tentar', TXT_LISTA.tentar), true);
+    if (doEstado) $('#estadoLista button').focus({preventScroll:true});
+    return false;
+  }
+  items = it; if(tp) templates = tp; if(cur && templates[cur]) current = cur;
+  fillSelect();
+  ofertasProntas = true;
+  $('main').removeAttribute('aria-busy');
+  render();
+  if (doEstado){ const a = $('#tabs .tab.active') || $('#estadoLista button') || $('#btnAdd'); a.focus({preventScroll:true}); }
+  return true;
+}
+// ---- Foco (M5). render() recria os botões das abas e da paginação: guarda onde o foco estava e devolve ao botão equivalente.
+function guardarFoco(){
+  const a = document.activeElement; if (!a || !a.closest) return null;
+  const aba = a.closest('#tabs .tab'); if (aba) return {tipo:'aba', c:aba.dataset.c};
+  const pg = a.closest('.pager .pg'); if (pg) return {tipo:'pg', fundo:!!pg.closest('.pager.bottom'), acao:pg.dataset.a};
+  return null;
+}
+// Botão da paginação ao qual o foco volta quando o da mesma ação saiu de cena (desabilitado na primeira/última página)
+const FOCO_PAGINACAO = {primeira:['primeira','proxima','anterior','ultima'], anterior:['anterior','proxima','primeira','ultima'], proxima:['proxima','anterior','ultima','primeira'], ultima:['ultima','anterior','primeira','proxima']};
+function devolverFoco(foco){
+  if (!foco) return;
+  let alvo = null;
+  if (foco.tipo === 'aba') alvo = [...document.querySelectorAll('#tabs .tab')].find(b=>b.dataset.c === foco.c);
+  else{
+    const botoes = [...document.querySelectorAll(foco.fundo ? '.pager.bottom .pg' : '.pager:not(.bottom) .pg')].filter(b=>!b.disabled);
+    for (const a of FOCO_PAGINACAO[foco.acao] || []){ alvo = botoes.find(b=>b.dataset.a === a); if (alvo) break; }
+  }
+  if (!alvo) alvo = document.querySelector('#tabs .tab.active');   // a paginação sumiu (uma página só) ou a aba não existe mais
+  if (alvo) alvo.focus({preventScroll:true});   // sem rolar: o clique da paginação já rola a página
+}
+// Controle "Público": existe só em aba com gênero. Se as opções não mudaram, só atualiza o marcado e as contagens (o foco do teclado fica).
+function atualizarPublico(){
+  const box = $('#publicoBox');
+  if (!abaTemGenero(activeCat)){ box.innerHTML = ''; return; }
+  const c = contarGeneros(filtrarItens({semGenero:true, semBusca:true}));
+  let g = generoEscolhido(activeCat) || 'todos';
+  if (g === 'sem' && !c.sem){ guardarGenero(activeCat, ''); g = 'todos'; }   // a opção escolhida sumiu (última correção): volta para "Todos"
+  const ops = OPCOES_PUBLICO.filter(([k])=>k !== 'sem' || c.sem > 0), chaves = ops.map(o=>o[0]).join();
+  let fs = box.querySelector('fieldset');
+  if (!fs || fs.dataset.opcoes !== chaves){
+    const tinhaFoco = fs && fs.contains(document.activeElement) ? document.activeElement.value : null;   // o controle é recriado quando "Sem gênero" aparece ou some
+    box.innerHTML = `<fieldset class="seg-filtro" data-opcoes="${chaves}"><legend>${esc(TXT_GENERO.legenda)}</legend><div class="opcoes">${ops.map(([k,t])=>`<label><input type="radio" name="publico" value="${k}" class="sr"><span>${esc(t)} <span class="num"></span></span></label>`).join('')}</div></fieldset>`;
+    fs = box.querySelector('fieldset');
+    if (tinhaFoco){ const r = [...fs.querySelectorAll('input')].find(i=>i.value === tinhaFoco) || fs.querySelector('input[value="todos"]'); if (r) r.focus({preventScroll:true}); }
+  }
+  fs.querySelectorAll('input').forEach(i=>{ i.checked = i.value === g; i.nextElementSibling.querySelector('.num').textContent = fmtNum(c[i.value]); });
+}
+$('#publicoBox').addEventListener('change', ev=>{
+  const r = ev.target.closest('input[name="publico"]'); if (!r) return;
+  guardarGenero(activeCat, r.value === 'todos' ? '' : r.value); page = 1; render();
+  const n = filtrada().length;   // anúncio para o leitor de tela: o efeito da escolha
+  $('#anuncioLista').textContent = `Mostrando ${fmtNum(n)} ${n === 1 ? 'oferta' : 'ofertas'}: ${(OPCOES_PUBLICO.find(o=>o[0] === r.value)||[])[1]}`;
+});
 ['#fLoja','#fBusca','#fOrdem'].forEach(s=>$(s).onchange=()=>{page=1;render();});
 $('#fTexto').oninput=()=>{page=1;render();};
 
@@ -553,7 +836,7 @@ function fillSelect(){
 }
 const saveTemplates=()=>Promise.all([api('config/templates','PUT',templates), api('config/currentTpl','PUT',current)]);
 $('#tplSelect').onchange=e=>{current=e.target.value;api('config/currentTpl','PUT',current);render();};
-$('#btnTpl').onclick=()=>{$('#addBox').classList.remove('open');$('#tplBox').classList.toggle('open');$('#tplName').value=current;$('#tplText').value=templates[current];};
+$('#btnTpl').onclick=()=>{$('#addBox').classList.remove('open');$('#tplBox').classList.toggle('open');$('#tplName').value=current;$('#tplText').value=templates[current];if($('#tplBox').classList.contains('open'))$('#tplBox').scrollIntoView({block:'nearest'});};   // o botão fica na barra da lista e o painel no cabeçalho: no celular o painel abriria fora da tela
 $('#btnAdd').onclick=()=>{$('#tplBox').classList.remove('open');$('#addBox').classList.toggle('open');};
 $('#saveTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(!n)return;templates[n]=$('#tplText').value;current=n;await saveTemplates();fillSelect();render();toast('Template salvo');};
 $('#delTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(Object.keys(templates).length<=1)return;delete templates[n];current=Object.keys(templates)[0];await saveTemplates();fillSelect();render();$('#tplBox').classList.remove('open');};
@@ -579,10 +862,11 @@ $('#saveLinks').onclick=async()=>{
 $('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.card textarea')].map(t=>t.value).join('\n\n----------\n\n');await navigator.clipboard.writeText(all);toast('Copiadas!');};
 
 (async()=>{
-  const [it, tp, cur] = await Promise.all([api('items'), api('config/templates'), api('config/currentTpl')]);
-  items = it; if(tp) templates = tp; if(cur && templates[cur]) current = cur;
-  fillSelect(); render();
-  iniciarDisparo();
+  await carregarOfertas();
+  // o 2º script (o do disparo) é avaliado depois deste; uma resposta imediata (erro de rede) não pode chegar antes dele
+  if (document.readyState === 'loading') await new Promise(r=>document.addEventListener('DOMContentLoaded', r, {once:true}));
+  // as rotas do disparo valem mesmo com a lista fora do ar (o botão "Disparo automático" não pode ficar morto)
+  if (!disparoIniciado){ disparoIniciado = true; iniciarDisparo(); }
 })();
 </script>
 <script>
@@ -629,6 +913,7 @@ const TXT_DISPARO = {
   sucessoRegra:'Regra salva. Ela está pausada: ative quando quiser começar.',
   sucessoRegraEdit:'Regra salva.',
   sucessoNumero:'Número salvo.',
+  publico:'Público', publicoAjuda:'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.',
   ordens:[['relevancia','Mais relevantes'],['desconto','Maiores descontos'],['menor_preco','Mais baratos'],['maior_preco','Mais caros'],['cupom','Com cupom primeiro'],['recentes','Mais recentes'],['aleatoria','Aleatória']],
   dias:['seg','ter','qua','qui','sex','sáb','dom'],
   status:{pendente:['Na fila',''], enviando:['Enviando…',''], enviado:['✓ Enviado','ok'], pulado:['– Pulado',''], erro:['✕ Falhou','ruim'], incerto:['? Incerto','ruim'], expirado:['– Expirado','']},
@@ -684,6 +969,8 @@ const textoLojas = l=>{
   return k.length ? listaTexto(k.map(x=>LOJA[x])) : (l[0] || '');
 };
 const textoCats = c=>c.slice(0,3).join(', ')+(c.length > 3 ? ' +'+(c.length-3) : '');
+// Público da regra no cartão: vazio em "Todos" (lista vazia); senão os nomes na ordem de GENEROS
+const textoPublico = g=>listaTexto(GENEROS.filter(x=>(g||[]).includes(x)).map(x=>NOME_GENERO[x]));
 const horariosOrdenados = h=>[...h].sort();
 const fmtNum = n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
 function resumoAgenda(r){
@@ -696,6 +983,7 @@ function contarItens(v){
     const d = i.data;
     if (!d || !d.titulo || !d.preco) return false;
     if (!v.cats.includes(i.cat) || !v.lojas.includes(i.loja)) return false;
+    if (!casaGenero(i, v.generos)) return false;   // o público só vale nas categorias com gênero; nas outras o item passa
     if (pct(d.desconto) < (Number.isFinite(v.desconto_min) ? v.desconto_min : 0)) return false;
     if (pal.length){ const t = semAcento(d.titulo); if (!pal.some(p=>t.includes(p))) return false; }
     return true;
@@ -854,7 +1142,7 @@ function htmlRegra(r){
   return `<article class="dcard${r.ativa ? '' : ' pausada'}" data-regra="${r.id}" aria-labelledby="rt-${r.id}">
     <div class="linha1"><h3 class="name" id="rt-${r.id}" title="${esc(r.nome)}">${esc(r.nome)}</h3><span class="estado ${estado[1]}">${estado[0]}</span></div>
     ${r.aviso ? `<p class="aviso">Atenção: ${esc(r.aviso)}</p>` : ''}
-    <p class="meta">${esc(textoCats(r.cats))} · ${esc(textoLojas(r.lojas))} · ${esc(NOME_ORDEM[r.ordem] || r.ordem)}</p>
+    <p class="meta">${[textoCats(r.cats), textoPublico(r.generos), textoLojas(r.lojas), NOME_ORDEM[r.ordem] || r.ordem].filter(Boolean).map(esc).join(' · ')}</p>
     <p class="meta">${n ? `${esc(n.nome)} · <span aria-hidden="true">${esc(mascararTelefone(n.telefone))}</span><span class="sr">${n.telefone ? 'telefone com final '+esc(soDigitos(n.telefone).slice(-4)) : esc(TXT_DISPARO.semTelefone)}</span> · Grupo: ${esc(n.grupo_nome)}` : esc(TXT_DISPARO.numeroRemovido)}</p>
     <p class="meta">${esc(resumoAgenda(r))}</p>
     <p class="meta">Último envio: ${monoSePar(ultimoEnvio(r.id))} · Próximo: ${monoSePar(proximo)}${naFila ? ` · ${naFila} na fila` : ''}</p>
@@ -1159,7 +1447,7 @@ function focarCampo(id){
 // ---------------------------------------------------------------- tela: formulário da regra
 function regraPadrao(){
   const n = disp.numeros;
-  return {nome:'', numero_id: n.length === 1 ? n[0].id : null, cats:[], lojas:Object.keys(LOJA), palavras:[], desconto_min:0,
+  return {nome:'', numero_id: n.length === 1 ? n[0].id : null, cats:[], lojas:Object.keys(LOJA), generos:[], palavras:[], desconto_min:0,
     ordem:'relevancia', template: templates[current] ? current : Object.keys(templates)[0], com_foto:1,
     dias:[0,1,2,3,4,5,6], horarios:['09:00'], por_disparo:1, max_por_dia:10, repetir_apos_dias:7, intervalo_seg:60};
 }
@@ -1169,6 +1457,12 @@ function htmlChip(tipo, nome, valor, marcado, rotuloHtml, extra=''){
 function htmlHorarios(lista){
   return lista.map((h,i)=>`<li><label class="sr" for="hor-${i}">Horário ${i+1}</label><input type="time" id="hor-${i}" name="horario" value="${esc(h)}" aria-describedby="e-horarios">
     <button type="button" class="ghost" data-acao="rm-horario" data-i="${i}" aria-label="Remover horário ${i+1}"${lista.length < 2 ? ' disabled' : ''}>Remover</button></li>`).join('');
+}
+// Escolha única na tela: [] = todos, [valor] = o valor. Lista que a tela não representa (vários, ou só "sem", vindo da API) não marca nada
+// e é devolvida como está em lerFormRegra, para salvar sem trocar o que a regra já faz.
+function publicoDaRegra(v){
+  const g = v.generos || [];
+  return !g.length ? 'todos' : g.length === 1 && g[0] !== 'sem' && GENEROS.includes(g[0]) ? g[0] : null;
 }
 function htmlFormRegra(v){
   const todas = cats(), extras = v.cats.filter(c=>!todas.includes(c));
@@ -1186,6 +1480,8 @@ function htmlFormRegra(v){
       <div class="atalhos"><button type="button" class="linklike" data-acao="cats-todas">Marcar todas</button><button type="button" class="linklike" data-acao="cats-limpar">Limpar</button></div>${campoErro('cats')}</div>
     <div class="campo"><span class="rot" id="rotLojas">Lojas</span><p class="ajuda" id="a-lojas">A regra só envia itens das lojas marcadas.</p>
       <div class="chips" id="f-lojas" role="group" aria-labelledby="rotLojas" aria-describedby="a-lojas e-lojas">${Object.entries(LOJA).map(([k,t])=>htmlChip('checkbox','lojas',k,v.lojas.includes(k),esc(t))).join('')}</div>${campoErro('lojas')}</div>
+    <div class="campo"><span class="rot" id="rotPublico">${esc(TXT_DISPARO.publico)}</span><p class="ajuda" id="a-publico">${esc(TXT_DISPARO.publicoAjuda)}</p>
+      <div class="chips seg" id="f-publico" role="radiogroup" aria-labelledby="rotPublico" aria-describedby="a-publico" data-original="${esc(JSON.stringify(v.generos || []))}">${OPCOES_PUBLICO.filter(o=>o[0] !== 'sem').map(([k,t])=>htmlChip('radio','publico',k,k === publicoDaRegra(v),esc(t))).join('')}</div></div>
     <div class="campo"><span class="rot" id="rotOrdem">Ordem de envio</span>
       <div class="chips seg" id="f-ordem" role="radiogroup" aria-labelledby="rotOrdem">${TXT_DISPARO.ordens.map(([k,t])=>htmlChip('radio','ordem',k,k === v.ordem,esc(t))).join('')}</div></div>
     <details class="filtros"${v.palavras.length || v.desconto_min ? ' open' : ''}><summary>Filtros (opcional)</summary>
@@ -1220,6 +1516,12 @@ function htmlFormRegra(v){
   <div class="barra-form"><button type="submit" id="btnSalvar">${esc(TXT_DISPARO.salvarRegra)}</button><button type="button" class="secondary" data-acao="cancelar" data-volta="#disparo">${esc(TXT_DISPARO.cancelar)}</button></div>
   </form>`;
 }
+function generosDoForm(f){
+  const m = f.querySelector('input[name="publico"]:checked');
+  if (m) return m.value === 'todos' ? [] : [m.value];
+  try{ const o = JSON.parse(f.querySelector('#f-publico').dataset.original); if (Array.isArray(o)) return o; }catch{ /* sem original: todos */ }
+  return [];
+}
 // Lê o formulário no formato da API (campos numéricos inválidos viram NaN e a validação aponta)
 function lerFormRegra(){
   const f = $('#frmRegra'), marcados = n=>[...f.querySelectorAll(`input[name="${n}"]:checked`)];
@@ -1229,6 +1531,7 @@ function lerFormRegra(){
     numero_id: $('#f-numero').value ? +$('#f-numero').value : null,
     cats: marcados('cat').map(i=>i.value),
     lojas: marcados('lojas').map(i=>i.value),
+    generos: generosDoForm(f),
     palavras: pal,
     desconto_min: lerInt($('#f-desc')),
     ordem: (f.querySelector('input[name="ordem"]:checked')||{}).value,
@@ -1455,7 +1758,7 @@ $('#telaDisparo').addEventListener('click', ev=>{
       break;
     }
     case 'outra-previa': previaIdx++; desenharPrevia(); break;
-    case 'editar-templates': $('#btnTpl').click(); $('#btnTpl').scrollIntoView({block:'nearest'}); break;
+    case 'editar-templates': $('#btnTpl').click(); $('#tplBox').scrollIntoView({block:'nearest'}); break;
   }
 });
 $('#telaDisparo').addEventListener('change', ev=>{
@@ -1464,6 +1767,7 @@ $('#telaDisparo').addEventListener('change', ev=>{
   }
 });
 $('#btnDisparo').onclick = ()=>navegar('#disparo');
+$('#btnVoltarCab').textContent = TXT_DISPARO.voltar; $('#btnVoltarCab').onclick = ()=>navegar('#');
 function iniciarDisparo(){
   hashAceito = location.hash;
   window.addEventListener('hashchange', ()=>rotear());

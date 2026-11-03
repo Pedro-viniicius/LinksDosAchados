@@ -1,7 +1,7 @@
 # API de ofertas v1 (Etiqueta para o Achadinho Turbo)
 
 - Plano: `docs/produto/planos/api-achadinho-turbo.md`. Código: `api_ofertas.py` (regra das ofertas) e `servidor.py` (token, guarda HTTP e log).
-- Estado descrito aqui: o código final da etapa 2, conferido em 2026-11-03.
+- Estado descrito aqui: o código final da etapa 2, conferido em 2026-11-03, mais o público (`genero`) da etapa 5 do plano `docs/produto/planos/genero-nas-categorias.md` (código do público em `genero.py`). Os campos, parâmetros e erros que já existiam não mudaram e a `versao` continua 1.
 - Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
 
 ## Como usar em 1 minuto
@@ -68,8 +68,9 @@ Parâmetros (todos opcionais). **A validação é estrita:** parâmetro desconhe
 | `ordem` | `atualizacao` (padrão), `relevancia`, `desconto`, `menor_preco`, `maior_preco`, `cupom` ou `recentes`. `aleatoria` (que existe no disparo) dá 400: ela não pagina. |
 | `limite` | Inteiro de 1 a 200. Padrão 50. |
 | `cursor` | O valor de `proximo` da página anterior, na **mesma ordem**. Opaco: não monte nem altere. Cursor adulterado ou de outra ordem dá 400. |
+| `genero` | Público: `feminino`, `masculino`, `unissex` ou `sem`, exatamente assim (minúsculas, sem acento). Repetível, até os 4; o mesmo valor duas vezes dá 400. Sem `genero`: todos. Vários: qualquer um deles. O filtro é **exato** e vale para todas as abas: `genero=feminino` só traz ofertas com `"genero": "feminino"`, e as abas que não separam por público (tudo fora de `Perfumes e Perfumaria`) são sempre `sem`. Para "perfumes femininos e toda a Casa", faça dois pedidos (um com `cat` e `genero`, outro só com `cat`). |
 
-Mais de 28 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
+Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
 
 ### Resposta
 
@@ -106,7 +107,8 @@ Mais de 28 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `frete_gratis` | booleano | `true` se o texto de frete da coleta contiver "grátis" (sem diferenciar maiúsculas e acentos). |
 | `cupom` | texto | Texto do cupom, `""` quando não há. |
 | `criado_em` | texto | Quando o item entrou no banco. |
-| `atualizado_em` | texto | Última gravação do item (nova coleta, reclassificação). |
+| `atualizado_em` | texto | Última gravação do item (nova coleta, reclassificação, correção do público pelo site). |
+| `genero` | texto | Público da oferta: `feminino`, `masculino`, `unissex` ou `sem`. Só a aba `Perfumes e Perfumaria` separa por público; nas outras é sempre `sem`. Vem da correção que o dono fez no site ou, sem ela, do título e do termo de busca (`genero.py`). Na perfumaria, `sem` é item sem público definido (hidratante, sabonete, infantil...). Vem depois dos outros campos; consumidor antigo pode ignorá-lo. |
 
 ### Quando uma oferta NÃO sai
 
@@ -125,9 +127,10 @@ Não entram na v1: a mensagem pronta (o consumidor monta com o template dele), n
 
 - Só entram itens com `atualizado_em` de pelo menos 60 s atrás (**folga**): as coletas gravam em lotes e o cursor não pode passar por um lote ainda aberto. Item recém-gravado aparece na próxima leitura.
 - `proximo` é o cursor da **última oferta da página** e só vem `null` quando a página sai **vazia**. Seguir `proximo` percorre todas as ofertas do filtro uma vez só, sem pular nenhuma; a última chamada, vazia, é a que confirma o fim.
-- Item atualizado depois (nova coleta, mudança de aba) volta a aparecer depois do cursor. Deduplique pela `chave`.
+- Item atualizado depois (nova coleta, mudança de aba, correção do público pelo site) volta a aparecer depois do cursor. Deduplique pela `chave`.
+- **Público e `atualizado_em`:** o `genero` é calculado a cada leitura. **Mudança de regra do classificador (`genero.py`) não mexe em `atualizado_em`**: quem já passou do cursor não vê o gênero novo dos itens antigos. **Correção manual (pelo site) mexe**: o item volta a aparecer depois do cursor com o `genero` corrigido. Se você filtra por `genero` e a regra mudou, faça uma varredura do zero.
 - Para pegar **só as novidades**: guarde o último `proximo` **não nulo**; uma resposta vazia com `proximo: null` não apaga o cursor. Na próxima execução, chame com `cursor=<guardado>`; se vier vazia, não há novidade e o cursor guardado continua valendo.
-- **Varredura do zero:** um item que passa a ser válido **sem mudar o `atualizado_em`** (por exemplo, mudança na regra de link ou `migrar_categorias.py --restaurar`) não aparece para quem já passou do cursor. Nesses casos, o consumidor faz uma varredura do zero (sem `cursor`) e deduplica pela `chave`.
+- **Varredura do zero:** um item que passa a ser válido **sem mudar o `atualizado_em`** (por exemplo, mudança na regra de link, mudança na regra do classificador de público ou `migrar_categorias.py --restaurar`) não aparece para quem já passou do cursor. Nesses casos, o consumidor faz uma varredura do zero (sem `cursor`) e deduplica pela `chave`.
 
 **Demais ordens:** o resultado é o mesmo de `disparo.ordenar` (as ordens do disparo, com desempate pela ordem de coleta) e o cursor é um **deslocamento** (`"50"`, `"100"`...). `proximo` vem `null` quando não há mais ofertas depois da página.
 
@@ -144,24 +147,26 @@ Nas ordens por deslocamento, uma coleta entre duas páginas pode deslocar itens;
 
 ## `GET /api/v1/categorias`
 
-Não aceita parâmetros (qualquer um dá 400). Conta só as ofertas que passam nas condições acima, em ordem alfabética (sem diferenciar acentos).
+Não aceita parâmetros (qualquer um dá 400). Conta só as ofertas que passam nas condições acima, em ordem alfabética (sem diferenciar acentos). Cada categoria traz o `total`, a contagem por loja (`lojas`, as 3 chaves sempre) e a contagem por público (`generos`, as 4 chaves sempre, na ordem `feminino`, `masculino`, `unissex`, `sem`). As abas que não separam por público têm tudo em `sem`. A soma de `generos` é o `total` da categoria, e cada número bate com o `total` de `/api/v1/ofertas?cat=<nome>&genero=<valor>` **numa ordem diferente de `atualizacao`** (por exemplo, `ordem=relevancia`). Na ordem padrão `atualizacao`, o `total` desconta os itens alterados nos últimos 60 s (a folga do cursor), então logo depois de uma coleta ou de uma correção pelo site os dois números podem diferir por alguns itens.
 
 ```json
 {"versao": 1,
  "categorias": [{"nome": "Casa e Decoração", "total": 1089,
-                 "lojas": {"amazon": 533, "ml": 556, "shopee": 0}},
+                 "lojas": {"amazon": 533, "ml": 556, "shopee": 0},
+                 "generos": {"feminino": 0, "masculino": 0, "unissex": 0, "sem": 1089}},
                 {"nome": "Perfumes e Perfumaria", "total": 2764,
-                 "lojas": {"amazon": 2228, "ml": 0, "shopee": 536}}],
+                 "lojas": {"amazon": 2228, "ml": 0, "shopee": 536},
+                 "generos": {"feminino": 629, "masculino": 865, "unissex": 160, "sem": 1110}}],
  "total": 3853}
 ```
 
 ## Erros
 
-Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou.
+Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32 e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
 
 | Código | Quando | Exemplo de frase |
 |---|---|---|
-| 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
+| 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `genero deve ser feminino, masculino, unissex, sem, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
 | 401 | Token ausente ou errado (`WWW-Authenticate: Bearer`) | `token ausente ou inválido: envie Authorization: Bearer <token>` |
 | 403 | `Host` não local; pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | `host não permitido`; `a API v1 não aceita pedidos de navegador` |
 | 404 | Rota v1 desconhecida (só depois da autenticação) | `rota não encontrada` |
@@ -187,6 +192,10 @@ curl -s -G -H @api_cabecalho.txt \
 
 curl -s -G -H @api_cabecalho.txt \
   -d loja=shopee -d ordem=desconto -d desconto_min=30 -d limite=10 \
+  "http://localhost:8765/api/v1/ofertas"
+
+curl -s -G -H @api_cabecalho.txt \
+  --data-urlencode "cat=Perfumes e Perfumaria" -d genero=feminino -d genero=unissex -d limite=2 \
   "http://localhost:8765/api/v1/ofertas"
 ```
 

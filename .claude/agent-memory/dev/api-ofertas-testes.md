@@ -15,6 +15,12 @@ Vistas em 2026-11-03, na etapa 1 do plano api-achadinho-turbo:
 - Medição sem risco: `sqlite3.connect('file:achadinhos.db?mode=ro', uri=True)` + `A.rota(...)` direto; em 2026-11-03 saem 7.998 de 8.380 itens em cerca de 0,5 s, com `total_changes == 0`.
 - O `parse_qsl` padrão descarta `q=` vazio (`keep_blank_values=False`): os testes usam `keep_blank_values=True`, e a etapa 2 do servidor precisa fazer o mesmo.
 
+Vistas na etapa 5 do plano genero-nas-categorias (2026-11-03):
+
+- **Campo novo na v1 quebra asserts de chave exata em 3 arquivos:** `CAMPOS_OFERTA`, o dict do `filtros()` e o de categorias em `test_api_ofertas.py`; a lista de chaves da oferta (`test_ca1_ofertas_com_token_da_200_no_formato`) e o dict de categorias em `test_api_ofertas_servidor.py`; o `deepEqual` de categorias em `api_ofertas.test.mjs`. O `test_api_ofertas_qa.py` não fixa nada disso. Também a lista branca de imports (`test_ca9_modulo_nao_importa_servidor`).
+- **Módulo novo importado pelo `api_ofertas.py`:** o `TestAmbienteDeTesteIgnoraTokenReal` (`test_api_ofertas_servidor.py`) copia os `.py` para um diretório temporário; sem o módulo novo na tupla, o servidor da cópia derruba a conexão (`RemoteDisconnected`).
+- `MAX_PARES` com `genero` é 32; o banco real estava em `user_version` 1 (sem `generos_manuais`) e a v1 continuou em ~0,5 s.
+
 **How to apply:** ao mexer no `api_ofertas.py`, no `disparo.ordenar`/`elegiveis` ou nos testes deles. Relacionado: [[disparo-testes]], [[servidor-testes]].
 
 Vistas na etapa 2 (v1 no servidor.py, 2026-11-03):

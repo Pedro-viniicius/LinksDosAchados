@@ -1,0 +1,1198 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Público (gênero) no front</title>
+<!--
+  Testes da Parte A da spec docs/produto/specs/genero-e-ux.md (plano docs/produto/planos/genero-nas-categorias.md, etapa 6):
+  controle "Público", contagens, memória por aba, select de buscas, selo no cartão, correção à mão em "Mais ações"
+  e o campo "Público" da regra do disparo. Sem dependência. Servidor de teste sobre CÓPIA do banco:
+
+    ACHADINHOS_DB=<copia> ACHADINHOS_PORTA=8766 ACHADINHOS_DISPARO=0 python3 servidor.py
+    PORTA=8766 node testes/rodar.mjs genero
+
+  O runner abre o Chrome headless em tempo real (CDP) e sai com código 0 só quando a linha de resultado diz "OK".
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real; só GET sai para a API. Escrita (PUT do público, PATCH de "Mover para")
+    passa por uma guarda: o PUT de /api/items/<id>/genero e o PATCH de /api/items/<id> são interceptados, gravados
+    para conferência e respondidos por um Response falso; qualquer outra escrita em /api/ vira violação e nunca sai;
+  - quase tudo roda com itens FALSOS (montados em `items` e desenhados por render()/renderCard); só o teste de
+    "recarregar a página" lê os itens reais, por GET;
+  - window.open e prompt são trocados; nunca clica em .del, .fetch nem #saveLinks.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script, para um grep no texto da página
+  não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Público (gênero) no front</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+// Identidade de nó do DOM: JSON.stringify de elemento não distingue um do outro, então `igual` não serve para isto
+const mesmo = (obtido, esperado, msg) => { if (obtido !== esperado) throw new Falha((msg ? msg + ': ' : '') + 'não é o mesmo nó do DOM'); };
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const PERF = 'Perfumes e Perfumaria';
+const CASA = 'Casa e Decoração';
+const ELETRO = 'Eletrodomésticos';
+const PAGINA = 24;   // PAGE em render()
+
+let W, FETCH_ORIG, API = null, API_ANTES = null;
+const VIOL = [];      // escrita na API real (deve ficar vazia)
+const PUTS = [];      // PUT interceptado de /api/items/<id>/genero: { url, corpoTexto, cabecalhos }
+const PATCHES = [];   // PATCH interceptado de /api/items/<id>: { url, corpo }
+let RESP_PUT = null;  // (pedido) => Promise<Response>; o teste define
+let RESP_PATCH = null;
+
+const json = (corpo, status = 200) => new W.Response(JSON.stringify(corpo), { status, headers: { 'Content-Type': 'application/json' } });
+
+async function abrirApp(activeCat) {
+  localStorage.removeItem('activeCat');
+  if (activeCat !== undefined) localStorage.setItem('activeCat', activeCat);
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  f.removeAttribute('srcdoc');   // abrirAppComApi usa srcdoc, que vale mais que src
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  PUTS.length = 0; PATCHES.length = 0; RESP_PUT = null; RESP_PATCH = null;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    if (metodo === 'PUT' && /^\/api\/items\/\d+\/genero$/.test(url)) {
+      const pedido = { url, corpoTexto: opcoes.body, cabecalhos: opcoes.headers };
+      PUTS.push(pedido);
+      return RESP_PUT ? RESP_PUT(pedido) : Promise.reject(new W.TypeError('sem resposta definida'));
+    }
+    if (metodo === 'PATCH' && /^\/api\/items\/\d+$/.test(url)) {
+      const pedido = { url, corpo: JSON.parse(opcoes.body) };
+      PATCHES.push(pedido);
+      return Promise.resolve(RESP_PATCH ? RESP_PATCH(pedido) : json({}));
+    }
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0, 'o index.html carregar os itens (servidor no ar? PORTA=...)');
+  await dormir(30);
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => el.textContent.replace(/\s+/g, ' ').trim();
+const cartoes = () => qa('#grid .card');
+const radios = () => qa('#publicoBox input[name="publico"]');
+const valoresPublico = () => radios().map(i => i.value);
+const contagens = () => radios().map(i => +i.nextElementSibling.querySelector('.num').textContent.replace(/\./g, ''));
+const marcado = () => (radios().find(i => i.checked) || {}).value;
+function escolherPublico(v) {
+  const r = radios().find(i => i.value === v);
+  afirma(r, 'não existe a opção "' + v + '" (opções: ' + valoresPublico() + ')');
+  r.click();
+}
+function escolher(select, valor) {
+  select.value = valor;
+  select.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+const aba = nome => qa('#tabs .tab').find(b => b.dataset.c === nome);
+const toastTxt = () => txt(q('#toast'));
+const buscasDoSelect = () => [...q('#fBusca').options].map(o => o.textContent);
+
+// ---------------------------------------------------------------- itens falsos
+let seq = 5000;
+function item(cat, genero, o = {}) {
+  const id = ++seq;
+  return {
+    id, loja: o.loja || 'amazon', item_id: 'FALSO' + id, cat, busca: o.busca || 'Busca A', url: 'https://meli.la/F' + id,
+    data: o.data === null ? null : { titulo: o.titulo || 'Produto ' + genero + ' ' + id, preco: 'R$ 10,00', desconto: '-10%', ...(o.data || {}) },
+    genero, genero_origem: o.origem === undefined ? (cat === PERF && genero !== 'sem' ? 'titulo' : '') : o.origem,
+    genero_auto: o.auto || genero,
+  };
+}
+// Perfumes: F 30 (20 "Busca F" amazon + 10 "Busca Mista" ml), M 20 (15 "Busca M" amazon + 5 "Busca Mista" ml), U 5, sem 7 (3 amazon + 4 ml "Busca S").
+// Casa e Eletrodomésticos: tudo "sem" (a aba não separa por público).
+function cenario() {
+  seq = 5000;
+  const L = [];
+  for (let i = 0; i < 20; i++) L.push(item(PERF, 'feminino', { busca: 'Busca F' }));
+  for (let i = 0; i < 10; i++) L.push(item(PERF, 'feminino', { busca: 'Busca Mista', loja: 'ml' }));
+  for (let i = 0; i < 15; i++) L.push(item(PERF, 'masculino', { busca: 'Busca M' }));
+  for (let i = 0; i < 5; i++) L.push(item(PERF, 'masculino', { busca: 'Busca Mista', loja: 'ml' }));
+  for (let i = 0; i < 5; i++) L.push(item(PERF, 'unissex', { busca: 'Busca Mista' }));
+  for (let i = 0; i < 3; i++) L.push(item(PERF, 'sem', { busca: 'Busca Mista' }));
+  for (let i = 0; i < 4; i++) L.push(item(PERF, 'sem', { busca: 'Busca S', loja: 'ml' }));
+  for (let i = 0; i < 10; i++) L.push(item(CASA, 'sem', { busca: 'Casa A' }));
+  for (let i = 0; i < 5; i++) L.push(item(ELETRO, 'sem', { busca: 'Eletro A' }));
+  return L;
+}
+// Troca os itens do app pelos falsos, limpa filtros e a memória de público, e desenha a aba pedida
+function montar(lista, cat = PERF) {
+  for (const k of Object.keys(localStorage)) if (k.startsWith('genero:')) localStorage.removeItem(k);
+  PUTS.length = 0; PATCHES.length = 0; RESP_PUT = null; RESP_PATCH = null;
+  W.eval('items = ' + JSON.stringify(lista) + '; activeCat = ' + JSON.stringify(cat) + '; page = 1;');
+  for (const id of ['fLoja', 'fBusca', 'fOrdem']) q('#' + id).value = '';
+  q('#fTexto').value = '';
+  W.render();
+}
+
+// ================================================================ constantes e funções puras
+teste('constantes: ABAS_COM_GENERO e GENEROS são as do servidor (genero.py)', async () => {
+  await abrirApp();
+  igual(W.eval('ABAS_COM_GENERO'), [PERF]);
+  igual(W.eval('GENEROS'), ['feminino', 'masculino', 'unissex', 'sem']);
+  igual(W.eval('abaTemGenero')(PERF), true);
+  for (const c of [CASA, ELETRO, 'Black Friday | Eletrônicos', '', 'perfumes e perfumaria']) igual(W.eval('abaTemGenero')(c), false, c);
+});
+
+teste('casaGenero: lista vazia = todos; público só vale em aba com gênero; valor estranho vale como "sem"', async () => {
+  const casa = W.eval('casaGenero');
+  const p = g => ({ cat: PERF, genero: g }), c = { cat: CASA, genero: 'sem' };
+  for (const g of ['feminino', 'masculino', 'unissex', 'sem']) {
+    igual(casa(p(g), []), true, 'vazio: ' + g);
+    igual(casa(p(g), undefined), true, 'sem a lista (regra antiga): ' + g);
+    igual(casa(p(g), [g]), true, 'o próprio: ' + g);
+  }
+  igual(casa(p('feminino'), ['masculino']), false);
+  igual(casa(p('feminino'), ['masculino', 'unissex']), false);
+  igual(casa(p('unissex'), ['feminino', 'unissex']), true);
+  igual(casa(p('sem'), ['feminino']), false);
+  igual(casa(p('sem'), ['sem']), true);
+  // fora das abas com gênero o item passa inteiro, como no servidor
+  igual(casa(c, ['feminino']), true);
+  igual(casa({ cat: ELETRO, genero: 'sem' }, ['masculino', 'unissex']), true);
+  // item sem o campo, ou com um valor que não é da lista, conta como "sem"
+  igual(casa({ cat: PERF }, ['sem']), true);
+  igual(casa({ cat: PERF }, ['feminino']), false);
+  igual(casa({ cat: PERF, genero: '<img src=x>' }, ['sem']), true);
+  igual(casa({ cat: PERF, genero: '<img src=x>' }, ['feminino']), false);
+});
+
+teste('contarGeneros: "todos" é a soma e inclui os sem gênero; valor estranho cai em "sem"', async () => {
+  const cont = W.eval('contarGeneros');
+  igual(cont([]), { todos: 0, feminino: 0, masculino: 0, unissex: 0, sem: 0 });
+  igual(cont([{ genero: 'feminino' }, { genero: 'feminino' }, { genero: 'masculino' }, { genero: 'unissex' }, { genero: 'sem' }, {}, { genero: 'xis' }]),
+    { todos: 7, feminino: 2, masculino: 1, unissex: 1, sem: 3 });
+  igual(cont(cenario().filter(i => i.cat === PERF)), { todos: 62, feminino: 30, masculino: 20, unissex: 5, sem: 7 });
+});
+
+// ================================================================ controle "Público" (CA-V1, V4, V5)
+teste('CA-V1: em Perfumes o controle "Público" tem Todos, Feminino, Masculino, Unissex (e Sem gênero) com a contagem; em aba sem gênero não existe no DOM', async () => {
+  montar(cenario());
+  const fs = q('#publicoBox fieldset');
+  afirma(fs, 'faltou o fieldset do Público');
+  igual(txt(fs.querySelector('legend')), 'Público');
+  igual(valoresPublico(), ['todos', 'feminino', 'masculino', 'unissex', 'sem']);
+  igual(radios().map(i => txt(i.closest('label'))), ['Todos 62', 'Feminino 30', 'Masculino 20', 'Unissex 5', 'Sem gênero 7']);
+  igual(contagens(), [62, 30, 20, 5, 7]);
+  igual(marcado(), 'todos', 'abre em Todos');
+  igual(new Set(radios().map(i => i.name)).size, 1, 'um grupo só (setas trocam a opção)');
+  igual(radios().every(i => i.type === 'radio'), true, 'rádio nativo');
+  igual(fs.tagName, 'FIELDSET'); mesmo(fs.querySelector('legend').parentElement, fs);
+  // em aba sem gênero o controle some do DOM
+  aba(CASA).click();
+  igual(q('#publicoBox fieldset'), null);
+  igual(q('#publicoBox').children.length, 0);
+  igual(radios().length, 0);
+  aba(ELETRO).click();
+  igual(q('#publicoBox fieldset'), null);
+  aba(PERF).click();
+  igual(valoresPublico().length, 5, 'volta ao voltar para Perfumes');
+});
+
+teste('CA-V1/CA-V12: o controle usa Tinta (neutro), nunca o acento Etiqueta; a opção marcada tem "✓" e a contagem é Mono', async () => {
+  montar(cenario());
+  escolherPublico('masculino');
+  const marcada = radios().find(i => i.checked).nextElementSibling;
+  const cs = W.getComputedStyle(marcada), corpo = W.getComputedStyle(W.document.body);
+  igual(cs.backgroundColor, corpo.color, 'fundo da opção marcada = Tinta (a cor do texto do corpo)');
+  igual(W.getComputedStyle(marcada, '::before').content.replace(/["' /]/g, '').slice(0, 1), '✓', 'o ✓ não depende da cor');
+  const etiqueta = ['#FF5B14', '#FF6A2B', '#C2410C', '#FFEDE3', '#3A2216'];
+  const rgb = h => { const n = parseInt(h.slice(1), 16); return 'rgb(' + (n >> 16) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255) + ')'; };
+  for (const i of radios()) {
+    const s = W.getComputedStyle(i.nextElementSibling);
+    afirma(!etiqueta.map(rgb).includes(s.backgroundColor) && !etiqueta.map(rgb).includes(s.borderTopColor), 'opção "' + i.value + '" usa o acento: ' + s.backgroundColor + ' / ' + s.borderTopColor);
+  }
+  afirma(/mono/i.test(W.getComputedStyle(radios()[0].nextElementSibling.querySelector('.num')).fontFamily), 'a contagem é Mono');
+});
+
+teste('CA-V5: "Sem gênero" só existe se houver ao menos um item (com a loja e o título de agora)', async () => {
+  montar(cenario().filter(i => i.genero !== 'sem'));
+  igual(valoresPublico(), ['todos', 'feminino', 'masculino', 'unissex'], 'nenhum sem gênero na aba');
+  igual(contagens(), [55, 30, 20, 5]);
+  montar(cenario());
+  igual(valoresPublico().includes('sem'), true);
+  // com o filtro de loja a "Sem gênero" some se a loja não tem nenhum
+  escolher(q('#fLoja'), 'shopee');
+  igual(valoresPublico(), ['todos', 'feminino', 'masculino', 'unissex']);
+  igual(contagens(), [0, 0, 0, 0], 'opção com zero continua habilitada, mostrando 0');
+  igual(radios().some(i => i.disabled), false, 'nunca desabilitada');
+  escolher(q('#fLoja'), '');
+  igual(valoresPublico().includes('sem'), true);
+});
+
+teste('CA-V5: item sem gênero só aparece em "Todos" e em "Sem gênero"', async () => {
+  montar(cenario());
+  const ehSem = i => i.genero === 'sem';
+  igual(W.eval('filtrada()').filter(ehSem).length, 7);
+  for (const v of ['feminino', 'masculino', 'unissex']) {
+    escolherPublico(v);
+    igual(W.eval('filtrada()').some(ehSem), false, 'sem gênero apareceu em ' + v);
+  }
+  escolherPublico('sem');
+  igual(W.eval('filtrada()').every(ehSem), true);
+  igual(W.eval('filtrada().length'), 7);
+  igual(cartoes().length, 7);
+  escolherPublico('todos');
+  igual(W.eval('filtrada().filter(i => i.genero === "sem").length'), 7);
+  igual(W.eval('filtrada().length'), 62);
+});
+
+// ================================================================ escolher (CA-V2, V3, V10)
+teste('CA-V2: escolher "Feminino" lista só os femininos, atualiza o pager e o "Copiar da página", volta à página 1 e anuncia', async () => {
+  montar(cenario());
+  W.eval('page = 3'); W.render();
+  igual(W.eval('page'), 3, 'precondição: 62 itens dão 3 páginas');
+  escolherPublico('feminino');
+  igual(W.eval('page'), 1, 'a escolha volta à página 1');
+  igual(W.eval('filtrada().length'), 30);
+  igual(W.eval('filtrada().every(i => i.genero === "feminino")'), true);
+  igual(cartoes().length, PAGINA);
+  const pager = txt(q('.pager'));
+  afirma(pager.includes('Página 1 de 2') && pager.includes('30 itens'), 'pager: ' + pager);
+  const msgs = qa('.card textarea').map(t => t.value);
+  igual(msgs.length, PAGINA);
+  afirma(msgs.every(m => m.includes('Produto feminino')) && !msgs.some(m => m.includes('masculino')), 'o "Copiar todas da página" copia só os femininos');
+  igual(txt(q('#anuncioLista')), 'Mostrando 30 ofertas: Feminino');
+  igual(q('#anuncioLista').getAttribute('role'), 'status');
+  igual(q('#anuncioLista').getAttribute('aria-live'), 'polite');
+  q('.pager .pg[data-p="2"]').click();
+  igual(cartoes().length, 6, 'última página: 30 - 24');
+  escolherPublico('unissex');
+  igual(txt(q('#anuncioLista')), 'Mostrando 5 ofertas: Unissex');
+  escolherPublico('todos');
+  igual(txt(q('#anuncioLista')), 'Mostrando 62 ofertas: Todos');
+});
+
+teste('CA-V10: escolher não recria o controle: o mesmo input fica no DOM, marcado e com o foco', async () => {
+  montar(cenario());
+  const f = radios().find(i => i.value === 'feminino'), fieldset = q('#publicoBox fieldset');
+  f.focus();
+  mesmo(W.document.activeElement, f, 'precondição: o foco está no rádio');
+  f.click();
+  mesmo(q('#publicoBox fieldset'), fieldset, 'o fieldset é o mesmo');
+  mesmo(radios().find(i => i.value === 'feminino'), f, 'o input é o mesmo');
+  igual(f.isConnected, true);
+  mesmo(W.document.activeElement, f, 'o foco continua no controle');
+  igual(f.checked, true);
+  // contagens mudam no lugar (filtro de loja), sem recriar
+  escolher(q('#fLoja'), 'ml');
+  mesmo(q('#publicoBox fieldset'), fieldset);
+  igual(contagens(), [19, 10, 5, 0, 4]);
+  // nenhum ARIA extra: grupo nativo de rádio (fieldset/legend)
+  igual(fieldset.hasAttribute('role'), false);
+  igual(radios().some(i => i.hasAttribute('tabindex') || i.hasAttribute('aria-label')), false);
+});
+
+teste('CA-V3: a escolha fica lembrada por aba (localStorage "genero:<aba>"); trocar de aba não vaza; voltar a Perfumes traz a escolha', async () => {
+  montar(cenario());
+  escolherPublico('masculino');
+  igual(localStorage.getItem('genero:' + PERF), 'masculino');
+  aba(CASA).click();
+  igual(W.eval('filtrada().length'), 10, 'Casa não filtra por público');
+  igual(localStorage.getItem('genero:' + CASA), null);
+  aba(PERF).click();
+  igual(marcado(), 'masculino', 'a escolha voltou');
+  igual(W.eval('filtrada().length'), 20);
+  igual(W.eval('page'), 1);
+  // um valor guardado para uma aba sem gênero (chave plantada) não vale nada
+  localStorage.setItem('genero:' + CASA, 'feminino');
+  igual(W.eval('generoEscolhido')(CASA), '');
+  aba(CASA).click();
+  igual(W.eval('filtrada().length'), 10);
+  aba(PERF).click();
+  // valor que não existe mais cai em Todos
+  localStorage.setItem('genero:' + PERF, 'xis'); W.render();
+  igual(marcado(), 'todos'); igual(W.eval('filtrada().length'), 62);
+  localStorage.setItem('genero:' + PERF, '<img src=x onerror=1>'); W.render();
+  igual(marcado(), 'todos');
+  // "Todos" apaga a chave
+  escolherPublico('feminino'); escolherPublico('todos');
+  igual(localStorage.getItem('genero:' + PERF), null);
+});
+
+teste('CA-V3/CA-V5: "Sem gênero" lembrado que zerou cai em "Todos" e a chave é apagada', async () => {
+  montar(cenario());
+  escolherPublico('sem');
+  igual(W.eval('filtrada().length'), 7);
+  escolher(q('#fLoja'), 'shopee');   // ninguém da Shopee: a opção some
+  igual(valoresPublico().includes('sem'), false);
+  igual(marcado(), 'todos');
+  igual(localStorage.getItem('genero:' + PERF), null);
+  escolher(q('#fLoja'), '');
+  igual(marcado(), 'todos', 'não volta sozinho para "sem"');
+  igual(W.eval('filtrada().length'), 62);
+});
+
+teste('CA-V3: a escolha sobrevive a recarregar a página (itens reais); as contagens são as dos itens', async () => {
+  const perfumes = API.filter(i => i.cat === PERF);
+  afirma(perfumes.length > 50, 'a cópia do banco precisa ter a aba Perfumes (' + perfumes.length + ')');
+  for (const k of Object.keys(localStorage)) if (k.startsWith('genero:')) localStorage.removeItem(k);
+  localStorage.setItem('genero:' + PERF, 'feminino');
+  await abrirApp(PERF);
+  igual(W.eval('activeCat'), PERF);
+  igual(marcado(), 'feminino');
+  const f = perfumes.filter(i => i.genero === 'feminino');
+  igual(W.eval('filtrada().length'), f.length);
+  igual(cartoes().length, Math.min(PAGINA, f.length));
+  const n = g => perfumes.filter(i => i.genero === g).length;
+  igual(contagens().slice(0, 4), [perfumes.length, n('feminino'), n('masculino'), n('unissex')]);
+  if (n('sem')) igual(contagens()[4], n('sem'));
+  // o select de buscas só lista as buscas com item feminino
+  const buscas = [...new Set(f.map(i => i.busca).filter(Boolean))];
+  igual(buscasDoSelect(), ['Todas as buscas (' + buscas.length + ')', ...buscas]);
+  localStorage.removeItem('genero:' + PERF);
+});
+
+// ================================================================ contagens (CA-V4)
+teste('CA-V4: as contagens respeitam loja e título, não o próprio público; "Todos" é a soma, com os sem gênero', async () => {
+  montar(cenario());
+  escolher(q('#fLoja'), 'ml');
+  igual(contagens(), [19, 10, 5, 0, 4]);
+  igual(contagens()[0], contagens().slice(1).reduce((a, b) => a + b, 0), 'Todos = soma das partes (inclui os sem gênero)');
+  escolherPublico('feminino');
+  igual(contagens(), [19, 10, 5, 0, 4], 'escolher um público não muda as contagens');
+  igual(W.eval('filtrada().length'), 10);
+  escolher(q('#fLoja'), '');
+  q('#fTexto').value = 'produto masculino'; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(contagens(), [20, 0, 20, 0], 'sem item sem gênero com este título: a opção "Sem gênero" some');
+  igual(W.eval('filtrada().length'), 0, 'feminino escolhido e título só de masculinos: lista vazia');
+  igual(marcado(), 'feminino');
+  igual(radios().some(i => i.disabled), false);
+  q('#fTexto').value = ''; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(contagens(), [62, 30, 20, 5, 7]);
+  // a busca escolhida também não entra na conta (a spec manda só loja e título)
+  escolherPublico('todos');
+  escolher(q('#fBusca'), 'Busca M');
+  igual(W.eval('filtrada().length'), 15);
+  igual(contagens(), [62, 30, 20, 5, 7]);
+});
+
+// ================================================================ select de buscas (CA-V6)
+teste('CA-V6: o select de buscas só lista as buscas que têm item no público escolhido', async () => {
+  montar(cenario());
+  igual(buscasDoSelect(), ['Todas as buscas (4)', 'Busca F', 'Busca Mista', 'Busca M', 'Busca S']);
+  escolherPublico('feminino');
+  igual(buscasDoSelect(), ['Todas as buscas (2)', 'Busca F', 'Busca Mista']);
+  escolherPublico('masculino');
+  igual(buscasDoSelect(), ['Todas as buscas (2)', 'Busca M', 'Busca Mista']);
+  escolherPublico('unissex');
+  igual(buscasDoSelect(), ['Todas as buscas (1)', 'Busca Mista']);
+  escolherPublico('sem');
+  igual(buscasDoSelect(), ['Todas as buscas (2)', 'Busca Mista', 'Busca S']);
+  escolherPublico('todos');
+  igual(buscasDoSelect().length, 5);
+  // uma busca que o novo público não tem volta para "Todas as buscas" e a lista não fica vazia
+  escolher(q('#fBusca'), 'Busca M');
+  igual(W.eval('filtrada().length'), 15);
+  escolherPublico('feminino');
+  igual(q('#fBusca').value, '');
+  igual(W.eval('filtrada().length'), 30);
+});
+
+teste('CA-V6: o select de buscas de uma aba sem gênero não muda', async () => {
+  montar(cenario(), CASA);
+  igual(buscasDoSelect(), ['Todas as buscas (1)', 'Casa A']);
+});
+
+// ================================================================ selo (CA-V7, V26)
+function cartaoFalso(it) {
+  const c = W.document.createElement('div'); c.className = 'card';
+  W.document.body.appendChild(c);
+  W.renderCard(c, it);
+  return c;
+}
+const selos = c => [...c.querySelectorAll('.selo-genero')];
+const limpar = c => c.remove();
+
+teste('CA-V7: o selo de gênero aparece só em "Todos", como texto Mudo sem cor; some com um público escolhido; não existe em aba sem gênero', async () => {
+  montar(cenario());
+  const todos = cartoes();
+  igual(todos.length, PAGINA);
+  const primeiro = todos[0], s = selos(primeiro);
+  igual(s.length, 1);
+  igual(txt(s[0]), 'Feminino');
+  igual(s[0].dataset.genero, 'feminino');
+  igual(s[0].hasAttribute('title'), false, 'automático não mostra origem');
+  igual(s[0].classList.contains('badge'), true, 'mesmo .badge da loja');
+  igual(s[0].children.length, 0, 'texto puro, sem ícone');
+  igual(W.getComputedStyle(s[0]).color, W.getComputedStyle(primeiro.querySelector('.badge')).color, 'cor Mudo, igual à da loja');
+  // ordem no topo: loja, gênero, busca
+  const ordemTopo = [...primeiro.querySelector('.top').children].map(e => e.classList.contains('selo-genero') ? 'genero' : e.classList.contains('busca') ? 'busca' : e.classList.contains('feito') ? 'feito' : 'loja');
+  igual(ordemTopo, ['loja', 'genero', 'busca', 'feito'], 'AMAZON · FEMININO · busca');
+  // sem gênero: nenhum selo
+  escolherPublico('sem');
+  igual(qa('#grid .selo-genero').length, 0, 'com público escolhido o selo some');
+  escolherPublico('feminino');
+  igual(qa('#grid .selo-genero').length, 0);
+  escolherPublico('todos');
+  const textos = qa('#grid .card').map(c => selos(c).map(txt).join(''));
+  igual(textos.slice(0, 3), ['Feminino', 'Feminino', 'Feminino']);
+  // item sem gênero em "Todos": sem selo
+  const c = cartaoFalso(item(PERF, 'sem')); igual(selos(c).length, 0); limpar(c);
+  // aba sem gênero: sem selo, mesmo que o item traga um valor
+  const d = cartaoFalso(item(CASA, 'feminino', { origem: '' })); igual(selos(d).length, 0); limpar(d);
+  aba(CASA).click();
+  igual(qa('#grid .selo-genero').length, 0);
+});
+
+teste('CA-V26: item corrigido à mão mostra "corrigido" (com o público em Todos; sozinho com público escolhido ou "sem gênero"); automático não mostra origem', async () => {
+  montar(cenario());
+  const manual = (g, auto) => item(PERF, g, { origem: 'manual', auto });
+  let c = cartaoFalso(manual('feminino', 'masculino'));
+  igual(selos(c).map(txt), ['Feminino · corrigido']);
+  igual(selos(c)[0].getAttribute('title'), 'Público corrigido à mão');
+  limpar(c);
+  c = cartaoFalso(manual('sem', 'feminino'));
+  igual(selos(c).map(txt), ['corrigido'], 'corrigido para sem gênero mostra só "corrigido"');
+  igual(selos(c)[0].getAttribute('title'), 'Público corrigido à mão');
+  limpar(c);
+  // com um público escolhido o único selo é o "corrigido"
+  localStorage.setItem('genero:' + PERF, 'feminino');
+  c = cartaoFalso(manual('feminino', 'masculino')); igual(selos(c).map(txt), ['corrigido']); limpar(c);
+  c = cartaoFalso(item(PERF, 'feminino')); igual(selos(c).length, 0, 'automático com público escolhido: nada'); limpar(c);
+  localStorage.setItem('genero:' + PERF, 'sem');
+  c = cartaoFalso(manual('sem', 'feminino')); igual(selos(c).map(txt), ['corrigido']); limpar(c);
+  localStorage.removeItem('genero:' + PERF);
+  // origem "busca" também não aparece
+  c = cartaoFalso(item(PERF, 'masculino', { origem: 'busca' })); igual(selos(c).map(txt), ['Masculino']); igual(selos(c)[0].hasAttribute('title'), false); limpar(c);
+});
+
+teste('o texto do selo vem por esc()/textContent: valor estranho de gênero não vira marcação nem selo', async () => {
+  montar(cenario());
+  delete W.__xss;
+  const mau = item(PERF, '<img src=x onerror="window.__xss=1">', { origem: 'titulo', titulo: 'Perfume qualquer' });
+  const c = cartaoFalso(mau);
+  igual(selos(c).length, 0, 'valor que não é da lista conta como "sem": nenhum selo');
+  igual(c.querySelectorAll('img').length, 0);
+  igual(c.innerHTML.includes('onerror'), false);
+  const campo = c.querySelector('select.gen');
+  igual(campo.value, '', 'cai em Automático');
+  igual(txt(campo.options[0]), 'Automático (Sem gênero)');
+  limpar(c);
+  const t = cartaoFalso(item(PERF, 'feminino', { titulo: '<img src=x onerror="window.__xss=1">' }));
+  igual(t.querySelectorAll('.name img, select img').length, 0);
+  igual(t.querySelector('select.gen').getAttribute('aria-label'), 'Público de <img src=x onerror="window.__xss=1">', 'o aria-label guarda o título como texto');
+  limpar(t);
+  await dormir(50);
+  igual(W.__xss, undefined, 'nada executou');
+});
+
+// ================================================================ campo "Público" em "Mais ações" (CA-V23)
+teste('CA-V23: em cartão de Perfumes, "Mais ações" tem o campo Público (Automático (<resultado>), Feminino, Masculino, Unissex, Sem gênero); em outra aba não existe', async () => {
+  montar(cenario());
+  const c = cartoes()[0];
+  const campo = c.querySelector('.more .rare select.gen');
+  afirma(campo, 'faltou o select do Público em "Mais ações"');
+  igual(campo.closest('label').classList.contains('lbl'), true, 'mesmo padrão .lbl + select de "Mover para"');
+  igual(txt(campo.closest('label')).startsWith('Público'), true);
+  igual([...campo.options].map(o => o.textContent), ['Automático (Feminino)', 'Feminino', 'Masculino', 'Unissex', 'Sem gênero']);
+  igual([...campo.options].map(o => o.value), ['', 'feminino', 'masculino', 'unissex', 'sem']);
+  igual(campo.value, '', 'item automático abre em Automático');
+  // item corrigido: o valor é o corrigido e "Automático" mostra o que a regra daria
+  const m = cartaoFalso(item(PERF, 'masculino', { origem: 'manual', auto: 'feminino' }));
+  igual(m.querySelector('select.gen').value, 'masculino');
+  igual(txt(m.querySelector('select.gen').options[0]), 'Automático (Feminino)');
+  igual(m.querySelector('select.gen').options.length, 5);
+  limpar(m);
+  // sem o genero_auto do servidor: só "Automático"
+  const sem = item(PERF, 'masculino', { origem: 'manual' }); delete sem.genero_auto;
+  const s = cartaoFalso(sem);
+  igual(txt(s.querySelector('select.gen').options[0]), 'Automático');
+  limpar(s);
+  // item cujo automático é "sem gênero"
+  const n = cartaoFalso(item(PERF, 'sem'));
+  igual(txt(n.querySelector('select.gen').options[0]), 'Automático (Sem gênero)');
+  limpar(n);
+  // acessibilidade: nome acessível começa pelo texto visível e inclui o título
+  const titulo = c.querySelector('.name').textContent;
+  igual(campo.getAttribute('aria-label'), 'Público de ' + titulo);
+  igual(campo.getAttribute('aria-label').startsWith('Público'), true);
+  const semTitulo = cartaoFalso(item(PERF, 'feminino', { data: null }));
+  igual(semTitulo.querySelector('select.gen').hasAttribute('aria-label'), false);
+  limpar(semTitulo);
+  // aba sem gênero: sem o campo
+  aba(CASA).click();
+  igual(qa('#grid select.gen').length, 0);
+  igual(qa('#grid select.mv').length > 0, true, 'o "Mover para" continua');
+  const k = cartaoFalso(item(CASA, 'sem')); igual(k.querySelector('select.gen'), null); limpar(k);
+});
+
+// ================================================================ correção: PUT (CA-V24, V25, V27, V28)
+const resposta = (it, genero, origem, auto) => ({ ...JSON.parse(JSON.stringify(it)), genero, genero_origem: origem, genero_auto: auto });
+function adiado() { let ok, nao; const p = new Promise((a, b) => { ok = a; nao = b; }); return { p, ok, nao }; }
+
+teste('CA-V24: escolher um valor trava o campo (aria-busy) até a resposta e, no sucesso, atualiza selo, contagens e toast sem recriar o cartão (foco, "copiado" e "Mais ações" ficam)', async () => {
+  montar(cenario());
+  const c = cartoes()[0], it = W.eval('filtrada()[0]'), sel = c.querySelector('select.gen');
+  c.classList.add('done'); c.querySelector('details.more').open = true;
+  const textarea = c.querySelector('textarea'); textarea.value = 'texto editado à mão';
+  sel.focus();
+  const d = adiado();
+  RESP_PUT = () => d.p;
+  escolher(sel, 'masculino');
+  await esperar(() => PUTS.length === 1, 'o PUT sair');
+  igual(PUTS[0].url, '/api/items/' + it.id + '/genero');
+  igual(PUTS[0].corpoTexto, '{"genero":"masculino"}', 'só a chave genero');
+  igual(PUTS[0].cabecalhos['Content-Type'], 'application/json');
+  igual(sel.disabled, true, 'desabilitado enquanto espera');
+  igual(sel.getAttribute('aria-busy'), 'true');
+  igual(q('#toast').classList.contains('show') && toastTxt().startsWith('Público salvo'), false, 'ainda sem aviso de sucesso');
+  igual(it.genero, 'feminino', 'o item só muda depois da resposta');
+  await dormir(150);   // o Chrome tira o foco de um campo desabilitado no próximo quadro; a resposta vem depois disso, como na rede
+  d.ok(json(resposta(it, 'masculino', 'manual', 'feminino')));
+  await esperar(() => !sel.disabled, 'o campo reabilitar');
+  igual(sel.hasAttribute('aria-busy'), false);
+  igual(sel.value, 'masculino');
+  igual(txt(sel.options[0]), 'Automático (Feminino)');
+  mesmo(c.querySelector('select.gen'), sel, 'o select é o mesmo');
+  mesmo(cartoes()[0], c, 'o cartão é o mesmo (não foi recriado)');
+  igual(c.isConnected, true);
+  igual(c.classList.contains('done'), true, '"Mensagem copiada" continua');
+  igual(c.querySelector('details.more').open, true, '"Mais ações" continua aberto');
+  igual(c.querySelector('textarea').value, 'texto editado à mão', 'o texto editado continua');
+  mesmo(W.document.activeElement, sel, 'o foco volta ao campo');
+  igual(selos(c).map(txt), ['Masculino · corrigido']);
+  igual(W.eval('filtrada()[0]').genero, 'masculino');
+  igual(W.eval('filtrada()[0]').genero_origem, 'manual');
+  igual(toastTxt(), 'Público salvo: Masculino.');
+  igual(q('#toast').classList.contains('show'), true);
+  igual(contagens(), [62, 29, 21, 5, 7], 'as contagens do controle atualizaram sem recarregar');
+  igual(txt(c.querySelector('.gen-msg')), '', 'sem mensagem em Todos');
+  igual(c.querySelector('.gen-msg').classList.contains('err'), false);
+});
+
+teste('CA-V25: escolher "Automático" envia null, tira o "corrigido" e volta ao valor automático', async () => {
+  montar(cenario());
+  const c = cartoes()[0], it = W.eval('filtrada()[0]'), sel = c.querySelector('select.gen');
+  RESP_PUT = () => Promise.resolve(json(resposta(it, 'masculino', 'manual', 'feminino')));
+  escolher(sel, 'masculino');
+  await esperar(() => !sel.disabled && selos(c).map(txt).join() === 'Masculino · corrigido', 'corrigir');
+  RESP_PUT = () => Promise.resolve(json(resposta(it, 'feminino', 'titulo', 'feminino')));
+  escolher(sel, '');
+  await esperar(() => PUTS.length === 2 && !sel.disabled, 'voltar ao automático');
+  igual(PUTS[1].corpoTexto, '{"genero":null}');
+  igual(sel.value, '');
+  igual(selos(c).map(txt), ['Feminino'], 'sem "corrigido"');
+  igual(selos(c)[0].hasAttribute('title'), false);
+  igual(toastTxt(), 'Público voltou ao automático.');
+  igual(W.eval('filtrada()[0]').genero_origem, 'titulo');
+  igual(contagens(), [62, 30, 20, 5, 7]);
+  // "Sem gênero" é um valor como os outros
+  RESP_PUT = () => Promise.resolve(json(resposta(it, 'sem', 'manual', 'feminino')));
+  escolher(sel, 'sem');
+  await esperar(() => PUTS.length === 3 && !sel.disabled, 'corrigir para sem gênero');
+  igual(PUTS[2].corpoTexto, '{"genero":"sem"}');
+  igual(selos(c).map(txt), ['corrigido']);
+  igual(toastTxt(), 'Público salvo: Sem gênero.');
+  igual(contagens(), [62, 29, 20, 5, 8]);
+});
+
+teste('CA-V27: se o novo valor tira o cartão do público filtrado, ele fica onde está e a linha de status explica; sai no próximo render()', async () => {
+  montar(cenario());
+  escolherPublico('feminino');
+  const c = cartoes()[0], it = W.eval('filtrada()[0]'), sel = c.querySelector('select.gen');
+  RESP_PUT = () => Promise.resolve(json(resposta(it, 'masculino', 'manual', 'feminino')));
+  escolher(sel, 'masculino');
+  await esperar(() => PUTS.length === 1 && !sel.disabled, 'corrigir');
+  igual(c.isConnected, true, 'o cartão não some sob o cursor');
+  mesmo(cartoes()[0], c);
+  const msg = c.querySelector('.gen-msg');
+  igual(txt(msg), 'Agora é Masculino. Sai desta lista quando você trocar de página ou de filtro.');
+  igual(msg.classList.contains('err'), false);
+  igual(msg.getAttribute('role'), 'status');
+  igual(msg.previousElementSibling, sel.closest('label'), 'a mensagem fica logo abaixo do campo, dentro de "Mais ações"');
+  igual(msg.parentElement.classList.contains('rare'), true);
+  igual(sel.getAttribute('aria-describedby'), msg.id);
+  igual(txt(c.querySelector('.status')), '', 'o .status do cartão não leva a mensagem do público');
+  igual(selos(c).map(txt), ['corrigido'], 'com o público escolhido o único selo é o "corrigido"');
+  igual(contagens(), [62, 29, 21, 5, 7]);
+  W.render();
+  igual(c.isConnected, false, 'no render() seguinte ele sai da lista');
+  igual(W.eval('filtrada().length'), 29);
+  igual(W.eval('filtrada().some(i => i.id === ' + it.id + ')'), false);
+  // em "Todos" o cartão não sai e não há aviso
+  escolherPublico('todos');
+  const c2 = cartoes()[0], it2 = W.eval('filtrada()[0]'), sel2 = c2.querySelector('select.gen');
+  RESP_PUT = () => Promise.resolve(json(resposta(it2, 'unissex', 'manual', 'feminino')));
+  escolher(sel2, 'unissex');
+  await esperar(() => PUTS.length === 2 && !sel2.disabled, 'corrigir em Todos');
+  igual(txt(c2.querySelector('.gen-msg')), '');
+});
+
+teste('CA-V28: em falha (sem servidor, 404, 400, resposta estranha) o campo volta ao valor anterior, reabilita e a linha de status mostra a mensagem em pt-BR', async () => {
+  montar(cenario());
+  const casos = [
+    ['sem servidor', () => Promise.reject(new W.TypeError('Failed to fetch')), 'Não consegui falar com o servidor. Verifique se ele está aberto e tente de novo.'],
+    ['404', () => Promise.resolve(json({ error: 'item não encontrado' }, 404)), 'Este item não existe mais. Recarregue a página.'],
+    ['400', () => Promise.resolve(json({ error: 'esta categoria não separa por público' }, 400)), 'Não consegui salvar o público. Tente de novo.'],
+    ['500 sem corpo', () => Promise.resolve(new W.Response('', { status: 500 })), 'Não consegui salvar o público. Tente de novo.'],
+    ['200 sem o gênero', () => Promise.resolve(json({})), 'Não consegui salvar o público. Tente de novo.'],
+    ['200 com gênero fora da lista', () => Promise.resolve(json({ genero: '<b>x</b>' })), 'Não consegui salvar o público. Tente de novo.'],
+  ];
+  const c = cartoes()[0], it = W.eval('filtrada()[0]'), sel = c.querySelector('select.gen'), st = c.querySelector('.gen-msg');
+  c.querySelector('details.more').open = true;   // foco só existe em campo visível
+  const antes = JSON.stringify(W.eval('filtrada()[0]'));
+  let n = 0;
+  for (const [nome, resp, msg] of casos) {
+    RESP_PUT = resp;
+    sel.focus();
+    toast_limpar();
+    escolher(sel, 'unissex');
+    n++;
+    await esperar(() => PUTS.length === n && !sel.disabled, nome + ': esperar a resposta');
+    igual(sel.value, '', nome + ': o campo volta ao valor anterior (Automático)');
+    igual(sel.hasAttribute('aria-busy'), false, nome);
+    igual(txt(st), msg, nome);
+    igual(st.classList.contains('err'), true, nome + ': mensagem de erro');
+    igual(st.getAttribute('role'), 'alert', nome + ': erro é lido na hora');
+    igual(sel.getAttribute('aria-describedby'), st.id);
+    igual(txt(c.querySelector('.status')), '', nome + ': o .status do cartão não leva a mensagem do público');
+    igual(txt(q('#toastErro')), msg, nome + ': o aviso de erro também sai');
+    igual(q('#toastErro').classList.contains('show'), true);
+    igual(selos(c).map(txt), ['Feminino'], nome + ': o selo não mudou');
+    igual(JSON.stringify(W.eval('filtrada()[0]')), antes, nome + ': o item não mudou');
+    igual(contagens(), [62, 30, 20, 5, 7], nome);
+    mesmo(W.document.activeElement, sel, nome + ': o foco continua no campo');
+    afirma(!toastTxt().startsWith('Público salvo'), nome + ': não há aviso de sucesso');
+  }
+  // um sucesso depois de um erro limpa a mensagem de erro
+  RESP_PUT = () => Promise.resolve(json(resposta(it, 'unissex', 'manual', 'feminino')));
+  escolher(sel, 'unissex');
+  n++;
+  await esperar(() => PUTS.length === n && !sel.disabled, 'sucesso depois do erro');
+  igual(st.classList.contains('err'), false);
+  igual(st.getAttribute('role'), 'status', 'depois do sucesso o papel volta a status');
+  igual(txt(st), '');
+  // mensagem de erro do corpo nunca vira marcação
+  W.__xss = undefined;
+  RESP_PUT = () => Promise.resolve(json({ error: '<img src=x onerror="window.__xss=1">' }, 400));
+  escolher(sel, 'masculino');
+  n++;
+  await esperar(() => PUTS.length === n && !sel.disabled, 'erro com HTML');
+  igual(st.querySelectorAll('img').length, 0);
+  igual(W.__xss, undefined);
+});
+function toast_limpar() { for (const id of ['#toast', '#toastErro']) { q(id).textContent = ''; q(id).classList.remove('show'); } }
+
+teste('o cartão nunca manda outra coisa além de {"genero": ...} e só para itens de aba com gênero (nenhum PUT em Casa)', async () => {
+  montar(cenario(), CASA);
+  igual(qa('#grid select.gen').length, 0);
+  igual(PUTS.length, 0);
+});
+
+// ================================================================ "Mover para" mantém o público do item
+teste('"Mover para": o público que o servidor devolve no PATCH vai para o item (sai de Perfumes = sem; entra em Perfumes = o do título)', async () => {
+  montar(cenario());
+  const c = cartoes()[0], it = W.eval('filtrada()[0]');
+  RESP_PATCH = () => json({ id: it.id, cat: CASA, genero: 'sem', genero_origem: '', genero_auto: 'sem' });
+  escolher(c.querySelector('select.mv'), CASA);
+  await esperar(() => PATCHES.length === 1, 'o PATCH');
+  igual(PATCHES[0].corpo, { cat: CASA });
+  await esperar(() => W.eval('items.find(i => i.id === ' + it.id + ').cat') === CASA, 'o item mudar de aba');
+  igual(W.eval('items.find(i => i.id === ' + it.id + ').genero'), 'sem');
+  igual(W.eval('items.find(i => i.id === ' + it.id + ').genero_origem'), '');
+  igual(contagens(), [61, 29, 20, 5, 7]);
+  // de Casa para Perfumes: o item que acabou de sair é o primeiro da lista de Casa
+  aba(CASA).click();
+  const alvo = cartoes()[0], itAlvo = W.eval('filtrada()[0]');
+  igual(itAlvo.id, it.id);
+  RESP_PATCH = () => json({ id: itAlvo.id, cat: PERF, genero: 'unissex', genero_origem: 'titulo', genero_auto: 'unissex' });
+  escolher(alvo.querySelector('select.mv'), PERF);
+  await esperar(() => PATCHES.length === 2, 'o segundo PATCH');
+  await esperar(() => W.eval('items.find(i => i.id === ' + itAlvo.id + ').cat') === PERF, 'mudar para Perfumes');
+  igual(W.eval('items.find(i => i.id === ' + itAlvo.id + ').genero'), 'unissex');
+  aba(PERF).click();
+  igual(contagens(), [62, 29, 20, 6, 7]);
+});
+
+// ================================================================ regra do disparo (CA-V11, CA5)
+const NUMERO = { id: 1, nome: 'N', telefone: '', grupo_nome: 'G', grupo_id: '', limite_diario: 40, ativo: 1 };
+function montarForm(regra) {
+  W.eval('disp.numeros = ' + JSON.stringify([NUMERO]) + ';');
+  const host = W.document.createElement('div'); host.id = 'hostFormRegra';
+  host.innerHTML = W.htmlFormRegra(regra);
+  W.document.body.appendChild(host);
+  return host;
+}
+const padrao = (sobre = {}) => { W.eval('disp.numeros = ' + JSON.stringify([NUMERO]) + ';'); return { ...W.eval('regraPadrao()'), nome: 'R', numero_id: 1, ...sobre }; };
+const lerForm = () => W.eval('lerFormRegra()');
+const publicoDoForm = () => [...W.document.querySelectorAll('#f-publico input')];
+
+teste('CA-V11: o formulário da regra tem "Público" em rádio (Todos, Feminino, Masculino, Unissex), Todos por padrão, e grava [] ou [valor]', async () => {
+  montar(cenario());
+  const host = montarForm(padrao());
+  try {
+    igual(publicoDoForm().map(i => i.value), ['todos', 'feminino', 'masculino', 'unissex']);
+    igual(publicoDoForm().every(i => i.type === 'radio' && i.name === 'publico'), true);
+    igual(publicoDoForm().find(i => i.checked).value, 'todos');
+    igual(lerForm().generos, []);
+    publicoDoForm().find(i => i.value === 'feminino').click();
+    igual(lerForm().generos, ['feminino']);
+    publicoDoForm().find(i => i.value === 'unissex').click();
+    igual(lerForm().generos, ['unissex']);
+    publicoDoForm().find(i => i.value === 'todos').click();
+    igual(lerForm().generos, []);
+    igual(txt(W.document.querySelector('#rotPublico')), 'Público');
+    igual(txt(W.document.querySelector('#a-publico')), 'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.');
+    igual(W.document.querySelector('#f-publico').getAttribute('aria-describedby'), 'a-publico');
+    // o resto do formulário continua igual
+    const v = lerForm();
+    igual(Object.keys(v), ['nome', 'numero_id', 'cats', 'lojas', 'generos', 'palavras', 'desconto_min', 'ordem', 'template', 'com_foto', 'dias', 'horarios', 'por_disparo', 'max_por_dia', 'repetir_apos_dias', 'intervalo_seg']);
+  } finally { host.remove(); }
+});
+
+teste('CA-V11: regra antiga (sem "generos") abre em Todos; regra com [valor] abre nele; lista que a tela não representa não marca nada e é devolvida como está', async () => {
+  montar(cenario());
+  const casos = [
+    [{ generos: undefined }, 'todos', []],
+    [{ generos: [] }, 'todos', []],
+    [{ generos: ['masculino'] }, 'masculino', ['masculino']],
+    [{ generos: ['unissex'] }, 'unissex', ['unissex']],
+    [{ generos: ['feminino', 'unissex'] }, undefined, ['feminino', 'unissex']],
+    [{ generos: ['sem'] }, undefined, ['sem']],
+  ];
+  for (const [sobre, marcadoEsperado, grava] of casos) {
+    const r = padrao(); if (sobre.generos === undefined) delete r.generos; else r.generos = sobre.generos;
+    const host = montarForm(r);
+    try {
+      const m = publicoDoForm().find(i => i.checked);
+      igual(m && m.value, marcadoEsperado, JSON.stringify(sobre));
+      igual(lerForm().generos, grava, 'o que o formulário devolve: ' + JSON.stringify(sobre));
+      if (marcadoEsperado === undefined) {   // escolher um valor troca o que a regra fazia
+        publicoDoForm().find(i => i.value === 'masculino').click();
+        igual(lerForm().generos, ['masculino']);
+      }
+    } finally { host.remove(); }
+  }
+});
+
+teste('CA5: o contador do formulário (contarItens) respeita o público só nas categorias com gênero', async () => {
+  montar(cenario());
+  const cont = W.contarItens;
+  const base = { cats: [PERF, CASA], lojas: ['amazon', 'ml', 'shopee'], palavras: [], desconto_min: 0 };
+  igual(cont({ ...base, generos: [] }), 72, '62 de Perfumes + 10 da Casa');
+  igual(cont({ ...base }), 72, 'regra antiga, sem o campo');
+  igual(cont({ ...base, generos: ['feminino'] }), 40, '30 femininos + a Casa inteira');
+  igual(cont({ ...base, generos: ['masculino'] }), 30);
+  igual(cont({ ...base, generos: ['unissex'] }), 15);
+  igual(cont({ ...base, generos: ['sem'] }), 17);
+  igual(cont({ ...base, generos: ['feminino', 'unissex'] }), 45);
+  igual(cont({ ...base, cats: [CASA], generos: ['feminino'] }), 10, 'nenhuma categoria marcada tem gênero: o público não tem efeito');
+  igual(cont({ ...base, cats: [PERF], generos: ['feminino'], lojas: ['ml'] }), 10, 'junto com a loja');
+  igual(cont({ ...base, cats: [PERF], generos: ['masculino'], palavras: ['produto masculino'] }), 20, 'junto com as palavras');
+  igual(cont({ ...base, cats: [PERF], generos: ['feminino'], desconto_min: 50 }), 0, 'junto com o desconto');
+  igual(cont({ ...base, cats: [ELETRO], generos: ['feminino'] }), 5);
+});
+
+teste('CA5: o contador do formulário muda quando o dono troca o público', async () => {
+  montar(cenario());
+  const host = montarForm(padrao({ cats: [PERF, CASA], lojas: ['amazon', 'ml', 'shopee'] }));
+  try {
+    const contador = () => txt(W.document.querySelector('#f-contador'));
+    W.eval('atualizarDerivados()');
+    afirma(contador().startsWith('Cerca de 72 itens combinam'), contador());
+    publicoDoForm().find(i => i.value === 'feminino').click();
+    W.eval('atualizarDerivados()');
+    afirma(contador().startsWith('Cerca de 40 itens combinam'), contador());
+    publicoDoForm().find(i => i.value === 'unissex').click();
+    W.eval('atualizarDerivados()');
+    afirma(contador().startsWith('Cerca de 15 itens combinam'), contador());
+  } finally { host.remove(); }
+});
+
+teste('CA-V11: o cartão da regra só cita o público quando não é "Todos" (entre as categorias e as lojas)', async () => {
+  montar(cenario());
+  W.eval('disp.numeros = ' + JSON.stringify([NUMERO]) + '; disp.fila = []; disp.envios = [];');
+  const regra = sobre => ({ id: 7, nome: 'R', numero_id: 1, ativa: 0, cats: [PERF], lojas: ['amazon', 'ml', 'shopee'], palavras: [], desconto_min: 0, ordem: 'relevancia',
+    template: 'Template 1', com_foto: 1, dias: [0, 1, 2, 3, 4, 5, 6], horarios: ['09:00'], por_disparo: 1, max_por_dia: 10, repetir_apos_dias: 7, intervalo_seg: 60, aviso: '', proximo: null, ...sobre });
+  const meta = r => { const d = W.document.createElement('div'); d.innerHTML = W.htmlRegra(r); return txt(d.querySelector('.meta')); };
+  igual(meta(regra({ generos: ['feminino'] })), 'Perfumes e Perfumaria · Feminino · Todas as lojas · Mais relevantes');
+  igual(meta(regra({ generos: ['masculino'] })), 'Perfumes e Perfumaria · Masculino · Todas as lojas · Mais relevantes');
+  igual(meta(regra({ generos: ['unissex'], lojas: ['ml'] })), 'Perfumes e Perfumaria · Unissex · Mercado Livre · Mais relevantes');
+  igual(meta(regra({ generos: [] })), 'Perfumes e Perfumaria · Todas as lojas · Mais relevantes');
+  igual(meta(regra({})), 'Perfumes e Perfumaria · Todas as lojas · Mais relevantes', 'regra antiga, sem o campo');
+  igual(meta(regra({ generos: ['unissex', 'feminino'] })), 'Perfumes e Perfumaria · Feminino e Unissex · Todas as lojas · Mais relevantes', 'na ordem do servidor');
+  igual(meta(regra({ cats: [PERF, CASA], generos: ['feminino'] })), 'Perfumes e Perfumaria, Casa e Decoração · Feminino · Todas as lojas · Mais relevantes');
+  // o nome do público vem do nosso dicionário, nunca do dado
+  igual(meta(regra({ generos: ['<img src=x>'] })), 'Perfumes e Perfumaria · Todas as lojas · Mais relevantes');
+});
+
+// ================================================================ M3: sem resultado e sem ofertas (CA-V17)
+const estadoLista = () => q('#estadoLista');
+const blocoLista = () => q('#estadoLista .vazio');
+// Escondido de verdade (display), não só sem texto
+const visivel = el => !!el && W.getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+function digitarTitulo(t) { q('#fTexto').value = t; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true })); }
+
+teste('CA-V17/M3: com itens e sem filtro zerado, não há bloco de estado; abas, filtros e grade aparecem', async () => {
+  montar(cenario());
+  igual(blocoLista(), null);
+  for (const s of ['#tabs', '.filters', '.barra-lista', '#grid']) afirma(visivel(q(s)), s + ' tem que aparecer');
+  igual(q('#telaOfertas').classList.contains('sem-dados'), false);
+});
+
+teste('CA-V17/M3: filtro que zera a lista põe "Nenhuma oferta com esses filtros." no lugar da grade, com "Limpar filtros"; com público, o texto cita o público', async () => {
+  for (const [publico, esperado] of [[null, 'Nenhuma oferta com esses filtros.'], ['feminino', 'Nenhuma oferta para Feminino com esses filtros.'],
+                                     ['masculino', 'Nenhuma oferta para Masculino com esses filtros.'], ['unissex', 'Nenhuma oferta para Unissex com esses filtros.']]) {
+    // (sem "Sem gênero": o título filtrado zera a contagem e o controle cai em "Todos"; pela tela, essa lista vazia não existe)
+    montar(cenario());
+    if (publico) escolherPublico(publico);
+    digitarTitulo('zzzz-nada-assim');
+    const b = blocoLista();
+    afirma(b, 'sem bloco com o filtro zerando a lista (' + publico + ')');
+    igual(txt(b.querySelector('p')), esperado, 'texto (' + publico + ')');
+    igual(b.getAttribute('role'), 'status');
+    igual(qa('#estadoLista button').map(txt), ['Limpar filtros'], 'um botão só');
+    igual(cartoes().length, 0, 'a grade fica sem cartões');
+    // abas e filtros continuam: é por eles que o dono sai dali
+    for (const s of ['#tabs', '.filters']) afirma(visivel(q(s)), s + ' some com a lista vazia');
+    igual(q('#telaOfertas').classList.contains('sem-dados'), false);
+    igual(visivel(blocoLista()), true);
+  }
+});
+
+teste('CA-V17/M3: o texto do público vem do nosso dicionário e é escapado (nada do dado vira marcação)', async () => {
+  montar(cenario());
+  digitarTitulo('<img src=x onerror=alert(1)>');
+  igual(txt(blocoLista().querySelector('p')), 'Nenhuma oferta com esses filtros.');
+  igual(qa('#estadoLista img').length, 0);
+});
+
+teste('CA-V17/M3: "Limpar filtros" volta loja, busca, ordem, título e público ao padrão, não troca de aba, tira o aviso e leva o foco ao campo de título', async () => {
+  montar(cenario());
+  escolherPublico('feminino');
+  escolher(q('#fLoja'), 'ml');
+  escolher(q('#fBusca'), 'Busca F');   // Busca F é só da Amazon: com a loja ML não sobra nada
+  escolher(q('#fOrdem'), 'desc');
+  digitarTitulo('Produto');
+  igual(W.eval('filtrada().length'), 0);
+  afirma(blocoLista(), 'o estado vazio');
+  q('#estadoLista button').focus();
+  q('#estadoLista button').click();
+  igual([q('#fLoja').value, q('#fBusca').value, q('#fOrdem').value, q('#fTexto').value], ['', '', '', ''], 'filtros');
+  igual(marcado(), 'todos', 'público');
+  igual(localStorage.getItem('genero:' + PERF), null, 'o público lembrado é apagado');
+  igual(W.eval('activeCat'), PERF, 'a aba fica');
+  igual(W.eval('page'), 1);
+  igual(blocoLista(), null, 'o aviso sai');
+  igual(cartoes().length, PAGINA);
+  mesmo(W.document.activeElement, q('#fTexto'), 'foco');
+});
+
+teste('CA-V17/M3: sem nenhuma oferta, só o aviso "Esta categoria ainda não tem ofertas. Use Adicionar links para incluir." (sem botão de limpar); a lista volta quando chegam itens', async () => {
+  montar([]);
+  const b = blocoLista();
+  afirma(b, 'sem aviso');
+  igual(txt(b), 'Esta categoria ainda não tem ofertas. Use Adicionar links para incluir.');
+  igual(b.getAttribute('role'), 'status');
+  igual(qa('#estadoLista button').length, 0);
+  afirma(!visivel(q('#tabs')) && !visivel(q('.filters')) && !visivel(q('#grid')), 'o resto da tela fica escondido');
+  igual(q('#telaOfertas').classList.contains('sem-dados'), true);
+  montar(cenario());
+  igual(blocoLista(), null);
+  igual(q('#telaOfertas').classList.contains('sem-dados'), false);
+  igual(cartoes().length, PAGINA);
+});
+
+// ================================================================ M5: o foco não se perde ao navegar (CA-V19)
+teste('CA-V19/M5: ativar uma aba (Enter/clique no botão focado) mantém o foco na aba, não no body; vale também para a aba que já era a ativa', async () => {
+  montar(cenario());
+  const velha = aba(CASA);
+  velha.focus();
+  mesmo(W.document.activeElement, velha, 'precondição: o foco está na aba');
+  velha.click();
+  igual(W.eval('activeCat'), CASA);
+  mesmo(W.document.activeElement, aba(CASA), 'o foco fica na aba CASA (a equivalente, depois do render)');
+  igual(aba(CASA).getAttribute('aria-pressed'), 'true');
+  aba(CASA).click();   // de novo, na que já está ativa
+  mesmo(W.document.activeElement, aba(CASA), 'segunda ativação');
+  const outra = aba(PERF); outra.focus(); outra.click();
+  mesmo(W.document.activeElement, aba(PERF), 'voltando a Perfumes');
+});
+
+teste('CA-V19/M5: "Próxima" e os outros botões da paginação mantêm o foco na mesma paginação (topo e rodapé); na última página o foco vai ao "Anterior"; nunca ao body', async () => {
+  for (const [nome, seletor] of [['topo', '.pager:not(.bottom)'], ['rodapé', '.pager.bottom']]) {
+    montar(cenario());   // 62 itens em Perfumes: 3 páginas
+    const botao = a => q(seletor + ' .pg[data-a="' + a + '"]');
+    const ativar = a => { const b = botao(a); afirma(b && !b.disabled, nome + ': botão ' + a + ' indisponível'); b.focus(); b.click(); };
+    const noFoco = (a, msg) => {
+      afirma(W.document.activeElement !== W.document.body, nome + ': o foco foi para o body (' + msg + ')');
+      mesmo(W.document.activeElement, botao(a), nome + ': ' + msg);
+    };
+    ativar('proxima'); igual(W.eval('page'), 2); noFoco('proxima', 'Próxima na página 2');
+    ativar('proxima'); igual(W.eval('page'), 3); noFoco('anterior', 'na última página "Próxima" some e o foco vai ao "Anterior"');
+    ativar('anterior'); igual(W.eval('page'), 2); noFoco('anterior', 'Anterior na página 2');
+    ativar('primeira'); igual(W.eval('page'), 1); noFoco('proxima', 'na página 1 "Primeira" e "Anterior" somem: o foco vai ao "Próxima"');
+    ativar('proxima'); ativar('anterior'); igual(W.eval('page'), 1); noFoco('proxima', 'na página 1 "Anterior" também some: o foco vai ao "Próxima"');
+    ativar('ultima'); igual(W.eval('page'), 3); noFoco('anterior', 'Última leva ao "Anterior"');
+  }
+});
+
+teste('CA-V19/M5: se a paginação some (filtro deixa uma página só), o foco vai para a aba ativa em vez de se perder', async () => {
+  montar(cenario());
+  const b = q('.pager.bottom .pg[data-a="proxima"]');
+  b.focus(); b.click();
+  igual(W.eval('page'), 2);
+  q('.pager.bottom .pg[data-a="proxima"]').focus();
+  digitarTitulo('zzzz-nada-assim');   // o oninput do campo chama render(), que desfaz a paginação
+  igual(qa('.pager .pg').length, 0, 'precondição: sem botões de página');
+  mesmo(W.document.activeElement, q('#tabs .tab.active'));
+});
+
+teste('CA-V19/M5: o foco que não estava nas abas nem na paginação não é mexido pelo render()', async () => {
+  montar(cenario());
+  q('#fOrdem').focus();
+  escolher(q('#fOrdem'), 'preco');
+  mesmo(W.document.activeElement, q('#fOrdem'));
+  q('#fTexto').focus(); digitarTitulo('Produto');
+  mesmo(W.document.activeElement, q('#fTexto'));
+});
+
+teste('CA-V19/M5: o controle "Público" recriado (a opção "Sem gênero" some) devolve o foco à opção que o tinha', async () => {
+  montar(cenario());
+  escolherPublico('masculino');
+  const velho = radios().find(i => i.value === 'masculino');
+  velho.focus();
+  mesmo(W.document.activeElement, velho, 'precondição');
+  afirma(valoresPublico().includes('sem'), 'precondição: "Sem gênero" existe');
+  digitarTitulo('masculino');   // os títulos falsos citam o público: nenhum "sem" sobra
+  afirma(!valoresPublico().includes('sem'), 'precondição: "Sem gênero" sumiu e o controle foi recriado');
+  afirma(!velho.isConnected, 'precondição: o input antigo saiu do DOM');
+  const novo = radios().find(i => i.value === 'masculino');
+  mesmo(W.document.activeElement, novo, 'o foco volta ao "Masculino" novo');
+  igual(marcado(), 'masculino');
+});
+
+// ================================================================ M3: carregando e erro de carga (CA-V17), com a API simulada
+// O iframe carrega o index.html por srcdoc com um fetch trocado ANTES do script do app rodar (o app busca os itens logo ao abrir);
+// o fetch simulado só atende GET, nada de escrita sai.
+let RESP_APP = null;
+window.FETCH_APP = (url, opcoes) => {
+  const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+  if (metodo !== 'GET' && /\/api\//.test(String(url))) { VIOL.push(metodo + ' ' + url); return Promise.reject(new TypeError('bloqueado pelo teste')); }
+  return RESP_APP ? RESP_APP(String(url), opcoes) : Promise.reject(new TypeError('sem resposta definida'));
+};
+window.ERRO_APP = m => erros.push(m + ' durante "' + testeAtual + '"');
+const jsonP = (corpo, status = 200) => new Response(JSON.stringify(corpo), { status, headers: { 'Content-Type': 'application/json' } });
+const respostaOk = url => jsonP(/\/api\/items$/.test(url) ? cenario() : null);
+async function abrirAppComApi(resposta) {
+  RESP_APP = resposta;
+  const html = await (await fetch('/index.html')).text();
+  afirma(html.includes('<head>'), 'o index.html não tem <head>');
+  const injetado = '<script>window.fetch = (u, o) => window.parent.FETCH_APP(u, o);'
+    + "window.addEventListener('unhandledrejection', e => window.parent.ERRO_APP('rejeição não tratada (app, API simulada): ' + (e.reason && e.reason.message || e.reason)));"
+    + "window.addEventListener('error', e => window.parent.ERRO_APP('erro não capturado (app, API simulada): ' + e.message));<\/script>";
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.srcdoc = html.replace('<head>', '<head>' + injetado); });
+  W = f.contentWindow;
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+}
+
+teste('CA-V17/M3: antes dos dados há "Carregando as ofertas…" (role=status, main com aria-busy) e o resto da tela fica escondido; quando chegam, o estado some', async () => {
+  let liberar; const portao = new Promise(r => { liberar = r; });
+  await abrirAppComApi(url => /\/api\/items$/.test(url) ? portao.then(() => respostaOk(url)) : respostaOk(url));
+  const b = blocoLista();
+  afirma(b, 'sem o bloco de carregando');
+  igual(txt(b), 'Carregando as ofertas…');
+  igual(b.getAttribute('role'), 'status');
+  igual(q('main').getAttribute('aria-busy'), 'true');
+  igual(visivel(estadoLista()), true);
+  for (const s of ['#tabs', '#count', '.filters', '.barra-lista', '.pager', '#grid']) afirma(!visivel(q(s)), s + ' tem que ficar escondido enquanto carrega');
+  igual(cartoes().length, 0);
+  liberar();
+  await esperar(() => cartoes().length > 0, 'a lista aparecer depois dos dados');
+  igual(blocoLista(), null, 'o carregando sai');
+  igual(q('main').hasAttribute('aria-busy'), false, 'main deixa de estar ocupado');
+  for (const s of ['#tabs', '#count', '.filters', '.barra-lista', '#grid']) afirma(visivel(q(s)), s + ' tem que aparecer');
+  igual(q('#telaOfertas').classList.contains('sem-dados'), false);
+});
+
+teste('CA-V17/M3: com a API fora do ar (rede, 500, corpo que não é lista, config com erro) aparece o erro com "Tentar de novo"; o botão tenta de novo, devolve o foco e, dando certo, mostra a lista', async () => {
+  const pedidos = [];
+  let modo = 'rede', portao = Promise.resolve();
+  const resp = url => {
+    pedidos.push(url);
+    if (modo === 'rede') return Promise.reject(new TypeError('Failed to fetch'));
+    if (modo === '500') return Promise.resolve(jsonP({ error: 'quebrou' }, 500));
+    if (modo === 'objeto') return Promise.resolve(jsonP(/\/api\/items$/.test(url) ? { error: 'x' } : null));
+    if (modo === 'config') return Promise.resolve(/config\/templates$/.test(url) ? jsonP({ error: 'x' }, 500) : respostaOk(url));
+    if (modo === 'texto') return Promise.resolve(new Response('<html>erro</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }));
+    return portao.then(() => respostaOk(url));
+  };
+  await abrirAppComApi(resp);
+  const confereErro = (onde) => {
+    const b = blocoLista();
+    afirma(b, onde + ': sem bloco de erro');
+    igual(txt(b.querySelector('p')), 'Não consegui carregar as ofertas. Verifique se o servidor está aberto e tente de novo.', onde);
+    igual(b.getAttribute('role'), 'alert', onde);
+    igual(qa('#estadoLista button').map(txt), ['Tentar de novo'], onde);
+    igual(q('main').hasAttribute('aria-busy'), false, onde + ': main parou de carregar');
+    for (const s of ['#tabs', '.filters', '.barra-lista', '#grid']) afirma(!visivel(q(s)), onde + ': ' + s + ' aparece com a carga falha');
+    igual(W.eval('items.length'), 0, onde);
+  };
+  await esperar(() => q('#estadoLista [role="alert"]'), 'o erro de rede');
+  confereErro('rede');
+  igual(pedidos.slice(0, 3).sort(), ['/api/config/currentTpl', '/api/config/templates', '/api/items']);
+  igual(W.eval('disparoIniciado'), true, 'as rotas do disparo ligam mesmo com a lista fora do ar');
+  W.render();   // um render solto (vindo de outra tela) não desenha lista sem dados
+  confereErro('depois de um render()');
+  for (const m of ['500', 'objeto', 'config', 'texto', 'rede']) {
+    modo = m;
+    const botao = q('#estadoLista button');
+    botao.focus(); botao.click();
+    igual(txt(blocoLista()), 'Carregando as ofertas…', m + ': o clique mostra o carregando na hora');
+    igual(blocoLista().getAttribute('role'), 'status');
+    igual(q('main').getAttribute('aria-busy'), 'true');
+    afirma(estadoLista().contains(W.document.activeElement), m + ': o foco ficou no bloco, não foi para o body');
+    await esperar(() => q('#estadoLista [role="alert"]'), 'o erro de novo (' + m + ')');
+    confereErro(m);
+    mesmo(W.document.activeElement, q('#estadoLista button'), m + ': o foco volta ao "Tentar de novo"');
+  }
+  // agora a API volta: o carregando aparece, e ao chegar a lista o foco vai à aba ativa
+  let liberar; portao = new Promise(r => { liberar = r; });
+  modo = 'ok';
+  const botao = q('#estadoLista button');
+  botao.focus(); botao.click();
+  igual(txt(blocoLista()), 'Carregando as ofertas…');
+  liberar();
+  await esperar(() => cartoes().length > 0, 'a lista depois do "Tentar de novo"');
+  igual(blocoLista(), null);
+  igual(q('main').hasAttribute('aria-busy'), false);
+  igual(W.eval('items.length'), cenario().length);
+  for (const s of ['#tabs', '.filters', '#grid']) afirma(visivel(q(s)), s + ' tem que aparecer');
+  mesmo(W.document.activeElement, q('#tabs .tab.active'), 'o foco vai à aba ativa, não ao body');
+  igual(W.eval('disparoIniciado'), true);
+});
+
+// ================================================================ rodada 2: D2 e D4
+teste('D4: as contagens das abas usam separador de milhar, como o controle "Público"', async () => {
+  const lista = cenario();
+  for (let i = 0; i < 1200; i++) lista.push(item(CASA, 'sem', { busca: 'Casa A' }));
+  montar(lista);
+  const casa = qa('#tabs .tab').find(b => b.dataset.c === CASA);
+  igual(txt(casa), CASA + ' 1.210');
+  igual(txt(aba(PERF)), PERF + ' 62');
+});
+
+teste('D2: "Editar templates" abre o painel e leva a vista até ele (o painel fica no cabeçalho, longe da barra da lista no celular)', async () => {
+  montar(cenario());
+  const chamadas = [];
+  const caixa = q('#tplBox'), orig = caixa.scrollIntoView;
+  caixa.scrollIntoView = function (o) { chamadas.push(JSON.stringify(o)); return orig.call(this, o); };
+  q('#btnTpl').click();
+  igual(caixa.classList.contains('open'), true);
+  igual(chamadas, ['{"block":"nearest"}']);
+  q('#btnTpl').click();   // fechar não rola
+  igual(caixa.classList.contains('open'), false);
+  igual(chamadas.length, 1);
+});
+
+// ================================================================ fecho
+teste('só GET saiu para a API e /api/items ficou idêntico ao do início (os PUT e PATCH foram interceptados)', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    API = JSON.parse(API_ANTES);
+    afirma(Array.isArray(API) && API.length > 0, '/api/items vazio');
+    afirma(API.every(i => ['feminino', 'masculino', 'unissex', 'sem'].includes(i.genero)), 'o servidor não devolve "genero" em todo item (servidor antigo?)');
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      if (!W) await abrirApp();
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  for (const k of Object.keys(localStorage)) if (k.startsWith('genero:')) localStorage.removeItem(k);
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

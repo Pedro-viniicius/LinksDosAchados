@@ -35,4 +35,20 @@ Vistas no E2 do plano perfumaria-tres-lojas (Shopee no disparo, 2026-11-03):
 - Linha com placeholder vazio some inteira no `montar_mensagem`: `'{LOJA}|{LINK}'` com loja desconhecida dá `''`, não `'|link'`. Teste o `{LOJA}` vazio em linha separada.
 - Cópia para mutantes do `test_disparo.py` precisa também de `testes/mensagens.test.html`, senão dá 4 ERROR fixos (FileNotFoundError) em toda execução.
 
+Vistas na etapa 2 do plano genero-nas-categorias (migração v2, 2026-11-03):
+
+- `migrar` tem de ler `ESQUEMA_V1`/`ESQUEMA_V2` como globais na hora da chamada: os testes de falha fazem `mock.patch.object(D, 'ESQUEMA_V2', ... + ('CREATE TABLE quebrada (',))`. Uma tupla de passos montada no import não vê o patch.
+- A releitura da versão dentro do `BEGIN IMMEDIATE` deixa de ser mutante equivalente com um proxy de conexão (`__getattr__` repassa; `execute` na 1ª `PRAGMA user_version` deixa outra conexão migrar e devolve a linha velha): sem a releitura o `ALTER` repete e dá "duplicate column".
+- Mutantes equivalentes: rodar o `ESQUEMA_V1` sempre (tudo é `IF NOT EXISTS`) e `versao < 2` sempre (o retorno antecipado já garante).
+- Coluna nova em `regras` aparece no `_regra` (`SELECT *`) como texto cru até entrar em `LISTAS_REGRA`: teste de esquema deve ler a coluna por SQL, não pelo dict, para não quebrar na etapa seguinte.
+- Na cópia do banco real (2026-11-03): v1 com 8.381 itens e 0 em config/numeros/regras/envios.
+
+Vistas na etapa 4 do mesmo plano (público na regra, 2026-11-03):
+
+- Não existe `GET regras/<id>` na `disparo.rota` (só PUT/DELETE: 405). Para ler uma regra pela rota, use `GET regras`.
+- `PUT /api/config/templates` grava o corpo inteiro como valor: mande o objeto dos templates direto (`{"T": "...{LINK}"}`), não `{"valor": ...}`.
+- `Base.item()` do `test_disparo.py` aceita `busca=` (antes gravava sempre `''`). O `test_disparo_qa.py` herda essa `Base`.
+- Mutante equivalente: teto de `generos` em 5 (com a checagem de repetição e só 4 valores válidos, 5 nunca passa).
+- Cópia do banco real: com `cats` Perfumaria + Casa, `[]` elege 3.868, F 629, M 868, U 162 e sem 1.118 perfumes, mais 1.091 da Casa, com cerca de 60 ms por chamada.
+
 **How to apply:** ao mexer em `disparo.py`, `buildMsg` ou nos testes deles. Relacionado: [[escapes-unicode-ferramentas]], [[chrome-headless-testes]], [[servidor-testes]].

@@ -14,8 +14,10 @@ arquivo, toda rota /api/v1/ responde 503. Para trocar o token, troque o arquivo 
 
 O disparo é importado dentro das funções que o usam (criar_banco, rotas e __main__): quem importa
 este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
-mesmo numa cópia sem o disparo.py. O coletar_amazon.py chama criar_banco, então precisa do
-disparo.py ao lado e também migra o banco (só aditivo: cria numeros, regras e envios).
+mesmo numa cópia sem o disparo.py. O coletar_amazon.py e o coletar_shopee.py chamam criar_banco, então
+precisam do disparo.py e do genero.py ao lado (o disparo.py importa o genero no topo) e também migram o
+banco (só aditivo: cria numeros, regras, envios e generos_manuais). O genero.py (público de cada item,
+derivado na leitura) também é importado sob demanda aqui.
 """
 import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
 from datetime import datetime
@@ -43,6 +45,12 @@ ORIGENS_ML = ('https://lista.mercadolivre.com.br', 'https://www.mercadolivre.com
 METODOS_ML = ('GET', 'POST', 'PATCH')
 ROTAS_ML = re.compile(r'\A/api/(items(/\d+)?|ml-sem-afiliado)\Z')
 HOSTS_AMAZON = ('www.amazon.com.br', 'amazon.com.br', 'amzn.to')        # /api/fetch e seus redirects
+# Id de item no caminho: até 19 dígitos (o int() de milhares de dígitos levanta ValueError) e, depois
+# do int(), até MAX_ID_SQLITE (acima disso o sqlite levanta OverflowError). Fora disso, 404.
+ROTA_ITEM = re.compile(r'\A/api/items/([0-9]{1,19})\Z')
+# Correção manual do público (genero.py). Fora de ROTAS_ML de propósito: a origem do ML recebe 403.
+ROTA_GENERO = re.compile(r'\A/api/items/([0-9]{1,19})/genero\Z')
+MAX_ID_SQLITE = 2**63 - 1   # id maior que isso não cabe no INTEGER do sqlite: é item inexistente
 ESTATICO = ('/', '/index.html')
 ESTATICO_TESTES = re.compile(r'\A/testes/[a-z0-9-]+\.test\.html\Z')
 # Preenchidos no __main__; importado como módulo, o transporte é o manual e não há agendador.
@@ -88,7 +96,8 @@ def criar_banco():
     ''')
     con.commit()
     import disparo
-    disparo.migrar(con)   # numeros, regras e envios (PRAGMA user_version 1), só aditiva
+    # PRAGMA user_version 2, só aditiva: v1 cria numeros, regras e envios; v2, generos_manuais e regras.generos
+    disparo.migrar(con)
     con.close()
 
 
@@ -96,10 +105,19 @@ def agora():
     return datetime.now().isoformat(timespec='seconds')
 
 
-def linha_para_item(r):
+def linha_para_item(r, manuais=None):
+    """JSON de um item do /api/items. `manuais` é o genero.manuais(con), lido uma vez por pedido.
+
+    genero e genero_origem vêm do genero.do_item ('manual' quando o dono corrigiu); genero_auto é o
+    que a regra automática dá, para a tela mostrar "Automático (...)" num item corrigido.
+    """
+    import genero
     d = {c: r[c] for c in CAMPOS} if r['tem_dados'] else None
+    g, origem = genero.do_item(r['id'], r['cat'], r['busca'], r['titulo'], manuais)
+    auto = genero.classificar(r['cat'], r['busca'], r['titulo'])[0] if origem == 'manual' else g
     return {'id': r['id'], 'loja': r['loja'], 'item_id': r['item_id'], 'cat': r['cat'],
-            'busca': r['busca'], 'url': r['url'], 'data': d}
+            'busca': r['busca'], 'url': r['url'], 'data': d,
+            'genero': g, 'genero_origem': origem, 'genero_auto': auto}
 
 
 def eh_link_afiliado(url):
@@ -657,10 +675,12 @@ class Handler(SimpleHTTPRequestHandler):
             con.close()
             return self.json([dict(r) for r in rows])
         if caminho == '/api/items':
+            import genero
             con = conectar()
             rows = con.execute('SELECT * FROM items ORDER BY posicao').fetchall()
+            manuais = genero.manuais(con)
             con.close()
-            return self.json([linha_para_item(r) for r in rows])
+            return self.json([linha_para_item(r, manuais) for r in rows])
         if caminho.startswith('/api/config/'):
             con = conectar()
             r = con.execute('SELECT valor FROM config WHERE chave=?', (caminho.split('/')[-1],)).fetchone()
@@ -702,7 +722,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_PATCH(self):
         if self.bloquear() or self.despachar_disparo():
             return
-        m = re.match(r'^/api/items/(\d+)$', self._caminho)
+        m = ROTA_ITEM.match(self._caminho)
         if not m:
             return self.json({'error': 'rota não encontrada'}, 404)
         try:
@@ -720,7 +740,10 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ErroCliente(400, 'url precisa ser link de afiliado (https://meli.la/..., Amazon com tag ou https://s.shopee.com.br/...)')
         except ErroCliente as e:
             return self.json({'error': e.msg}, e.codigo)
-        con = conectar(); iid = int(m.group(1))
+        iid = int(m.group(1))
+        if iid > MAX_ID_SQLITE:
+            return self.json({'error': 'item não encontrado'}, 404)
+        con = conectar()
         if body.get('url'):
             row = con.execute('SELECT loja FROM items WHERE id=?', (iid,)).fetchone()
             # item que não existe (excluído no meio do afiliar() do ML) segue sem erro e devolve null
@@ -736,12 +759,68 @@ class Handler(SimpleHTTPRequestHandler):
             con.execute(f'UPDATE items SET {sets}, tem_dados=1, atualizado_em=? WHERE id=?',
                         [d.get(c) or '' for c in CAMPOS] + [agora(), iid])
         con.commit()
-        r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone(); con.close()
-        return self.json(linha_para_item(r) if r else None)
+        import genero
+        r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()
+        manuais = genero.manuais(con); con.close()
+        return self.json(linha_para_item(r, manuais) if r else None)
+
+    def corrigir_genero(self, iid):
+        """PUT /api/items/<id>/genero com {"genero": um de genero.GENEROS ou null}. null volta ao automático.
+
+        Valor só em item de aba com gênero (senão 400); null apaga a correção em qualquer aba.
+
+        Só grava a correção (generos_manuais) e, se ela mudou alguma linha, o atualizado_em do item, para o
+        cursor da API v1 ver a mudança: url e os demais campos não mudam. As mensagens de erro não repetem o valor recebido.
+        """
+        import genero
+        try:
+            body = self.corpo()
+            if not isinstance(body, dict) or set(body) != {'genero'}:
+                raise ErroCliente(400, 'envie só {"genero": ...}: feminino, masculino, unissex, sem ou null')
+            valor = body['genero']
+            if valor is not None and not (isinstance(valor, str) and valor in genero.GENEROS):
+                raise ErroCliente(400, 'genero deve ser feminino, masculino, unissex, sem ou null')
+        except ErroCliente as e:
+            return self.json({'error': e.msg}, e.codigo)
+        if iid > MAX_ID_SQLITE:
+            return self.json({'error': 'item não encontrado'}, 404)
+        con = conectar()
+        try:
+            # leitura da aba e escrita na mesma transação: um DELETE no meio não deixa correção órfã
+            con.execute('BEGIN IMMEDIATE')
+            r = con.execute('SELECT cat FROM items WHERE id=?', (iid,)).fetchone()
+            if r is None:
+                con.rollback()
+                return self.json({'error': 'item não encontrado'}, 404)
+            # null (apagar a correção) vale em qualquer aba: a correção guardada de um item que saiu da aba
+            # com gênero pode ser apagada; um valor só vale nas abas com gênero
+            if valor is not None and r['cat'] not in genero.ABAS_COM_GENERO:
+                con.rollback()
+                return self.json({'error': 'esta categoria não separa por público'}, 400)
+            quando = agora()
+            mudancas = con.total_changes
+            genero.definir_manual(con, iid, valor, quando)
+            # null sem correção para apagar não muda nada: o item não reaparece no cursor da API v1
+            if con.total_changes != mudancas:
+                con.execute('UPDATE items SET atualizado_em=? WHERE id=?', (quando, iid))
+            con.commit()
+            r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()
+            item = linha_para_item(r, genero.manuais(con))
+        except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
+            if con.in_transaction:
+                con.rollback()
+            self.log_message('"%s" correção de gênero falhou: %s', self.requestline, type(e).__name__)
+            return self.json({'error': 'erro interno ao salvar o público'}, 500)
+        finally:
+            con.close()
+        return self.json(item)
 
     def do_PUT(self):
         if self.bloquear() or self.despachar_disparo():
             return
+        m = ROTA_GENERO.match(self._caminho)
+        if m:
+            return self.corrigir_genero(int(m.group(1)))
         if self._caminho.startswith('/api/config/'):
             try:
                 valor = self.corpo()
@@ -757,10 +836,17 @@ class Handler(SimpleHTTPRequestHandler):
     def do_DELETE(self):
         if self.bloquear() or self.despachar_disparo():
             return
-        m = re.match(r'^/api/items/(\d+)$', self._caminho)
+        m = ROTA_ITEM.match(self._caminho)
         if not m:
             return self.json({'error': 'rota não encontrada'}, 404)
-        con = conectar(); con.execute('DELETE FROM items WHERE id=?', (int(m.group(1)),)); con.commit(); con.close()
+        import genero
+        iid = int(m.group(1))
+        if iid > MAX_ID_SQLITE:
+            return self.json({'error': 'item não encontrado'}, 404)
+        con = conectar()
+        con.execute('DELETE FROM items WHERE id=?', (iid,))
+        genero.definir_manual(con, iid, None, agora())   # apaga a correção do público junto (mesmo commit)
+        con.commit(); con.close()
         return self.json({'ok': True})
 
 

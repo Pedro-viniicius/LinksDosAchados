@@ -127,7 +127,9 @@ async function abrirApp(activeCat) {
 const abas = () => [...W.document.querySelectorAll('#tabs .tab')];
 // Texto do botão sem o contador (o <span class="muted">N</span> no fim).
 const nomeDaAba = b => b.firstChild.textContent.replace(/\s+$/, '');
-const contadorDaAba = b => +b.querySelector('.muted').textContent;
+// o contador tem separador de milhar ("3.110", como o controle Público)
+const contadorDaAba = b => +b.querySelector('.muted').textContent.replace(/\./g, '');
+const milhar = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 const abaAtiva = () => abas().filter(b => b.classList.contains('active'));
 const abaPorNome = nome => abas().find(b => b.dataset.c === nome);
 const catAtiva = () => W.eval('activeCat');
@@ -196,7 +198,7 @@ teste('CA10: existe um botão com o texto exato "Black Friday | Eletrônicos" e 
   const b = abaPorNome(ELETRONICOS);
   afirma(b, 'não achei a aba "' + ELETRONICOS + '"');
   igual(nomeDaAba(b), ELETRONICOS, 'texto do botão (sem o contador)');
-  igual(b.textContent.replace(/\s+/g, ' ').trim(), ELETRONICOS + ' ' + daCat(ELETRONICOS).length, 'texto + contador');
+  igual(b.textContent.replace(/\s+/g, ' ').trim(), ELETRONICOS + ' ' + milhar(daCat(ELETRONICOS).length), 'texto + contador');
   igual(contadorDaAba(b), daCat(ELETRONICOS).length);
   igual(b.getAttribute('aria-pressed'), 'false');
   // todas as abas: texto exato e contador igual ao do banco
@@ -329,11 +331,25 @@ teste('CA10: com activeCat "Black Friday | Eletrônicos" guardado, o front reabr
   igual([...W.document.getElementById('addCat').options].map(o => o.textContent), catsDaApi());
 });
 
-teste('CA10: o cabeçalho conta o total e as lojas, e as abas finais somam o total', async () => {
+// Lojas na ordem do app e o nome exibido (escritos aqui de propósito: o teste não lê o LOJA do index.html).
+const LOJAS_NOME = [['amazon', 'Amazon'], ['ml', 'Mercado Livre'], ['shopee', 'Shopee']];
+
+teste('CA10: o contador conta o total e cada loja que tem item (loja com zero some) e as abas somam o total', async () => {
   await abrirApp();
-  const txt = W.document.getElementById('count').textContent;
-  igual(txt, API.length + ' itens no total · ' + API.filter(i => i.loja === 'amazon').length + ' Amazon · ' +
-    API.filter(i => i.loja === 'ml').length + ' Mercado Livre');
+  const el = W.document.getElementById('count');
+  // o contador mora logo abaixo das abas (M1), fora do cabeçalho
+  afirma(el.compareDocumentPosition(W.document.getElementById('tabs')) & W.Node.DOCUMENT_POSITION_PRECEDING, '#count tem que vir depois de #tabs');
+  afirma(!el.closest('header'), '#count saiu do cabeçalho');
+  // esperado a partir das lojas presentes nos itens da API
+  const lojasDosItens = new Set(API.map(i => i.loja));
+  afirma([...lojasDosItens].every(k => LOJAS_NOME.some(([c]) => c === k)), 'loja desconhecida nos itens: ' + [...lojasDosItens]);
+  const presentes = LOJAS_NOME.filter(([k]) => API.some(i => i.loja === k));
+  afirma(presentes.length >= 2 && presentes.every(([k]) => API.filter(i => i.loja === k).length > 0), 'a cópia deveria ter ao menos duas lojas');
+  const partes = [API.length + ' itens no total', ...presentes.map(([k, nome]) => API.filter(i => i.loja === k).length + ' ' + nome)];
+  igual(el.textContent, partes.join(' · '));
+  igual(presentes.reduce((s, [k]) => s + API.filter(i => i.loja === k).length, 0), API.length, 'as lojas somam o total');
+  // loja sem item não aparece
+  for (const [k, nome] of LOJAS_NOME.filter(([k]) => !lojasDosItens.has(k))) afirma(!el.textContent.includes(nome), 'loja sem item aparece no contador: ' + nome);
 });
 
 // ================================================================ fecho: a API real não mudou

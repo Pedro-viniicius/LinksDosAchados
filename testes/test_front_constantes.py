@@ -33,6 +33,7 @@ os.environ['no_proxy'] = ''
 sys.path.insert(0, RAIZ)
 import servidor as S   # noqa: E402
 import disparo as D    # noqa: E402
+import genero as G      # noqa: E402
 
 with open(os.path.join(RAIZ, 'index.html'), encoding='utf-8') as _f:
     HTML = _f.read()
@@ -111,6 +112,27 @@ class ConstantesDoFront(unittest.TestCase):
         self.assertEqual(list(loja), list(D.LOJAS), 'mesmas lojas, na mesma ordem')
         self.assertEqual(loja, D.NOMES_LOJA)
         self.assertEqual(set(loja), set(S.LOJAS))
+
+    def test_abas_com_genero_e_valores_iguais_ao_genero_py(self):
+        """Etapa 6 do plano genero-nas-categorias: o front guarda a lista de abas com público e os valores
+        de item.genero; o servidor (genero.py) tem os mesmos. Troca num lado só reprova aqui."""
+        self.assertEqual(tuple(js_json('ABAS_COM_GENERO', linha('ABAS_COM_GENERO'))), G.ABAS_COM_GENERO)
+        self.assertEqual(tuple(js_json('GENEROS', linha('GENEROS'))), G.GENEROS)
+        nomes = js_json('NOME_GENERO', linha('NOME_GENERO'))
+        self.assertEqual(list(nomes), list(G.GENEROS), 'um nome para cada valor, na ordem do servidor')
+        opcoes = js_json('OPCOES_PUBLICO', linha('OPCOES_PUBLICO'))
+        self.assertEqual([k for k, _ in opcoes], ['todos', *G.GENEROS])
+        self.assertEqual({k: t for k, t in opcoes if k != 'todos'}, nomes)
+        # abaTemGenero concorda com a constante do servidor para cada aba do buscas.json
+        with open(os.path.join(RAIZ, 'buscas.json'), encoding='utf-8') as f:
+            abas = list(json.load(f))
+        for a in G.ABAS_COM_GENERO:
+            self.assertIn(a, abas, 'a aba com público existe no buscas.json')
+        m = re.search(r'^function abaTemGenero\(cat\)\{.*\}$', HTML, re.M)   # numa linha só, declarada com function
+        self.assertTrue(m, 'index.html sem a função abaTemGenero numa linha só')
+        codigo = '\n'.join([linha('ABAS_COM_GENERO'), m.group(0)])
+        respostas = js_json('ABAS.map(abaTemGenero)', 'const ABAS = ' + json.dumps(abas + ['', 'perfumes e perfumaria']) + ';', codigo)
+        self.assertEqual(respostas, [a in G.ABAS_COM_GENERO for a in abas] + [False, False])
 
 
 if __name__ == '__main__':

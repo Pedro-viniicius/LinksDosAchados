@@ -24,13 +24,15 @@ Use sempre proxies mortos, para nenhum teste sair para a rede:
 
 ```
 export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 ftp_proxy=http://127.0.0.1:9
-python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py
+python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py
 python3 testes/test_servidor.py -v
 python3 testes/test_migrar_categorias.py -v
 python3 testes/test_coletar_amazon.py -v
 python3 testes/test_coletar_shopee.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
+python3 testes/test_genero.py -v
+python3 testes/test_genero_servidor.py -v
 python3 testes/test_classificar_lista.py -v
 python3 testes/test_api_ofertas.py -v
 python3 testes/test_api_ofertas_servidor.py -v
@@ -59,6 +61,7 @@ PORTA=8766 node testes/rodar.mjs abas
 PORTA=8766 node testes/rodar.mjs copiar-imagem
 PORTA=8766 node testes/rodar.mjs abrir-e-adicionar
 PORTA=8766 node testes/rodar.mjs mensagens
+PORTA=8766 node testes/rodar.mjs genero
 ```
 
 A página `disparo` testa a tela do disparo com um servidor falso dentro dela: só lê os itens do servidor sob teste. Suba esse servidor com o agendador desligado, para nenhuma regra gerar envio durante o teste:
@@ -135,7 +138,7 @@ python3 migrar_categorias.py               # backup verificado + migração numa
 python3 migrar_categorias.py --restaurar backups/<arquivo>.db
 ```
 
-Ele recusa se o servidor estiver no ar e, antes de sobrescrever, guarda o estado atual em `backups/` (dá para desfazer o desfazer). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`. Para um ajuste pontual, use "Mover para" no site.
+Ele recusa se o servidor estiver no ar e, antes de sobrescrever, guarda o estado atual em `backups/` (dá para desfazer o desfazer). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`. Para um ajuste pontual, use "Mover para" no site.
 
 **Lista WhatsApp.** Os 74 itens da aba "Lista WhatsApp" (vindos do chat) são todos de eletrônicos. `classificar_lista.py` os move para "Black Friday | Eletrônicos" e troca a `busca` pelo subtema de cada um, segundo `lista_whatsapp.json`. Rode **logo depois** do `migrar_categorias.py` (é ele que cria a aba de destino) e **antes de cadastrar qualquer número** no disparo:
 
@@ -268,7 +271,7 @@ Os nomes dos campos e das ordens da API vêm de fontes de terceiros e ainda prec
 **Reverter:**
 
 - Itens pontuais: exclua pelo site (filtre por "Shopee").
-- Tudo o que a coleta trouxe: pare o `servidor.py` e use o backup de antes da coleta com `python3 migrar_categorias.py --restaurar backups/<arquivo>.db`. Ele devolve o banco **inteiro**: números, regras e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero (o estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever).
+- Tudo o que a coleta trouxe: pare o `servidor.py` e use o backup de antes da coleta com `python3 migrar_categorias.py --restaurar backups/<arquivo>.db`. Ele devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero (o estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever).
 - Voltar o código pelo git é seguro: não há migração de esquema, e o código antigo não envia item da Shopee no disparo.
 - Para esquecer o progresso e recoletar um termo, apague a linha dele em `coleta_shopee_feitos.txt`.
 
@@ -316,10 +319,10 @@ Gerar links de verdade também os adiciona a "Minhas recomendações" da conta d
 
 Regras do dono que montam uma **fila de ofertas** nos horários combinados. Nesta entrega o transporte é **manual**: o servidor cria as mensagens e você as copia da fila (mensagem e imagem) para o WhatsApp e clica em "Marcar como enviado" ou "Pular". O envio automático para o grupo fica para uma entrega 2. Plano: `docs/produto/planos/disparo-automatico.md`.
 
-**Primeira vez:** faça um backup (seção "Backup") e reinicie o `servidor.py`. Ele cria as tabelas `numeros`, `regras` e `envios` e grava `PRAGMA user_version = 1`; a migração só acrescenta, não mexe em nada existente. O botão "Disparo automático" fica no topo da página principal.
+**Primeira vez:** faça um backup (seção "Backup") e reinicie o `servidor.py`. Ele cria as tabelas `numeros`, `regras` e `envios` (versão 1 do esquema) e, na versão 2, a tabela `generos_manuais` e a coluna `regras.generos` (veja "Público (gênero)"), e grava `PRAGMA user_version = 2`; a migração só acrescenta, não mexe em nada existente. Ela acontece quando o servidor reinicia ou quando uma coleta roda (`coletar_amazon.py` e `coletar_shopee.py` também abrem o banco). O botão "Disparo automático" fica no topo da página principal.
 
 1. **Número e grupo** (`#numeros`, "Números de WhatsApp"): rótulo, telefone com DDI e DDD, só números (ex.: 55 + DDD + número; opcional no envio manual), grupo de destino, código do grupo (opcional) e limite por dia (1 a 200, somando todas as regras do número). O telefone e o código do grupo ficam só no banco local, vão só no corpo JSON (nunca em URL nem em log) e aparecem mascarados na tela.
-2. **Regra** (`#disparo/nova`; editar: `#disparo/regra/<id>`): nome, número, categorias (as abas que existem), lojas (chips "Lojas": Amazon, Mercado Livre e/ou Shopee; ao menos uma), ordem, filtros opcionais (palavras no título, desconto mínimo em %), dias e horários, mensagens por horário (1 a 10), máximo por dia, prazo para não repetir (N dias ou nunca), template (os de "Editar templates"; precisa ter `{LINK}`) e foto (item sem imagem sai só com texto). **A regra nasce pausada:** confira a prévia (a lista de mensagens que ela mandaria agora, sem gravar nada, no fim do formulário) e use "Ativar" quando quiser começar.
+2. **Regra** (`#disparo/nova`; editar: `#disparo/regra/<id>`): nome, número, categorias (as abas que existem), lojas (chips "Lojas": Amazon, Mercado Livre e/ou Shopee; ao menos uma), ordem, público ("Todos", "Feminino", "Masculino" ou "Unissex"; veja "Público (gênero)"), filtros opcionais (palavras no título, desconto mínimo em %), dias e horários, mensagens por horário (1 a 10), máximo por dia, prazo para não repetir (N dias ou nunca), template (os de "Editar templates", que agora fica só no formulário da regra; precisa ter `{LINK}`) e foto (item sem imagem sai só com texto). **A regra nasce pausada:** confira a prévia (a lista de mensagens que ela mandaria agora, sem gravar nada, no fim do formulário) e use "Ativar" quando quiser começar.
 3. **Fila** (seção "Para enviar", em `#disparo`): "Copiar mensagem", "Copiar imagem", "Marcar como enviado" e "Pular". O botão "Disparar agora" da regra processa um horário na hora, com as mesmas regras de seleção e limites.
 4. **Histórico** (`#historico`): envios por período e status (na fila, enviado, pulado, incerto, falhou, expirado).
 
@@ -343,7 +346,7 @@ Regras do dono que montam uma **fila de ofertas** nos horários combinados. Nest
 - Valem ao mesmo tempo "mensagens por horário", "máximo por dia" (por regra) e o "limite por dia" do número. O horário é o do computador.
 - **Lojas da regra:** a regra nova já nasce com as três lojas marcadas. As regras antigas continuam como foram gravadas (Amazon e Mercado Livre) e só passam a incluir a Shopee se você marcar o chip "Lojas" ao editar. A loja do item aparece na prévia, na fila e no histórico (o item excluído fica sem o rótulo), e `{LOJA}` no template vira "Shopee" para esses itens.
 - Os preços são os da última coleta; o disparo não recoleta nada. O template com aviso de preço ajuda.
-- Quando um horário não gera nenhuma mensagem, a regra mostra um aviso com o motivo: nenhum item casa com os filtros (acontece quando uma aba é renomeada), todos os elegíveis já foram enviados no prazo de repetição, ou o template tem um link que não é o do item. O aviso some no próximo horário que mandar.
+- Quando um horário não gera nenhuma mensagem, a regra mostra um aviso com o motivo: nenhum item casa com os filtros, incluindo o público (acontece quando uma aba é renomeada), todos os elegíveis já foram enviados no prazo de repetição, ou o template tem um link que não é o do item. O aviso some no próximo horário que mandar.
 - Título com algo parecido com um endereço de site (ex.: `i.Phone`, `55UN85CBPSA.BWZ`) é recusado por segurança e esse item nunca sai; são poucos (14 no banco de hoje) e ficam só no log do servidor.
 
 Variáveis de ambiente (todas opcionais):
@@ -353,4 +356,36 @@ Variáveis de ambiente (todas opcionais):
 - `ACHADINHOS_TRANSPORTE`: `manual` (padrão) ou `falso`. O `falso` é só para teste e exige `ACHADINHOS_TRANSPORTE_ARQUIVO`.
 - `ACHADINHOS_TRANSPORTE_ARQUIVO`: arquivo JSONL onde o transporte falso grava cada envio. Nunca aponte para um arquivo que importa.
 
-**Reverter:** `ACHADINHOS_DISPARO=0` para o agendador sem mexer em nada. As tabelas novas ficam ociosas e o código antigo as ignora, então voltar a versão do código é seguro; para devolver também os dados, use um backup (seção "Backup"). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`.
+**Reverter:** `ACHADINHOS_DISPARO=0` para o agendador sem mexer em nada. As tabelas novas ficam ociosas e o código antigo as ignora, então voltar a versão do código é seguro; para devolver também os dados, use um backup (seção "Backup"). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`.
+
+## Público (gênero)
+
+Separa as ofertas em **feminino**, **masculino**, **unissex** e **sem gênero**, onde isso faz sentido. Plano: `docs/produto/planos/genero-nas-categorias.md`. A regra mora no `genero.py` (só biblioteca padrão) e vale igual para a página, o disparo e a API.
+
+**Em quais abas vale:** hoje só em "Perfumes e Perfumaria". Nas outras (eletrônicos, casa, eletrodomésticos) o público não existe: todo item é "sem gênero" e nada filtra por público. Em perfumaria, "sem gênero" é o que de fato não tem público (hidratante, sabonete, óleo, infantil).
+
+**Como o produto é classificado.** Não se grava nada no item: o público é calculado a cada leitura, então item novo (de qualquer coleta ou colado no site) já sai classificado, sem passo extra, e uma mudança na regra vale na hora. A ordem é esta, e a primeira que decidir vence:
+
+1. **Correção manual** do dono (veja abaixo).
+2. **Título:** palavras como "feminino", "masculino", "unissex" (com variações como "fem", "masc", "women", "men"). Se o título traz as duas (kit "Feminino e Masculino"), é unissex.
+3. **Linha de produto conhecida no título**, quando o título não diz o público: por exemplo Invictus, Sauvage e One Million são masculinos, La Vie Est Belle é feminino e CK One é unissex. Título com vinho, bota ou sapato não passa por esta etapa.
+4. **Termo de busca** que trouxe o item (por exemplo, "Perfume feminino importado"), só como último recurso.
+
+O termo de busca sozinho erra: "Natura Essencial" tem itens dos dois públicos, então o título manda e a busca só completa. Quando a regra erra, corrija o item à mão.
+
+**Filtrar na página:** numa aba com público (hoje só a Perfumaria) aparece o controle "Público": Todos, Feminino, Masculino, Unissex e, só se houver itens assim, "Sem gênero", cada um com a sua contagem (que respeita os filtros de loja e de título). A escolha fica lembrada por aba no navegador. O selo com o público aparece no cartão só em "Todos". Em abas sem público o controle não aparece.
+
+**Corrigir à mão:** no cartão, abra "Mais ações" e use o campo "Público" (Feminino, Masculino, Unissex, Sem gênero ou "Automático"). "Automático" apaga a correção e volta à regra (a opção mostra o que a regra daria, por exemplo "Automático (Feminino)"). O cartão corrigido ganha o selo "corrigido". A correção vale na página, no disparo e na API, fica guardada na tabela `generos_manuais` e só é aceita pela página local (a rota é `PUT /api/items/<id>/genero`; o Mercado Livre pelo console não consegue gravar). Se o item sair da aba, o público dele volta a "sem gênero", mas a correção continua guardada. Item de aba sem público recusa a correção.
+
+**No disparo:** o formulário da regra tem o campo "Público" (Todos, Feminino, Masculino ou Unissex). "Todos" não filtra. O filtro vale **só para as categorias que separam por público**: numa regra com Perfumaria e Casa e Decoração, "Feminino" leva só os perfumes femininos e a Casa inteira. Regra gravada antes desta versão continua elegendo exatamente os mesmos itens. A prévia, a contagem e o aviso de "nenhum item casa com os filtros" já levam o público em conta.
+
+**Na API v1:** cada oferta traz `genero`, `/api/v1/ofertas` aceita o filtro `genero` (repetível) e `/api/v1/categorias` traz a contagem por público. Lá o filtro é exato (`genero=feminino` não traz geladeira). Campos, valores, erros e o caso do `atualizado_em` estão em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+
+**Incluir uma aba nova com público:** a lista de abas existe em dois lugares, e os dois precisam ter o nome exato da aba (o mesmo de `buscas.json`):
+
+1. `ABAS_COM_GENERO` em `genero.py` (servidor, disparo e API);
+2. `ABAS_COM_GENERO` no `index.html` (controle, selo e campo de correção da página).
+
+O `python3 testes/test_front_constantes.py -v` reprova se as duas ficarem diferentes, e o `test_genero.py` confere que cada aba da constante existe em `buscas.json`. Renomear a aba "Perfumes e Perfumaria" tem o mesmo cuidado: o público some até as constantes serem atualizadas.
+
+**Esquema (versão 2):** a migração cria a tabela `generos_manuais` e a coluna `regras.generos` (padrão `[]`, "todos"). Só acrescenta, é idempotente e acontece quando o servidor reinicia ou uma coleta roda. **Faça um backup antes** (seção "Backup"). Voltar a versão do código é seguro: o código antigo ignora a tabela e a coluna novas. O `migrar_categorias.py --restaurar` devolve o banco inteiro e apaga as correções de público feitas depois do backup.

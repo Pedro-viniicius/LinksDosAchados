@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Integração real: Público (gênero) pela tela</title>
+<!--
+  Integração REAL do Público (gênero) com o servidor (plano docs/produto/planos/genero-nas-categorias.md, CA3, CA4 e CA5).
+  Diferente de genero.test.html e genero-qa.test.html, aqui NADA é falso: o iframe do /index.html fala com a API de verdade e
+  GRAVA no banco (correção do público de um item, número e regra do disparo). Por isso só roda contra um servidor de teste
+  com uma CÓPIA do banco:
+
+    python3 - <<EOF   # copia o banco sem tocar nele (origem somente leitura)
+    import sqlite3; o = sqlite3.connect('file:achadinhos.db?mode=ro', uri=True); d = sqlite3.connect('/tmp/x.db'); o.backup(d)
+    EOF
+    ACHADINHOS_DB=/tmp/x.db ACHADINHOS_DISPARO=0 ACHADINHOS_PORTA=8767 python3 servidor.py &
+    PORTA=8767 node testes/rodar.mjs genero-integracao
+
+  Guardas: recusa a porta 8765 e recusa um banco que já tenha número ou regra de disparo. Ao fim o teste devolve tudo:
+  o item volta ao automático, e a regra e o número que criou são apagados; a última verificação compara o /api/items inteiro
+  com o do início. ACHADINHOS_DISPARO=0 desliga o agendador.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script, para um grep no texto da página
+  não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Integração real: Público (gênero) pela tela</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 800, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const PERF = 'Perfumes e Perfumaria';
+const FONE = '00000000002', GID = '120363012345678902@g.us';
+const GENEROS_OK = ['feminino', 'masculino', 'unissex', 'sem'];
+let W, ORIG;
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => (el ? el.textContent : '').replace(/\s+/g, ' ').trim();
+const toastTxt = () => txt(q('#toast'));
+const tela = () => W.document.getElementById('telaDisparo');
+const api = async (caminho, metodo = 'GET', corpo) => {
+  const r = await fetch('/api/' + caminho, { method: metodo, headers: { 'Content-Type': 'application/json' }, body: corpo === undefined ? undefined : JSON.stringify(corpo) });
+  const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch (e) { /* texto puro */ }
+  return { status: r.status, dados: d, texto: t };
+};
+const radios = () => qa('#publicoBox input[name="publico"]');
+const contagens = () => radios().map(i => +i.nextElementSibling.querySelector('.num').textContent.replace(/\./g, ''));
+const escolherPublico = v => { const r = radios().find(i => i.value === v); afirma(r, 'sem a opção ' + v); r.click(); };
+const escolher = (select, valor) => { select.value = valor; select.dispatchEvent(new W.Event('change', { bubbles: true })); };
+const aba = nome => qa('#tabs .tab').find(b => b.dataset.c === nome);
+const selos = c => [...c.querySelectorAll('.selo-genero')];
+const semAcento = s => String(s ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+
+async function carregarApp(cat) {
+  localStorage.removeItem('activeCat');
+  for (const k of Object.keys(localStorage)) if (k.startsWith('genero:')) localStorage.removeItem(k);
+  if (cat) localStorage.setItem('activeCat', cat);
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  ORIG = W.fetch.bind(W);
+  W.open = () => null;
+  W.prompt = () => null;
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0, 'o index.html carregar os itens');
+}
+const carregou = () => { const c = q('#dspCorpo'); return !!c && !/Carregando…/.test(c.textContent); };
+async function abrir(hash) {
+  const antes = q('#dspTitulo');
+  if (W.location.hash === hash) W.eval('rotear()'); else W.location.hash = hash;
+  await esperar(() => !tela().hidden && q('#dspTitulo') && q('#dspTitulo') !== antes && carregou(), 'a tela ' + hash + ' carregar');
+}
+function digitar(sel, valor) {
+  const el = typeof sel === 'string' ? q(sel) : sel;
+  afirma(el, 'campo não existe: ' + sel);
+  el.value = valor; el.dispatchEvent(new W.Event('input', { bubbles: true })); el.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+const marcar = (grupo, valor, v = true) => { const i = qa(grupo + ' input').find(x => x.value === String(valor)); afirma(i, 'chip ' + valor + ' não existe em ' + grupo); if (i.checked !== v) i.click(); };
+const clicar = sel => { const b = typeof sel === 'string' ? q(sel) : sel; afirma(b, 'botão não existe: ' + sel); b.click(); };
+const acao = (nome, id) => q('[data-acao="' + nome + '"]' + (id !== undefined ? '[data-id="' + id + '"]' : ''));
+
+let ANTES = null, ITENS = null, X = null, NOVO = null, PALAVRA = null, NUM = null, REGRA = null;
+const itensPerf = () => ITENS.filter(i => i.cat === PERF);
+const contagemReal = lista => {
+  const c = { todos: lista.length, feminino: 0, masculino: 0, unissex: 0, sem: 0 };
+  for (const i of lista) c[i.genero]++;
+  return [c.todos, c.feminino, c.masculino, c.unissex].concat(c.sem ? [c.sem] : []);
+};
+const relido = async () => JSON.parse((await api('items')).texto);
+
+// ================================================================ roteiro (os testes dependem uns dos outros, em ordem)
+teste('guarda: servidor de teste (não é a 8765), banco sem número nem regra, e um item de Perfumes para corrigir', async () => {
+  afirma(location.port !== '8765', 'recusado: esta página grava no banco; rode num servidor de teste com cópia do banco');
+  const n = await api('disparo/numeros'), r = await api('disparo/regras');
+  igual([n.status, r.status], [200, 200], 'o servidor tem as rotas de disparo?');
+  igual([n.dados, r.dados], [[], []], 'banco sem números nem regras');
+  igual((await api('disparo/status')).dados.agendador, 'desligado', 'ACHADINHOS_DISPARO=0');
+  ANTES = (await api('items')).texto;
+  ITENS = JSON.parse(ANTES);
+  afirma(ITENS.every(i => GENEROS_OK.includes(i.genero)), 'o servidor não devolve genero em todo item');
+  const perf = itensPerf();
+  afirma(perf.length > 50, 'a cópia precisa ter a aba Perfumes');
+  // item da Amazon, classificado pela busca (mostra o "Automático (…)" certo), com título único e um trecho que casa com poucos itens
+  const casam = p => perf.filter(i => semAcento(i.data && i.data.titulo).includes(semAcento(p))).length;
+  X = perf.find(i => i.loja === 'amazon' && i.genero_origem === 'busca' && i.genero !== 'unissex' && i.data && i.data.titulo && i.data.preco
+    && /^[\x20-\x7e]{20,}$/.test(i.data.titulo.slice(0, 40)) && !i.data.titulo.slice(0, 40).includes(',') && casam(i.data.titulo.slice(0, 40).trim()) <= 3);
+  afirma(X, 'achar um item de Perfumes (Amazon, origem busca, título único) para corrigir');
+  PALAVRA = X.data.titulo.slice(0, 40).trim();
+  NOVO = X.genero === 'feminino' ? 'masculino' : 'feminino';
+});
+
+teste('CA3: o controle "Público" mostra as contagens reais do servidor e escolher um público lista exatamente os itens daquele público, na ordem', async () => {
+  await carregarApp(PERF);
+  igual(contagens(), contagemReal(itensPerf()));
+  escolherPublico('feminino');
+  const esperado = itensPerf().filter(i => i.genero === 'feminino').slice(0, 24).map(i => i.data && i.data.titulo);
+  igual(qa('#grid .card .name').map(e => e.textContent), esperado);
+  igual(qa('#grid .selo-genero').length, 0, 'sem selo com público escolhido');
+  escolherPublico('todos');
+  afirma(qa('#grid .selo-genero').length > 0, 'em Todos os cartões com público têm selo');
+  const buscasF = [...new Set(itensPerf().filter(i => i.genero === 'feminino').map(i => i.busca).filter(Boolean))];
+  escolherPublico('feminino');
+  igual([...q('#fBusca').options].length, buscasF.length + 1, 'o select de buscas só lista as buscas do público');
+});
+
+teste('CA4: corrigir o público de um item pela tela grava de verdade (PUT real), muda só esse item e a tela atualiza selo, contagens e aviso', async () => {
+  await carregarApp(PERF);
+  digitar('#fTexto', X.data.titulo);
+  const c = qa('#grid .card').find(k => k.querySelector('.name') && k.querySelector('.name').textContent === X.data.titulo);
+  afirma(c, 'o cartão do item não está na lista');
+  const sel = c.querySelector('select.gen');
+  igual(sel.options[0].textContent, 'Automático (' + { feminino: 'Feminino', masculino: 'Masculino' }[X.genero] + ')');
+  igual(sel.value, '');
+  escolher(sel, NOVO);
+  await esperar(() => !sel.disabled && selos(c).some(s => /corrigido/.test(s.textContent)), 'a resposta do servidor e o selo');
+  igual(toastTxt(), 'Público salvo: ' + { feminino: 'Feminino', masculino: 'Masculino' }[NOVO] + '.');
+  const depois = await relido();
+  const x = depois.find(i => i.id === X.id);
+  igual([x.genero, x.genero_origem, x.genero_auto], [NOVO, 'manual', X.genero]);
+  const outros = ITENS.filter(i => i.id !== X.id), outrosDepois = depois.filter(i => i.id !== X.id);
+  igual(outrosDepois.length, outros.length);
+  igual(JSON.stringify(outrosDepois), JSON.stringify(outros), 'os outros itens não mudaram em nada');
+  igual({ ...x, genero: X.genero, genero_origem: X.genero_origem }, X, 'o próprio item só mudou nos campos de público');
+  digitar('#fTexto', '');
+  igual(contagens().slice(0, 4), contagemReal(depois.filter(i => i.cat === PERF)).slice(0, 4), 'contagens da tela = contagens do servidor');
+});
+
+teste('CA4: a correção persiste depois de recarregar a página: o selo "corrigido", o campo e as contagens vêm do servidor', async () => {
+  await carregarApp(PERF);
+  digitar('#fTexto', X.data.titulo);
+  const c = qa('#grid .card').find(k => k.querySelector('.name') && k.querySelector('.name').textContent === X.data.titulo);
+  afirma(c, 'cartão');
+  igual(selos(c)[0].innerText.trim(), { feminino: 'FEMININO', masculino: 'MASCULINO' }[NOVO] + ' · CORRIGIDO');
+  igual(c.querySelector('select.gen').value, NOVO);
+  igual(c.querySelector('select.gen').options[0].textContent, 'Automático (' + { feminino: 'Feminino', masculino: 'Masculino' }[X.genero] + ')');
+  digitar('#fTexto', '');
+  escolherPublico(NOVO);
+  afirma(qa('#grid .selo-genero').some(s => /corrigido/.test(s.textContent)) || W.eval('filtrada().some(i => i.id === ' + X.id + ')'), 'o item corrigido está no público novo');
+  igual(W.eval('filtrada().some(i => i.id === ' + X.id + ')'), true);
+  escolherPublico(X.genero);
+  igual(W.eval('filtrada().some(i => i.id === ' + X.id + ')'), false, 'e saiu do público automático');
+});
+
+teste('CA4/CA5: o disparo usa a correção: a prévia com o público novo traz o item, com o automático não traz, e com "todos" traz', async () => {
+  if ((await api('config/templates')).dados == null) {   // o que a tela faz na 1ª vez que abre o formulário
+    afirma((await api('config/templates', 'PUT', W.eval('DEFAULT_TEMPLATES'))).status === 200, 'gravar os templates padrão');
+  }
+  const n = await api('disparo/numeros', 'POST', { nome: 'QA gênero', telefone: FONE, grupo_nome: 'Grupo QA', grupo_id: GID, limite_diario: 5, ativo: 1 });
+  igual(n.status, 200, 'criar o número: ' + n.texto);
+  NUM = n.dados;
+  const base = { nome: 'Prévia', numero_id: NUM.id, cats: [PERF], lojas: ['amazon', 'ml', 'shopee'], palavras: [PALAVRA], template: 'Template 1', horarios: ['09:00'], n: 20 };
+  const pks = async generos => { const r = await api('disparo/previa', 'POST', { ...base, generos }); igual(r.status, 200, r.texto); return r.dados.map(i => i.item_pk); };
+  afirma((await pks([NOVO])).includes(X.id), 'a prévia do público novo (' + NOVO + ') não traz o item corrigido');
+  afirma(!(await pks([X.genero])).includes(X.id), 'a prévia do público automático (' + X.genero + ') ainda traz o item corrigido');
+  afirma((await pks([])).includes(X.id), 'a prévia de "todos" não traz o item');
+  afirma((await pks(['unissex', 'sem'])).every(pk => pk !== X.id), 'outro público qualquer não pode trazer o item');
+});
+
+teste('CA5: regra criada pela tela com Público escolhido: o contador do formulário bate, a prévia respeita o público, o servidor guarda `generos` e o cartão cita o público', async () => {
+  await carregarApp(PERF);
+  await abrir('#disparo');
+  clicar(acao('nova-regra'));
+  await esperar(() => q('#f-nome'), 'formulário da regra');
+  digitar('#f-nome', 'Regra QA público');
+  digitar('#f-numero', String(NUM.id));
+  marcar('#f-cats', PERF);
+  marcar('#f-publico', NOVO);
+  // só com o público (sem palavras): o contador tem de ser o do público, não o da categoria inteira
+  const dados = i => i.data && i.data.titulo && i.data.preco;
+  const doPublico = (await relido()).filter(i => i.cat === PERF && i.genero === NOVO && dados(i)).length;
+  const daCategoria = (await relido()).filter(i => i.cat === PERF && dados(i)).length;
+  afirma(doPublico < daCategoria, 'precondição: o público filtra algo na cópia do banco');
+  await esperar(() => txt(q('#f-contador')).startsWith('Cerca de ' + doPublico + ' '), 'contador só com o público (' + doPublico + ', não ' + daCategoria + '): ' + txt(q('#f-contador')));
+  digitar('#f-palavras', PALAVRA);
+  const quer = i => i.cat === PERF && i.genero === NOVO && i.data && i.data.titulo && i.data.preco && semAcento(i.data.titulo).includes(semAcento(PALAVRA));
+  const esperados = (await relido()).filter(quer);
+  afirma(esperados.some(i => i.id === X.id), 'o item corrigido tem de estar entre os esperados');
+  await esperar(() => /Cerca de|Nenhum item/.test(txt(q('#f-contador'))), 'contador de itens');
+  afirma(txt(q('#f-contador')).startsWith('Cerca de ' + esperados.length + ' ' + (esperados.length === 1 ? 'item combina' : 'itens combinam')), 'contador: ' + txt(q('#f-contador')) + ' (esperado ' + esperados.length + ')');
+  await esperar(() => q('#dspPrevia pre.msg'), 'prévia do servidor');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && q('[data-regra]'), 'salvou');
+  const regras = (await api('disparo/regras')).dados;
+  igual(regras.length, 1);
+  REGRA = regras[0];
+  igual([REGRA.cats, REGRA.generos, REGRA.palavras], [[PERF], [NOVO], [PALAVRA]]);
+  afirma(txt(q('[data-regra] .meta')).includes({ feminino: 'Feminino', masculino: 'Masculino' }[NOVO]), 'o cartão cita o público: ' + txt(q('[data-regra] .meta')));
+  const previa = (await api('disparo/previa', 'POST', { ...REGRA, n: 20 })).dados;
+  afirma(previa.length >= 1 && previa.length <= esperados.length, 'prévia da regra gravada: ' + previa.length + ' de ' + esperados.length);
+  const porId = Object.fromEntries((await relido()).map(i => [i.id, i]));
+  afirma(previa.every(p => porId[p.item_pk].genero === NOVO), 'a prévia da regra só traz itens do público da regra');
+  afirma(previa.some(p => p.item_pk === X.id), 'o item corrigido entra na prévia da regra');
+});
+
+teste('CA5: reabrir a regra mostra o público marcado; voltar a "Todos" e salvar grava `generos` vazio e o cartão deixa de citar o público', async () => {
+  await abrir('#disparo/regra/' + REGRA.id);
+  await esperar(() => q('#f-publico'), 'formulário');
+  igual(qa('#f-publico input').find(i => i.checked).value, NOVO);
+  igual(W.eval('lerFormRegra()').generos, [NOVO]);
+  marcar('#f-publico', 'todos');
+  igual(W.eval('lerFormRegra()').generos, []);
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && q('[data-regra]'), 'salvou');
+  const r = (await api('disparo/regras')).dados[0];
+  igual(r.generos, []);
+  igual([r.id, r.cats, r.palavras], [REGRA.id, [PERF], [PALAVRA]], 'o resto da regra não mudou');
+  afirma(!/Feminino|Masculino/.test(txt(q('[data-regra] .meta'))), 'o cartão ainda cita o público: ' + txt(q('[data-regra] .meta')));
+});
+
+teste('CA4: voltar a "Automático" pela tela envia null; o item volta ao que era e o /api/items inteiro fica igual ao do início', async () => {
+  await carregarApp(PERF);
+  digitar('#fTexto', X.data.titulo);
+  const c = qa('#grid .card').find(k => k.querySelector('.name') && k.querySelector('.name').textContent === X.data.titulo);
+  const sel = c.querySelector('select.gen');
+  igual(sel.value, NOVO);
+  escolher(sel, '');
+  await esperar(() => !sel.disabled && sel.value === '' && !selos(c).some(s => /corrigido/.test(s.textContent)), 'voltar ao automático');
+  igual(toastTxt(), 'Público voltou ao automático.');
+  const x = (await relido()).find(i => i.id === X.id);
+  igual(x, X, 'o item igual ao do início');
+  igual((await api('items')).texto, ANTES, '/api/items inteiro igual ao do início');
+});
+
+// ================================================================ limpeza (sempre roda) e execução
+async function limpar() {
+  const sobras = [];
+  try {
+    if (REGRA) { const r = await api('disparo/regras/' + REGRA.id, 'DELETE'); if (r.status !== 200) sobras.push('regra ' + REGRA.id); }
+    if (NUM) { const r = await api('disparo/numeros/' + NUM.id, 'DELETE'); if (r.status !== 200) sobras.push('número ' + NUM.id); }
+    if (X) { const r = await api('items/' + X.id + '/genero', 'PUT', { genero: null }); if (r.status !== 200) sobras.push('item ' + X.id); }
+  } catch (e) { sobras.push('erro na limpeza: ' + e.message); }
+  return sobras;
+}
+
+(async () => {
+  let falhas = 0, total = 0;
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+      if (total === 1) break;   // sem a guarda não há o que testar (e nada foi gravado)
+    }
+  }
+  if (location.port !== '8765') {
+    const sobras = await limpar();
+    total++;
+    if (sobras.length) { falhas++; log(PREF_F + 'limpeza — ficou para trás: ' + sobras.join(', ')); } else log('ok    limpeza: regra, número e correção do item desfeitos');
+  }
+  for (const k of Object.keys(localStorage)) if (k.startsWith('genero:')) localStorage.removeItem(k);
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

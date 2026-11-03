@@ -39,6 +39,7 @@ os.environ['no_proxy'] = ''
 sys.path.insert(0, RAIZ)
 import servidor as S   # noqa: E402
 import disparo as D    # noqa: E402
+import genero as G     # noqa: E402
 
 AFILIADO = S.eh_link_afiliado
 TELEFONE = '5500000000001'   # fictício: nada parecido com número real no git
@@ -85,7 +86,7 @@ class Base(unittest.TestCase):
         with self.con:
             self.con.execute("INSERT OR REPLACE INTO config VALUES ('templates', ?)", (json.dumps(t, ensure_ascii=False),))
 
-    def item(self, loja='amazon', cat='Eletrônicos', url=None, **campos):
+    def item(self, loja='amazon', cat='Eletrônicos', url=None, busca='', **campos):
         """Insere um item com dados e devolve o id (pk)."""
         self.seq += 1
         n = self.seq
@@ -99,7 +100,7 @@ class Base(unittest.TestCase):
         cols = ['loja', 'item_id', 'cat', 'busca', 'url', *dados]
         with self.con:
             cur = self.con.execute(f'INSERT INTO items ({",".join(cols)}) VALUES ({",".join("?" * len(cols))})',
-                                   [loja, f'ID{n}', cat, '', url, *dados.values()])
+                                   [loja, f'ID{n}', cat, busca, url, *dados.values()])
         return cur.lastrowid
 
     def numero(self, **kw):
@@ -147,12 +148,24 @@ class Migracao(unittest.TestCase):
         con = abrir(os.path.join(self.dir, 'novo.db'))
         self.addCleanup(con.close)
         self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
         nomes = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index')")}
-        self.assertTrue({'numeros', 'regras', 'envios', 'ix_envios_rep'} <= nomes)
+        self.assertTrue({'numeros', 'regras', 'envios', 'ix_envios_rep', 'generos_manuais'} <= nomes)
         cols = {r[1]: r for r in con.execute('PRAGMA table_info(regras)')}
         self.assertEqual(cols['repetir_apos_dias'][4], '7')
         self.assertEqual(cols['repetir_apos_dias'][3], 0)   # aceita NULL
+        self.assertEqual((cols['generos'][2], cols['generos'][3], cols['generos'][4]), ('TEXT', 1, "'[]'"))
+        cols = [(r[1], r[2], r[3], r[5]) for r in con.execute('PRAGMA table_info(generos_manuais)')]
+        self.assertEqual(cols, [('item_pk', 'INTEGER', 0, 1), ('genero', 'TEXT', 1, 0),
+                                ('atualizado_em', 'TEXT', 1, 0)])
+        for g in ('feminino', 'masculino', 'unissex', 'sem'):
+            con.execute('INSERT OR REPLACE INTO generos_manuais VALUES (1, ?, ?)', (g, '2026-11-03T10:00:00'))
+        for g in ('Feminino', 'outro', '', None):
+            with self.assertRaises(sqlite3.IntegrityError):
+                con.execute('INSERT OR REPLACE INTO generos_manuais VALUES (1, ?, ?)', (g, '2026-11-03T10:00:00'))
+        with self.assertRaises(sqlite3.IntegrityError):
+            con.execute("INSERT INTO generos_manuais VALUES (2, 'sem', NULL)")
+        con.rollback()
         self.assertFalse(con.in_transaction)
 
     def test_banco_antigo_mantem_os_dados(self):
@@ -170,7 +183,9 @@ class Migracao(unittest.TestCase):
         self.assertTrue(D.migrar(con))
         self.assertEqual([tuple(r) for r in con.execute('SELECT * FROM items')], antes)
         self.assertEqual(con.execute("SELECT valor FROM config").fetchone()[0], '{}')
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
+        self.assertIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
 
     def test_criar_banco_do_servidor_migra(self):
         caminho = os.path.join(self.dir, 'servidor.db')
@@ -179,8 +194,9 @@ class Migracao(unittest.TestCase):
             S.criar_banco()   # de novo, como a cada início do servidor
         con = abrir(caminho)
         self.addCleanup(con.close)
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
         self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='envios'").fetchone())
+        self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
 
     def test_repetida_sem_efeito(self):
         con = abrir(os.path.join(self.dir, 'rep.db'))
@@ -201,14 +217,25 @@ class Migracao(unittest.TestCase):
         self.addCleanup(con.close)
         con.execute(D.ESQUEMA_V1[0]); con.commit()
         self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
 
     def test_versao_maior_nao_e_tocada(self):
         con = abrir(os.path.join(self.dir, 'futuro.db'))
         self.addCleanup(con.close)
-        con.execute('PRAGMA user_version = 2')
+        con.execute('PRAGMA user_version = 3')   # versão futura
         self.assertFalse(D.migrar(con))
         self.assertIsNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='numeros'").fetchone())
+        self.assertIsNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+
+    def test_versao_futura_com_regras_v1_nao_ganha_coluna(self):
+        con = self.banco_v1('futuro-v1.db')
+        con.execute('PRAGMA user_version = 3')
+        esquema, mudancas = self.esquema(con), con.total_changes
+        self.assertFalse(D.migrar(con))
+        self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual(con.total_changes, mudancas)
+        self.assertNotIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
 
     def test_falha_no_meio_desfaz_tudo(self):
         con = abrir(os.path.join(self.dir, 'falha.db'))
@@ -219,6 +246,162 @@ class Migracao(unittest.TestCase):
         self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
         self.assertIsNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='numeros'").fetchone())
         self.assertTrue(D.migrar(con))
+
+    # ------------------------------------------------------------ v2 (plano genero-nas-categorias, etapa 2)
+    def banco_v1(self, nome):
+        """Banco como o deixa o código da v1: items/config do servidor, ESQUEMA_V1 e user_version 1."""
+        caminho = os.path.join(self.dir, nome)
+        with mock.patch.object(S, 'DB', caminho), mock.patch.object(D, 'migrar'):
+            S.criar_banco()
+        con = abrir(caminho)
+        self.addCleanup(con.close)
+        for sql in D.ESQUEMA_V1:
+            con.execute(sql)
+        con.execute('PRAGMA user_version = 1')
+        con.commit()
+        return con
+
+    def semear_v1(self, con):
+        """Itens, config, número, duas regras e um envio, só com as colunas da v1."""
+        S.upsert(con, {'loja': 'ml', 'url': 'https://meli.la/abc', 'cat': 'Perfumes e Perfumaria',
+                       'busca': 'perfume feminino', 'data': {'titulo': 'Perfume X Feminino 100ml'}})
+        S.upsert(con, {'loja': 'amazon', 'url': url_amz(1), 'cat': 'Casa e Decoração', 'data': {'titulo': 'Y'}})
+        con.execute("INSERT INTO config VALUES ('templates', '{\"t\": \"{TITULO}\"}')")
+        con.execute("INSERT INTO numeros (nome, telefone, grupo_nome) VALUES ('N', ?, 'G')", (TELEFONE,))
+        for nome, repetir in (('Manhã', 7), ('Noite', None)):
+            con.execute("INSERT INTO regras (nome, numero_id, cats, template, horarios, repetir_apos_dias, aviso) "
+                        "VALUES (?, 1, '[\"Perfumes e Perfumaria\"]', 't', '[\"09:00\"]', ?, 'x')",
+                        (nome, repetir))
+        con.execute("INSERT INTO envios (regra_id, numero_id, item_pk, slot, status, mensagem, transporte, criado_em) "
+                    "VALUES (1, 1, 1, '2026-11-02T09:00', 'enviado', 'msg', 'manual', '2026-11-02T09:00:05')")
+        con.commit()
+
+    def dados(self, con):
+        return {t: [tuple(r) for r in con.execute(f'SELECT * FROM {t} ORDER BY rowid')]
+                for t in ('items', 'config', 'numeros', 'regras', 'envios')}
+
+    def test_v1_com_regras_e_itens_vira_v2_sem_perder_nada(self):
+        con = self.banco_v1('v1.db')
+        self.semear_v1(con)
+        antes = self.dados(con)
+        self.assertEqual({t: len(v) for t, v in antes.items()},
+                         {'items': 2, 'config': 1, 'numeros': 1, 'regras': 2, 'envios': 1})
+        self.assertTrue(D.migrar(con))
+        self.assertFalse(con.in_transaction)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        depois = self.dados(con)
+        for t in ('items', 'config', 'numeros', 'envios'):
+            self.assertEqual(depois[t], antes[t], t)
+        # regras: as mesmas linhas, com a coluna nova no fim valendo '[]' (todos os gêneros)
+        self.assertEqual([r[:-1] for r in depois['regras']], antes['regras'])
+        self.assertEqual([r[-1] for r in depois['regras']], ['[]', '[]'])
+        self.assertEqual(con.execute('SELECT COUNT(*) FROM generos_manuais').fetchone()[0], 0)
+        # regra gravada pelo código de agora (sem informar generos) também nasce com '[]'
+        con.execute("INSERT INTO regras (nome, numero_id, cats, template, horarios) VALUES ('Nova', 1, '[]', 't', '[]')")
+        self.assertEqual(con.execute("SELECT generos FROM regras WHERE nome='Nova'").fetchone()[0], '[]')
+        con.rollback()
+
+    def test_v2_repetida_sem_efeito(self):
+        con = self.banco_v1('v1-rep.db')
+        self.semear_v1(con)
+        self.assertTrue(D.migrar(con))
+        con.execute("INSERT INTO generos_manuais VALUES (1, 'unissex', '2026-11-03T10:00:00')")
+        con.commit()
+        esquema, dados, mudancas = self.esquema(con), self.dados(con), con.total_changes
+        self.assertFalse(D.migrar(con))
+        outra = abrir(con.execute('PRAGMA database_list').fetchone()[2])
+        self.addCleanup(outra.close)
+        self.assertFalse(D.migrar(outra))
+        self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual(self.dados(con), dados)
+        self.assertEqual(con.total_changes, mudancas)
+        self.assertEqual([tuple(r) for r in con.execute('SELECT genero FROM generos_manuais')], [('unissex',)])
+
+    def test_releitura_da_versao_dentro_da_transacao(self):
+        """Outro processo migra entre a 1ª leitura e o BEGIN IMMEDIATE: a releitura vê a v2 e não refaz o ALTER."""
+        con = self.banco_v1('corrida.db')
+        caminho = con.execute('PRAGMA database_list').fetchone()[2]
+        outra = abrir(caminho)
+        self.addCleanup(outra.close)
+
+        class Atrasada:
+            """Repassa tudo à conexão real; na 1ª leitura da versão (v1), deixa a outra migrar e devolve a v1."""
+            def __init__(self, real):
+                self.real, self.lidas, self.outra_migrou = real, 0, None
+
+            def __getattr__(self, nome):
+                return getattr(self.real, nome)
+
+            def execute(self, sql, *a):
+                cur = self.real.execute(sql, *a)
+                if sql == 'PRAGMA user_version':
+                    self.lidas += 1
+                    if self.lidas == 1:
+                        linha = cur.fetchone()
+                        self.outra_migrou = D.migrar(outra)
+                        return mock.Mock(fetchone=mock.Mock(return_value=linha))
+                return cur
+
+        lenta = Atrasada(con)
+        self.assertFalse(D.migrar(lenta))
+        self.assertTrue(lenta.outra_migrou)   # a outra conexão migrou no meio
+        self.assertEqual(lenta.lidas, 2)      # releu a versão dentro do BEGIN IMMEDIATE
+        self.assertFalse(con.in_transaction)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual([r[1] for r in con.execute('PRAGMA table_info(regras)')].count('generos'), 1)
+
+    def test_falha_na_v2_desfaz_tudo_e_mantem_a_v1(self):
+        con = self.banco_v1('falha-v2.db')
+        self.semear_v1(con)
+        esquema, dados = self.esquema(con), self.dados(con)
+        # o ALTER roda e depois o passo seguinte quebra: nada pode ficar
+        quebrado = D.ESQUEMA_V2 + ('CREATE TABLE quebrada (',)
+        with mock.patch.object(D, 'ESQUEMA_V2', quebrado):
+            with self.assertRaises(sqlite3.OperationalError):
+                D.migrar(con)
+        self.assertFalse(con.in_transaction)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 1)
+        self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual(self.dados(con), dados)
+        self.assertNotIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
+        self.assertTrue(D.migrar(con))
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+
+    def test_v0_para_v2_numa_transacao_so(self):
+        con = abrir(os.path.join(self.dir, 'v0.db'))
+        self.addCleanup(con.close)
+        # a v1 inteira roda, a v2 quebra no fim: a v1 também tem de ser desfeita
+        with mock.patch.object(D, 'ESQUEMA_V2', D.ESQUEMA_V2 + ('CREATE TABLE quebrada (',)):
+            with self.assertRaises(sqlite3.OperationalError):
+                D.migrar(con)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
+        self.assertEqual(con.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()[0], 0)
+        self.assertTrue(D.migrar(con))
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
+
+    def test_codigo_da_v1_roda_sobre_o_banco_v2(self):
+        """O código antigo vê user_version 2 >= 1, não migra, e grava e lê regras só com as colunas dele."""
+        con = self.banco_v1('volta.db')
+        self.semear_v1(con)
+        self.assertTrue(D.migrar(con))
+        esquema = self.esquema(con)
+        with mock.patch.object(D, 'VERSAO_ESQUEMA', 1), mock.patch.object(D, 'ESQUEMA_V2', ()):
+            self.assertFalse(D.migrar(con))
+        self.assertEqual(self.esquema(con), esquema)
+        # o INSERT e o UPDATE da v1 citam só as colunas dela (CAMPOS_REGRA de antes do gênero)
+        campos_v1 = ('nome', 'numero_id', 'ativa', 'cats', 'lojas', 'palavras', 'desconto_min', 'ordem',
+                     'template', 'com_foto', 'dias', 'horarios', 'por_disparo', 'max_por_dia',
+                     'repetir_apos_dias', 'intervalo_seg')
+        valores = ('Antiga', 1, 1, '["Casa e Decoração"]', '["amazon","ml"]', '[]', 0, 'relevancia', 't', 1,
+                   '[0,1,2,3,4,5,6]', '["10:00"]', 1, 10, 7, 60)
+        with con:
+            nova = con.execute(f'INSERT INTO regras ({",".join(campos_v1)}) VALUES ({",".join("?" * len(campos_v1))})',
+                               valores).lastrowid
+            con.execute(f'UPDATE regras SET {", ".join(c + "=?" for c in campos_v1)} WHERE id=?', valores + (nova,))
+        self.assertEqual(con.execute('SELECT generos FROM regras WHERE id=?', (nova,)).fetchone()[0], '[]')
+        lidas = con.execute(f'SELECT id, {",".join(campos_v1)} FROM regras ORDER BY id').fetchall()
+        self.assertEqual([r['nome'] for r in lidas], ['Manhã', 'Noite', 'Antiga'])
 
 
 # ================================================================ etapa 1: validação e CRUD
@@ -289,7 +472,8 @@ class ValidarRegra(Base):
                    {'intervalo_seg': 3600}, {'cats': [f'c{i}' for i in range(50)]}, {'cats': ['c' * 100]},
                    {'palavras': ['p' * 40] * 20}, {'lojas': ['ml']}, {'dias': [6]},
                    {'horarios': [f'{h:02d}:{m:02d}' for h in range(24) for m in (0, 30)]},
-                   {'horarios': ['00:00', '23:59']}, *({'ordem': o} for o in D.ORDENS)):
+                   {'horarios': ['00:00', '23:59']}, *({'ordem': o} for o in D.ORDENS),
+                   {'generos': []}, *({'generos': [g]} for g in G.GENEROS), {'generos': list(G.GENEROS)}):
             with self.subTest(kw=list(kw)):
                 D.validar_regra(self.con, {**self.base, **kw})
 
@@ -316,6 +500,10 @@ class ValidarRegra(Base):
             {'max_por_dia': 0}, {'max_por_dia': 201},
             {'repetir_apos_dias': 0}, {'repetir_apos_dias': 366}, {'repetir_apos_dias': True},
             {'intervalo_seg': 29}, {'intervalo_seg': 3601},
+            {'generos': None}, {'generos': 'feminino'}, {'generos': ['Feminino']}, {'generos': ['outro']},
+            {'generos': ['feminino', 'feminino']}, {'generos': [None]}, {'generos': [1]}, {'generos': [True]},
+            {'generos': [['feminino']]}, {'generos': [{'g': 'feminino'}]}, {'generos': ['feminino ']},
+            {'generos': list(G.GENEROS) + ['feminino']},
         ]
         for kw in casos:
             with self.subTest(kw=kw):
@@ -346,6 +534,19 @@ class ValidarRegra(Base):
                                        'horarios': ['18:00', '09:00'], 'palavras': [' fone ']})
         self.assertEqual((v['lojas'], v['dias'], v['horarios'], v['palavras']),
                          (['amazon', 'ml'], [0, 4], ['09:00', '18:00'], ['fone']))
+
+    def test_publico_normaliza_na_ordem_de_generos(self):
+        v = D.validar_regra(self.con, {**self.base, 'generos': ['unissex', 'feminino']})
+        self.assertEqual(v['generos'], ['feminino', 'unissex'])
+        self.assertEqual(D.validar_regra(self.con, self.base)['generos'], [])
+
+    def test_publico_invalido_sem_eco(self):
+        for valor in (['golpe-xyz'], ['feminino', 'feminino'], 'golpe-xyz', [{'golpe-xyz': 1}]):
+            with self.subTest(valor=valor):
+                e = self.recusa(generos=valor)
+                self.assertNotIn('golpe-xyz', e.msg)
+                self.assertNotIn("'feminino', 'feminino'", e.msg)
+        self.assertEqual(self.recusa(generos=['x']).msg, 'público deve ter feminino, masculino, unissex, sem, sem repetir')
 
 
 class CrudNumeros(Base):
@@ -402,6 +603,20 @@ class CrudRegras(Base):
         self.assertEqual(json.loads(cru['cats']), ['Casa'])
         self.assertEqual(json.loads(cru['dias']), [0, 1, 2, 3, 4, 5, 6])
         self.assertEqual(D.listar_regras(self.con), [r])
+
+    def test_publico_gravado_lido_como_lista_e_mantido(self):
+        r = self.regra()
+        self.assertEqual(r['generos'], [])
+        r = D.atualizar_regra(self.con, r['id'], {'generos': ['unissex', 'feminino']})
+        self.assertEqual(r['generos'], ['feminino', 'unissex'])
+        cru = self.con.execute('SELECT generos FROM regras WHERE id=?', (r['id'],)).fetchone()[0]
+        self.assertEqual(json.loads(cru), ['feminino', 'unissex'])
+        self.assertEqual(D.atualizar_regra(self.con, r['id'], {'ativa': 0})['generos'], ['feminino', 'unissex'])
+        self.assertEqual(D.listar_regras(self.con)[0]['generos'], ['feminino', 'unissex'])
+        with self.assertRaises(D.ErroDisparo):
+            D.atualizar_regra(self.con, r['id'], {'generos': ['outro']})
+        self.assertEqual(D.obter_regra(self.con, r['id'])['generos'], ['feminino', 'unissex'])
+        self.assertEqual(D.atualizar_regra(self.con, r['id'], {'generos': []})['generos'], [])
 
     def test_repetir_nulo_e_gravado(self):
         r = self.regra(repetir_apos_dias=None)
@@ -629,6 +844,127 @@ class Elegiveis(Base):
         self.assertEqual(self.ids(), [])
         de_outro_numero = self.regra(nome='Outro número')
         self.assertEqual(self.ids(de_outro_numero), [pk])
+
+
+class Publico(Base):
+    """Filtro de público (generos) na seleção: plano genero-nas-categorias, etapa 4 (CA5)."""
+    PERF = 'Perfumes e Perfumaria'
+
+    def setUp(self):
+        super().setUp()
+        self.assertIn(self.PERF, G.ABAS_COM_GENERO)
+        p = self.PERF
+        # títulos no formato dos reais da aba; o gênero vem do genero.classificar
+        self.fem = self.item(cat=p, titulo='Perfume Lancôme La Vie Est Belle Feminino EDP 50ml')
+        self.fem_busca = self.item(cat=p, titulo='Natura Essencial Exclusivo Deo Parfum 100ml',
+                                   busca='Perfume feminino importado')
+        self.masc = self.item(cat=p, titulo='Perfume Dior Sauvage Masculino Eau de Toilette 100ml')
+        self.uni = self.item(cat=p, titulo='CK One Calvin Klein Unissex EDT 200ml')
+        self.sem = self.item(cat=p, titulo='Hidratante Corporal Nativa Spa Ameixa 400ml')
+        # Casa não separa por público: passa inteira, mesmo com palavra de gênero no título
+        self.casa = [self.item(cat='Casa e Decoração', titulo='Jogo de Pratos Donna 20 peças'),
+                     self.item(cat='Casa e Decoração', titulo='Kit Barbear Masculino Organizador de Madeira')]
+        self.eletro = self.item(titulo='Fone Bluetooth')   # aba fora da regra
+        self.r = self.regra(cats=[p, 'Casa e Decoração'])
+        self.esperado = {pk: G.do_item(pk, *self.con.execute('SELECT cat, busca, titulo FROM items WHERE id=?',
+                                                             (pk,)).fetchone(), {})[0]
+                         for pk in (self.fem, self.fem_busca, self.masc, self.uni, self.sem)}
+        self.assertEqual(self.esperado, {self.fem: 'feminino', self.fem_busca: 'feminino', self.masc: 'masculino',
+                                         self.uni: 'unissex', self.sem: 'sem'})
+
+    def ids(self, regra, info=None):
+        return sorted(it['id'] for it in D.elegiveis(self.con, regra, SEGUNDA, AFILIADO, info))
+
+    def com(self, generos):
+        return D.atualizar_regra(self.con, self.r['id'], {'generos': generos})
+
+    def test_regra_gravada_antes_elege_os_mesmos_itens(self):
+        # regra gravada pelo código da v1: o INSERT não cita generos, a coluna fica com o padrão '[]'
+        campos = [c for c in D.CAMPOS_REGRA if c != 'generos']
+        v = D.validar_regra(self.con, {**D.PADRAO_REGRA, **self.dados_regra(self.r['numero_id'],
+                                                                           cats=[self.PERF, 'Casa e Decoração'])})
+        with self.con:
+            rid = self.con.execute(
+                f'INSERT INTO regras ({",".join(campos)}) VALUES ({",".join("?" * len(campos))})',
+                [json.dumps(v[c], ensure_ascii=False) if c in D.LISTAS_REGRA else v[c] for c in campos]).lastrowid
+        antiga = D.obter_regra(self.con, rid)
+        self.assertEqual(antiga['generos'], [])
+        todos = sorted([self.fem, self.fem_busca, self.masc, self.uni, self.sem, *self.casa])
+        # sem público, o classificador nem é chamado: o conjunto é o de antes da etapa
+        with mock.patch.object(G, 'do_item', side_effect=AssertionError('não devia classificar')), \
+                mock.patch.object(G, 'manuais', side_effect=AssertionError('não devia ler manuais')):
+            info = {}
+            self.assertEqual(self.ids(antiga, info), todos)
+            self.assertEqual(info['casam'], len(todos))
+            self.assertEqual(self.ids(self.r), todos)
+        # todos os 4 valores também elegem tudo
+        self.assertEqual(self.ids(self.com(list(G.GENEROS))), todos)
+
+    def test_feminino_leva_so_perfumes_f_e_a_casa_inteira(self):
+        info = {}
+        self.assertEqual(self.ids(self.com(['feminino']), info), sorted([self.fem, self.fem_busca, *self.casa]))
+        self.assertEqual(info['casam'], 4)
+
+    def test_outros_valores_e_combinacao(self):
+        self.assertEqual(self.ids(self.com(['masculino'])), sorted([self.masc, *self.casa]))
+        self.assertEqual(self.ids(self.com(['unissex'])), sorted([self.uni, *self.casa]))
+        self.assertEqual(self.ids(self.com(['sem'])), sorted([self.sem, *self.casa]))
+        # P5: a tela manda 0 ou 1 valor, mas o dado aceita a lista
+        self.assertEqual(self.ids(self.com(['feminino', 'unissex'])), sorted([self.fem, self.fem_busca, self.uni,
+                                                                               *self.casa]))
+
+    def test_so_perfumaria_com_publico(self):
+        r = D.atualizar_regra(self.con, self.r['id'], {'cats': [self.PERF], 'generos': ['masculino']})
+        self.assertEqual(self.ids(r), [self.masc])
+
+    def test_correcao_manual_vale(self):
+        with self.con:
+            G.definir_manual(self.con, self.masc, 'feminino', '2026-11-03T10:00:00')
+            G.definir_manual(self.con, self.fem, 'masculino', '2026-11-03T10:00:00')
+            G.definir_manual(self.con, self.casa[0], 'masculino', '2026-11-03T10:00:00')   # fora da aba: não vale
+        self.assertEqual(self.ids(self.com(['feminino'])), sorted([self.masc, self.fem_busca, *self.casa]))
+        self.assertEqual(self.ids(self.com(['masculino'])), sorted([self.fem, *self.casa]))
+        with self.con:
+            G.definir_manual(self.con, self.masc, None, '2026-11-03T11:00:00')   # volta ao automático
+        self.assertEqual(self.ids(self.com(['masculino'])), sorted([self.fem, self.masc, *self.casa]))
+
+    def test_manuais_lidos_uma_vez_por_chamada(self):
+        for i in range(30):
+            self.item(cat=self.PERF, titulo=f'Perfume {i} Feminino')
+        r = self.com(['feminino'])
+        with mock.patch.object(G, 'manuais', wraps=G.manuais) as m:
+            self.assertEqual(len(self.ids(r)), 32 + len(self.casa))
+        self.assertEqual(m.call_count, 1)
+
+    def test_combina_com_os_outros_filtros_e_com_a_repeticao(self):
+        r = D.atualizar_regra(self.con, self.r['id'], {'generos': ['feminino'], 'palavras': ['natura', 'pratos']})
+        self.assertEqual(self.ids(r), sorted([self.fem_busca, self.casa[0]]))
+        self.envio_antigo(r, self.fem_busca, 'enviado', SEGUNDA)
+        info = {}
+        self.assertEqual(self.ids(r, info), [self.casa[0]])
+        self.assertEqual(info['casam'], 2)   # o filtro de público conta antes da repetição
+
+    def test_previa_respeita_o_publico(self):
+        dados = self.dados_regra(self.r['numero_id'], cats=[self.PERF, 'Casa e Decoração'], generos=['unissex'])
+        p = D.previa(self.con, dados, 20, SEGUNDA, AFILIADO)
+        self.assertEqual(sorted(x['item_pk'] for x in p), sorted([self.uni, *self.casa]))
+        with self.assertRaises(D.ErroDisparo) as cm:
+            D.previa(self.con, {**dados, 'generos': ['golpe-xyz']}, 5, SEGUNDA, AFILIADO)
+        self.assertEqual(cm.exception.codigo, 400)
+        self.assertNotIn('golpe-xyz', cm.exception.msg)
+
+    def test_aviso_de_filtros_cita_publico_e_vale_para_o_genero(self):
+        self.assertIn('público', D.AVISO_FILTROS)
+        r = D.atualizar_regra(self.con, self.r['id'], {'cats': [self.PERF], 'generos': ['masculino'],
+                                                       'palavras': ['Lancôme']})
+        self.assertEqual(D.disparar_agora(self.con, r['id'], SEGUNDA, D.TransporteManual(), AFILIADO), [])
+        self.assertEqual(D.obter_regra(self.con, r['id'])['aviso'], D.AVISO_FILTROS)
+
+    def test_tick_manda_so_o_publico_da_regra(self):
+        D.atualizar_regra(self.con, self.r['id'], {'cats': [self.PERF], 'generos': ['feminino'],
+                                                   'por_disparo': 10})
+        self.assertEqual(self.tick(SEGUNDA.replace(hour=9))['criados'], 2)
+        self.assertEqual(sorted(e['item_pk'] for e in self.envios()), sorted([self.fem, self.fem_busca]))
 
 
 class Ordenar(unittest.TestCase):
@@ -1401,6 +1737,23 @@ class Rotas(Base):
             with self.subTest(corpo=corpo):
                 self.erro(400, 'POST', 'previa', corpo)
         self.erro(400, 'POST', 'previa', {**self.dados_regra(nid), 'n': 21})
+
+    def test_publico_pelas_rotas(self):
+        nid = self.numero()['id']
+        r = self.rota('POST', 'regras', self.dados_regra(nid, cats=['Perfumes e Perfumaria'], generos=['masculino']))
+        self.assertEqual(r['generos'], ['masculino'])
+        self.assertEqual(self.rota('GET', 'regras')[0]['generos'], ['masculino'])   # lista, não o texto do banco
+        self.assertEqual(self.rota('PUT', f'regras/{r["id"]}', {'generos': []})['generos'], [])
+        for corpo in ({'generos': ['golpe-xyz']}, {'generos': ['sem', 'sem']}, {'generos': 'golpe-xyz'}):
+            with self.subTest(corpo=corpo):
+                e = self.erro(400, 'PUT', f'regras/{r["id"]}', corpo)
+                self.assertNotIn('golpe-xyz', e.msg)
+                e = self.erro(400, 'POST', 'regras', self.dados_regra(nid, **corpo))
+                self.assertNotIn('golpe-xyz', e.msg)
+        masc = self.item(cat='Perfumes e Perfumaria', titulo='Perfume Dior Sauvage Masculino 100ml')
+        self.item(cat='Perfumes e Perfumaria', titulo='Perfume Lancôme La Vie Est Belle Feminino 50ml')
+        p = self.rota('POST', 'previa', self.dados_regra(nid, cats=['Perfumes e Perfumaria'], generos=['masculino']))
+        self.assertEqual([x['item_pk'] for x in p], [masc])
 
     def test_status_com_agendador(self):
         ag = D.Agendador(self.conectar, AFILIADO, D.TransporteFalso(os.path.join(self.dir, 'x.jsonl')))

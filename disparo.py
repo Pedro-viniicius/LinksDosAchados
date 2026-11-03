@@ -22,9 +22,11 @@ import unicodedata
 import urllib.parse
 from datetime import date, datetime, timedelta
 
+import genero
+
 log = logging.getLogger('disparo')
 
-VERSAO_ESQUEMA = 1
+VERSAO_ESQUEMA = 2
 ESQUEMA_V1 = (
     '''CREATE TABLE IF NOT EXISTS numeros (id INTEGER PRIMARY KEY AUTOINCREMENT,
       nome TEXT NOT NULL, telefone TEXT NOT NULL DEFAULT '', grupo_nome TEXT NOT NULL,
@@ -45,6 +47,14 @@ ESQUEMA_V1 = (
       titulo TEXT NOT NULL DEFAULT '', motivo TEXT NOT NULL DEFAULT '', transporte TEXT NOT NULL,
       criado_em TEXT NOT NULL, enviado_em TEXT, UNIQUE(regra_id, slot, item_pk))''',
     'CREATE INDEX IF NOT EXISTS ix_envios_rep ON envios(numero_id, item_pk, criado_em)',
+)
+# v2 (docs/produto/planos/genero-nas-categorias.md): correção manual do gênero de um item e o filtro
+# de gênero na regra ('[]' = todos). Só aditiva: o código da v1 ignora a tabela e a coluna novas.
+ESQUEMA_V2 = (
+    '''CREATE TABLE IF NOT EXISTS generos_manuais (item_pk INTEGER PRIMARY KEY,
+      genero TEXT NOT NULL CHECK (genero IN ('feminino','masculino','unissex','sem')),
+      atualizado_em TEXT NOT NULL)''',
+    "ALTER TABLE regras ADD COLUMN generos TEXT NOT NULL DEFAULT '[]'",
 )
 
 ORDENS = ('relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes', 'aleatoria')
@@ -95,8 +105,10 @@ def _agora_iso(agora=None):
 
 # ---------------------------------------------------------------- esquema (etapa 1)
 def migrar(con):
-    """Cria numeros, regras e envios se PRAGMA user_version < 1. Aditiva e idempotente.
+    """Leva o banco até PRAGMA user_version 2. Aditiva e idempotente.
 
+    v1: numeros, regras e envios. v2: generos_manuais e regras.generos. Um banco em v0 passa pelas
+    duas numa transação só; banco já em v2 ou mais (versão futura) não é tocado.
     Faz commit do que a conexão tiver pendente (como o executescript). Devolve True se migrou.
     O BEGIN IMMEDIATE e a releitura da versão impedem dois processos de migrar ao mesmo tempo.
     """
@@ -106,11 +118,15 @@ def migrar(con):
         con.commit()
     con.execute('BEGIN IMMEDIATE')
     try:
-        if con.execute('PRAGMA user_version').fetchone()[0] >= VERSAO_ESQUEMA:
+        versao = con.execute('PRAGMA user_version').fetchone()[0]
+        if versao >= VERSAO_ESQUEMA:
             con.rollback()
             return False
-        for sql in ESQUEMA_V1:
-            con.execute(sql)
+        # Os passos leem ESQUEMA_V1/ESQUEMA_V2 na hora da chamada (os testes trocam um deles).
+        for de, passos in ((1, ESQUEMA_V1), (2, ESQUEMA_V2)):
+            if versao < de:
+                for sql in passos:
+                    con.execute(sql)
         con.execute(f'PRAGMA user_version = {VERSAO_ESQUEMA}')
         con.commit()
     except BaseException:
@@ -267,6 +283,11 @@ def validar_regra(con, dados, conferir_template=True):
     if len(set(horarios)) != len(horarios):
         raise _invalido('horários repetidos')
 
+    # Público: vazio = todos. Só filtra itens das abas com gênero (genero.ABAS_COM_GENERO).
+    generos = _lista(dados, 'generos', 'público', 0, len(genero.GENEROS))
+    if not all(isinstance(g, str) and g in genero.GENEROS for g in generos) or len(set(generos)) != len(generos):
+        raise _invalido('público deve ter ' + ', '.join(genero.GENEROS) + ', sem repetir')
+
     return {
         'nome': _texto(dados, 'nome', 'nome', 1, 80),
         'numero_id': numero_id,
@@ -284,6 +305,7 @@ def validar_regra(con, dados, conferir_template=True):
         'max_por_dia': _inteiro(dados, 'max_por_dia', 'máximo por dia', 1, 200),
         'repetir_apos_dias': _inteiro(dados, 'repetir_apos_dias', 'prazo para repetir', 1, 365, nulo=True),
         'intervalo_seg': _inteiro(dados, 'intervalo_seg', 'intervalo', 30, 3600),
+        'generos': [g for g in genero.GENEROS if g in generos],
     }
 
 
@@ -291,12 +313,12 @@ def validar_regra(con, dados, conferir_template=True):
 PADRAO_NUMERO = {'telefone': '', 'grupo_id': '', 'limite_diario': 40, 'ativo': 1}
 PADRAO_REGRA = {'ativa': 1, 'lojas': ['amazon', 'ml'], 'palavras': [], 'desconto_min': 0,
                 'ordem': 'relevancia', 'com_foto': 1, 'dias': [0, 1, 2, 3, 4, 5, 6], 'por_disparo': 1,
-                'max_por_dia': 10, 'repetir_apos_dias': 7, 'intervalo_seg': 60}
+                'max_por_dia': 10, 'repetir_apos_dias': 7, 'intervalo_seg': 60, 'generos': []}
 CAMPOS_NUMERO = ('nome', 'telefone', 'grupo_nome', 'grupo_id', 'limite_diario', 'ativo')
 CAMPOS_REGRA = ('nome', 'numero_id', 'ativa', 'cats', 'lojas', 'palavras', 'desconto_min', 'ordem',
                 'template', 'com_foto', 'dias', 'horarios', 'por_disparo', 'max_por_dia',
-                'repetir_apos_dias', 'intervalo_seg')
-LISTAS_REGRA = ('cats', 'lojas', 'palavras', 'dias', 'horarios')
+                'repetir_apos_dias', 'intervalo_seg', 'generos')
+LISTAS_REGRA = ('cats', 'lojas', 'palavras', 'dias', 'horarios', 'generos')
 
 
 def _so_campos(dados, campos):
@@ -722,6 +744,9 @@ def elegiveis(con, regra, agora, eh_afiliado, info=None):
 
     Com `info` (dict), conta em info['casam'] os itens que passam nos filtros antes da regra de
     repetição: separa "nada casa com os filtros" de "tudo já foi enviado no prazo".
+
+    O público (`generos`, vazio = todos) só filtra itens das abas de genero.ABAS_COM_GENERO; os das
+    outras categorias marcadas passam inteiros. As correções manuais são lidas uma vez por chamada.
     """
     info = {} if info is None else info
     info['casam'] = 0
@@ -734,6 +759,8 @@ def elegiveis(con, regra, agora, eh_afiliado, info=None):
         [*cats, *lojas]).fetchall()
     fora = bloqueados(con, regra['numero_id'], regra['repetir_apos_dias'], agora)
     palavras = [_sem_acento(p) for p in regra.get('palavras') or []]
+    generos = regra.get('generos') or []
+    manuais = genero.manuais(con) if generos else {}
     saida = []
     for r in rows:
         if not link_da_loja_ok(r['loja'], r['url'], eh_afiliado):
@@ -744,6 +771,9 @@ def elegiveis(con, regra, agora, eh_afiliado, info=None):
             titulo = _sem_acento(r['titulo'] or '')
             if not any(p in titulo for p in palavras):
                 continue
+        if generos and r['cat'] in genero.ABAS_COM_GENERO \
+                and genero.do_item(r['id'], r['cat'], r['busca'], r['titulo'], manuais)[0] not in generos:
+            continue
         info['casam'] += 1
         if r['id'] in fora:
             continue
@@ -954,7 +984,7 @@ def _ocupados_no_dia(con, coluna, valor, agora):
         [valor, _hoje(agora), amanha, *STATUS_OCUPA]).fetchone()[0]
 
 
-AVISO_FILTROS = 'Nenhum item casa com os filtros desta regra (categorias, loja, palavras, desconto).'
+AVISO_FILTROS = 'Nenhum item casa com os filtros desta regra (categorias, loja, palavras, desconto, público).'
 AVISO_REPETICAO = 'Todos os itens elegíveis já foram enviados no prazo de repetição.'
 AVISO_LINK = ('Nenhuma mensagem saiu: o template ou os títulos têm link que não é o de afiliado do item. '
               'Confira o template.')

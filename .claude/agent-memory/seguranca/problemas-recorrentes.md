@@ -29,6 +29,7 @@ Padrões a procurar sempre (origem: revisões de 2026-11-03).
 - **Método sem `do_X` (TRACE, CONNECT, FOO)**: o `http.server` responde 501 antes do `bloquear()` (sem checar Host). Desde 2026-11-03 o `Handler.send_error` só repassa o código (a página não ecoa nada); confira que continua assim.
 - **Token sem entropia mínima**: `TOKEN_VALIDO` aceita qualquer texto de 32+ caracteres (INFORMATIVA local, docs mandam `token_urlsafe(32)`; vira requisito com VPS).
 - **Valor numérico gigante em campo de item** (`coletar_amazon.py` grava sem teto): `contagem`/`pct` podem levantar `OverflowError`/`ValueError`; caminho novo que converte campo do item deve isolar por linha (feito em `api_ofertas.oferta`).
+- **Id do caminho sem teto de dígitos** (S1 BAIXA, 2026-11-03, corrigido na rodada 2): `int()` de `[0-9]+` com mais de 4300 dígitos dá `ValueError` e acima de 2^63-1 o sqlite dá `OverflowError`; a conexão caía sem resposta. Hoje `ROTA_ITEM`/`ROTA_GENERO` usam `[0-9]{1,19}` + `MAX_ID_SQLITE` → 404. Em rota nova com id no caminho, exija o mesmo.
 - Runner `testes/rodar.mjs`: CDP em porta efêmera de 127.0.0.1, perfil temporário, `kill` no `finally` e em SIGINT/SIGTERM.
 
 Ver [[areas-sensiveis]], [[riscos-aceitos]].

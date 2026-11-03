@@ -199,7 +199,8 @@ class TestApiLigada(ServidorApi):
         self.assertIs(amazon['frete_gratis'], True)
         self.assertEqual(list(amazon), ['id', 'chave', 'loja', 'item_id', 'categoria', 'busca', 'titulo', 'link',
                                         'imagem', 'preco', 'preco_antigo', 'desconto_pct', 'vendas', 'avaliacao',
-                                        'num_avaliacoes', 'frete_gratis', 'cupom', 'criado_em', 'atualizado_em'])
+                                        'num_avaliacoes', 'frete_gratis', 'cupom', 'criado_em', 'atualizado_em',
+                                        'genero'])
 
     def test_ca1_paginacao_e_filtros_pelo_http(self):
         st, _, j = self.v1('/api/v1/ofertas?limite=1', self.auth())
@@ -227,8 +228,10 @@ class TestApiLigada(ServidorApi):
         st, _, j = self.v1('/api/v1/categorias', self.auth())
         self.assertEqual(st, 200, j)
         self.assertEqual(j, {'versao': 1, 'total': 2, 'categorias': [
-            {'nome': CASA, 'total': 1, 'lojas': {'amazon': 0, 'ml': 1, 'shopee': 0}},
-            {'nome': PERFUMES, 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0}}]})
+            {'nome': CASA, 'total': 1, 'lojas': {'amazon': 0, 'ml': 1, 'shopee': 0},
+             'generos': {'feminino': 0, 'masculino': 0, 'unissex': 0, 'sem': 1}},
+            {'nome': PERFUMES, 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0},
+             'generos': {'feminino': 0, 'masculino': 0, 'unissex': 0, 'sem': 1}}]})
         st, _, j = self.v1('/api/v1/categorias?limite=1', self.auth())
         self.assertEqual(st, 400, j)
 
@@ -466,14 +469,14 @@ class TestApiPermissaoAberta(ServidorApi):
 class TestAmbienteDeTesteIgnoraTokenReal(unittest.TestCase):
     """R4: o ambiente() dos testes deixa a v1 desligada mesmo com um api_token.txt ao lado do servidor.py.
 
-    Prova numa CÓPIA (servidor.py, api_ofertas.py e disparo.py num diretório temporário), com um
-    api_token.txt falso ao lado; o api_token.txt do projeto nunca é criado.
+    Prova numa CÓPIA (servidor.py, api_ofertas.py, disparo.py e genero.py num diretório temporário),
+    com um api_token.txt falso ao lado; o api_token.txt do projeto nunca é criado.
     """
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix='achadinhos-copia-token-')
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
-        for f in ('servidor.py', 'api_ofertas.py', 'disparo.py'):
+        for f in ('servidor.py', 'api_ofertas.py', 'disparo.py', 'genero.py'):
             shutil.copy(os.path.join(TS.RAIZ, f), self.dir)
         self.token = secrets.token_urlsafe(32)
         gravar_token(os.path.join(self.dir, 'api_token.txt'), self.token.encode())

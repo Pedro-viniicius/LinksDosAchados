@@ -35,6 +35,7 @@ sys.path.insert(0, RAIZ)
 import servidor as S     # noqa: E402
 import disparo as D      # noqa: E402
 import api_ofertas as A  # noqa: E402
+import genero as G       # noqa: E402
 
 AFILIADO = S.eh_link_afiliado
 AGORA = datetime(2026, 11, 3, 15, 0, 0)
@@ -44,7 +45,7 @@ FOTO = {'amazon': 'https://m.media-amazon.com/images/I/71teste.jpg',
         'shopee': 'https://down-br.img.susercontent.com/file/teste'}
 CAMPOS_OFERTA = ['id', 'chave', 'loja', 'item_id', 'categoria', 'busca', 'titulo', 'link', 'imagem', 'preco',
                  'preco_antigo', 'desconto_pct', 'vendas', 'avaliacao', 'num_avaliacoes', 'frete_gratis',
-                 'cupom', 'criado_em', 'atualizado_em']
+                 'cupom', 'criado_em', 'atualizado_em', 'genero']
 SEGREDO = 'XYZVALORDOCLIENTE'   # nunca pode voltar na mensagem de erro
 
 
@@ -155,7 +156,7 @@ class Formato(Base):
             'link': 'https://www.amazon.com.br/dp/B0G5NZ82TJ?tag=desejodemen01-20',
             'imagem': FOTO['amazon'], 'preco': 523.99, 'preco_antigo': 929.0, 'desconto_pct': 44,
             'vendas': 50, 'avaliacao': 4.5, 'num_avaliacoes': 7000, 'frete_gratis': False, 'cupom': '',
-            'criado_em': ANTIGO, 'atualizado_em': ANTIGO})
+            'criado_em': ANTIGO, 'atualizado_em': ANTIGO, 'genero': 'masculino'})
 
     def test_ca1_tipos_de_cada_campo(self):
         self.gravar()                                   # quase tudo vazio
@@ -166,7 +167,7 @@ class Formato(Base):
                  'busca': (str,), 'titulo': (str,), 'link': (str,), 'imagem': (str, type(None)),
                  'preco': (float,), 'preco_antigo': (float, type(None)), 'desconto_pct': (int,), 'vendas': (int,),
                  'avaliacao': (float, type(None)), 'num_avaliacoes': (int,), 'frete_gratis': (bool,),
-                 'cupom': (str,), 'criado_em': (str,), 'atualizado_em': (str,)}
+                 'cupom': (str,), 'criado_em': (str,), 'atualizado_em': (str,), 'genero': (str,)}
         ofertas = self.ofertas()['ofertas']
         self.assertEqual(len(ofertas), 3)
         for o in ofertas:
@@ -452,9 +453,9 @@ class Filtros(Base):
 
     def test_ca3_filtros_devolve_valores_normalizados(self):
         f = A.filtros(pares('cat=A&cat=B&loja=ml&q=Caf%C3%A9,+%C3%93leo&desconto_min=07&ordem=cupom&limite=10&cursor=20'))
-        self.assertEqual(f, {'cats': ['A', 'B'], 'lojas': ['ml'], 'termos': ['cafe', 'oleo'], 'desconto_min': 7,
+        self.assertEqual(f, {'cats': ['A', 'B'], 'lojas': ['ml'], 'generos': [], 'termos': ['cafe', 'oleo'], 'desconto_min': 7,
                              'ordem': 'cupom', 'limite': 10, 'cursor': 20})
-        self.assertEqual(A.filtros([]), {'cats': [], 'lojas': [], 'termos': [], 'desconto_min': 0,
+        self.assertEqual(A.filtros([]), {'cats': [], 'lojas': [], 'generos': [], 'termos': [], 'desconto_min': 0,
                                          'ordem': 'atualizacao', 'limite': 50, 'cursor': None})
         self.assertEqual(A.filtros(None)['ordem'], 'atualizacao')
 
@@ -644,11 +645,12 @@ class Categorias(Base):
         self.assertEqual(list(r), ['versao', 'categorias', 'total'])
         self.assertEqual(r['versao'], 1)
         self.assertEqual(r['total'], 6)
+        sem = lambda n: {'feminino': 0, 'masculino': 0, 'unissex': 0, 'sem': n}   # abas sem público
         self.assertEqual(r['categorias'], [
-            {'nome': 'Casa', 'total': 2, 'lojas': {'amazon': 1, 'ml': 1, 'shopee': 0}},
-            {'nome': 'eletro', 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0}},
-            {'nome': 'Ética', 'total': 2, 'lojas': {'amazon': 0, 'ml': 1, 'shopee': 1}},
-            {'nome': 'Zebra', 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0}}])
+            {'nome': 'Casa', 'total': 2, 'lojas': {'amazon': 1, 'ml': 1, 'shopee': 0}, 'generos': sem(2)},
+            {'nome': 'eletro', 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0}, 'generos': sem(1)},
+            {'nome': 'Ética', 'total': 2, 'lojas': {'amazon': 0, 'ml': 1, 'shopee': 1}, 'generos': sem(2)},
+            {'nome': 'Zebra', 'total': 1, 'lojas': {'amazon': 1, 'ml': 0, 'shopee': 0}, 'generos': sem(1)}])
 
     def test_ca5_bate_com_a_contagem_das_ofertas(self):
         OrdensDoDisparo.popular(self, random.Random(9))
@@ -666,6 +668,197 @@ class Categorias(Base):
         with self.assertRaises(A.ErroApi) as ctx:
             A.rota(self.con, 'GET', '/api/v1/categorias', [('cat', 'x')], AFILIADO)
         self.assertEqual(ctx.exception.codigo, 400)
+
+
+# ---------------------------------------------------------------- CA6 (genero-nas-categorias): público
+PERFUMES, CASA = 'Perfumes e Perfumaria', 'Casa e Decoração'
+MSG_GENERO = 'genero deve ser feminino, masculino, unissex, sem, sem repetir'
+
+
+class Genero(Base):
+    """docs/produto/planos/genero-nas-categorias.md, etapa 5: `genero` na oferta, no filtro e nas categorias."""
+
+    def popular_generos(self):
+        """Um item de cada público na perfumaria e um da Casa com palavra de gênero (que é `sem`)."""
+        return {'feminino': self.gravar(titulo='Lady Million Paco Rabanne Feminino'),
+                'masculino': self.gravar('ml', titulo='212 Men NYC'),
+                'unissex': self.gravar('shopee', titulo='Kit Perfumes Feminino e Masculino'),
+                'sem': self.gravar(titulo='Hidratante Corporal Pele Seca', busca='hidratante corporal'),
+                'casa': self.gravar(cat=CASA, titulo='Jogo de Toalhas Masculino', busca='perfume masculino')}
+
+    def corrigir(self, item_pk, valor):
+        G.definir_manual(self.con, item_pk, valor, ANTIGO)
+        self.con.commit()
+
+    def test_ca6_oferta_com_os_4_valores(self):
+        ids = self.popular_generos()
+        busca = self.gravar(titulo='Olympea EDP', busca='Perfume feminino importado')   # só a busca diz
+        por_id = {o['id']: o for o in self.ofertas('limite=200')['ofertas']}
+        self.assertEqual({nome: por_id[i]['genero'] for nome, i in ids.items()},
+                         {'feminino': 'feminino', 'masculino': 'masculino', 'unissex': 'unissex', 'sem': 'sem',
+                          'casa': 'sem'})
+        self.assertEqual(por_id[busca]['genero'], 'feminino')
+        self.assertEqual({o['genero'] for o in por_id.values()}, set(G.GENEROS))
+        for o in por_id.values():
+            self.assertEqual(list(o)[-1], 'genero')        # campo novo no fim; os antigos na mesma ordem
+            self.assertNotIn('genero_origem', o)            # a origem fica só no /api/items
+
+    def test_ca6_correcao_manual_vale_so_em_aba_com_genero(self):
+        ids = self.popular_generos()
+        self.corrigir(ids['feminino'], 'unissex')
+        self.corrigir(ids['sem'], 'masculino')
+        self.corrigir(ids['casa'], 'feminino')               # guardada, mas a Casa não separa por público
+        por_id = {o['id']: o['genero'] for o in self.ofertas('limite=200')['ofertas']}
+        self.assertEqual((por_id[ids['feminino']], por_id[ids['sem']], por_id[ids['casa']]),
+                         ('unissex', 'masculino', 'sem'))
+        self.assertEqual(sorted(self.ids('genero=masculino')), sorted([ids['masculino'], ids['sem']]))
+        por_nome = {c['nome']: c['generos'] for c in self.cats()['categorias']}
+        self.assertEqual(por_nome, {PERFUMES: {'feminino': 0, 'masculino': 2, 'unissex': 2, 'sem': 0},
+                                    CASA: {'feminino': 0, 'masculino': 0, 'unissex': 0, 'sem': 1}})
+        self.corrigir(ids['feminino'], None)                 # volta ao automático
+        self.assertEqual(self.ids('genero=feminino'), [ids['feminino']])
+
+    def test_ca6_oferta_direto_com_2_ou_3_argumentos(self):
+        i = self.gravar(titulo='Perfume Feminino Floral')
+        self.corrigir(i, 'masculino')
+        linha = self.con.execute('SELECT * FROM items WHERE id=?', (i,)).fetchone()
+        self.assertEqual(A.oferta(linha, AFILIADO)['genero'], 'feminino')        # compatível: sem correções
+        self.assertEqual(A.oferta(linha, AFILIADO, None)['genero'], 'feminino')
+        self.assertEqual(A.oferta(linha, AFILIADO, G.manuais(self.con))['genero'], 'masculino')
+
+    def test_ca6_genero_repetivel_filtro_exato_e_total_filtrado(self):
+        ids = self.popular_generos()
+        for _ in range(3):
+            self.gravar(titulo='Perfume Masculino Amadeirado')
+        self.assertEqual(self.ids('genero=feminino'), [ids['feminino']])
+        self.assertEqual(sorted(self.ids('genero=feminino&genero=unissex')), sorted([ids['feminino'], ids['unissex']]))
+        self.assertEqual(sorted(self.ids('genero=sem')), sorted([ids['sem'], ids['casa']]))   # exato: a Casa é `sem`
+        self.assertEqual(self.ofertas('genero=masculino')['total'], 4)
+        self.assertEqual(self.ofertas('genero=masculino&limite=1')['total'], 4)
+        todos = '&'.join(f'genero={g}' for g in reversed(G.GENEROS))
+        self.assertEqual(self.ofertas(todos)['total'], self.ofertas()['total'])
+        self.assertEqual(self.ids(f'genero=feminino&cat={urllib.parse.quote(CASA)}'), [])
+        self.assertEqual(self.ids('genero=masculino&loja=ml'), [ids['masculino']])
+        self.assertEqual(self.ids('genero=masculino&q=nyc'), [ids['masculino']])
+        self.assertEqual(A.filtros(pares('genero=unissex&genero=feminino'))['generos'], ['unissex', 'feminino'])
+
+    def test_ca6_genero_com_paginacao_nas_duas_familias_de_ordem(self):
+        OrdensDoDisparo.popular(self, random.Random(11))
+        for g in G.GENEROS:
+            for ordem in ('atualizacao', 'relevancia', 'menor_preco'):
+                with self.subTest(genero=g, ordem=ordem):
+                    todos = [o for o in self.ofertas(f'ordem={ordem}&limite=200')['ofertas']]
+                    esperado = [o['id'] for o in todos if o['genero'] == g]
+                    vistos, _, totais = self.percorrer(f'ordem={ordem}&limite=3&genero={g}')
+                    self.assertEqual(vistos, esperado)
+                    self.assertEqual(totais, {len(esperado)})
+
+    def test_ca6_genero_invalido_da_400_sem_eco(self):
+        self.gravar()
+        for qs in ('genero=', 'genero=Feminino', 'genero=FEMININO', 'genero=feminina', 'genero=fem', 'genero=f',
+                   'genero=todos', 'genero=feminino%20', 'genero=%20sem', 'genero=feminino,masculino',
+                   'genero=infantil', 'genero=' + SEGREDO, 'genero=sem&genero=' + SEGREDO,
+                   'genero=f%C3%AAminino', 'genero=%EF%BD%93%EF%BD%85%EF%BD%8D'):    # acento e largura total
+            with self.subTest(qs=qs):
+                self.assertEqual(self.erro(qs), MSG_GENERO)
+
+    def test_ca6_genero_repetido_da_400(self):
+        for g in G.GENEROS:
+            with self.subTest(genero=g):
+                self.assertEqual(self.erro(f'genero={g}&genero={g}'), MSG_GENERO)
+        self.assertEqual(self.erro('genero=sem&genero=feminino&genero=sem'), MSG_GENERO)
+        with self.assertRaises(A.ErroApi) as ctx:
+            A.filtros([('genero', 'feminino'), ('genero', 'feminino')])
+        self.assertEqual((ctx.exception.codigo, ctx.exception.msg), (400, MSG_GENERO))
+
+    def test_ca6_parametro_desconhecido_lista_genero(self):
+        self.assertEqual(self.erro('generos=feminino'),
+                         'parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero)')
+        for qs in ('Genero=feminino', 'publico=feminino', 'g%C3%AAnero=feminino'):
+            with self.subTest(qs=qs):
+                self.assertIn('desconhecido', self.erro(qs))
+
+    def test_ca6_max_pares_soma_os_4_generos(self):
+        self.assertEqual(A.MAX_PARES, 32)
+        self.assertEqual(A.MAX_PARES, A.MAX_CATS + len(D.LOJAS) + len(G.GENEROS) + 5)
+        self.gravar()
+        maior = ([f'cat=c{i}' for i in range(A.MAX_CATS)] + [f'loja={l}' for l in D.LOJAS]
+                 + [f'genero={g}' for g in G.GENEROS]
+                 + ['q=perfume', 'desconto_min=0', 'ordem=relevancia', 'limite=10', 'cursor=10'])
+        self.assertEqual(len(maior), A.MAX_PARES)
+        r = self.ofertas('&'.join(maior))                  # o maior pedido válido passa
+        self.assertEqual((r['versao'], r['total']), (1, 0))
+        self.assertEqual(self.erro('&'.join(maior + ['cat=c99'])), 'parâmetros demais')
+        self.assertEqual(self.erro('&'.join(['genero=sem'] * (A.MAX_PARES + 1))), 'parâmetros demais')
+
+    def test_ca6_genero_nao_traz_oferta_sem_link_de_afiliado(self):
+        bom = self.gravar(titulo='Perfume Feminino Floral')
+        fora = [self.gravar('ml', titulo='Perfume Feminino Floral', url='https://produto.mercadolivre.com.br/MLB-1'),
+                self.gravar(titulo='Perfume Feminino Floral', url='https://www.amazon.com.br/dp/B0X?tag=outro-20'),
+                self.gravar(titulo='Perfume Feminino i.Phone'),
+                self.gravar(titulo='Perfume Feminino Floral', preco='consulte'),
+                self.gravar(titulo='Perfume Feminino Floral', tem_dados=0)]
+        for i in fora:
+            self.corrigir(i, 'feminino')
+        for qs in ('genero=feminino', 'genero=feminino&ordem=relevancia', 'genero=feminino&genero=sem'):
+            with self.subTest(qs=qs):
+                self.assertEqual(self.ids(qs), [bom])
+                self.assertEqual(self.ofertas(qs)['total'], 1)
+        manuais = G.manuais(self.con)
+        for i in fora:
+            linha = self.con.execute('SELECT * FROM items WHERE id=?', (i,)).fetchone()
+            self.assertIsNone(A.oferta(linha, AFILIADO, manuais), i)
+        self.assertEqual(self.cats()['categorias'][0]['generos'], {'feminino': 1, 'masculino': 0, 'unissex': 0,
+                                                                   'sem': 0})
+
+    def test_ca6_categorias_com_as_4_chaves_e_contagem_igual_ao_filtro(self):
+        self.popular_generos()
+        OrdensDoDisparo.popular(self, random.Random(7))
+        self.gravar(cat='Zebra', titulo='Relógio Masculino')
+        r = self.cats()
+        self.assertEqual([list(c) for c in r['categorias']], [['nome', 'total', 'lojas', 'generos']] * 3)
+        for c in r['categorias']:
+            with self.subTest(cat=c['nome']):
+                self.assertEqual(list(c['generos']), list(G.GENEROS))
+                self.assertEqual(sum(c['generos'].values()), c['total'])
+                for g, n in c['generos'].items():
+                    self.assertEqual(self.ofertas(f"cat={urllib.parse.quote(c['nome'])}&genero={g}")['total'], n)
+                if c['nome'] not in G.ABAS_COM_GENERO:
+                    self.assertEqual(c['generos']['sem'], c['total'])
+        perfumes = next(c for c in r['categorias'] if c['nome'] == PERFUMES)
+        self.assertTrue(all(perfumes['generos'][g] >= 1 for g in G.GENEROS), perfumes)
+
+    def test_ca6_banco_sem_a_tabela_de_correcoes_e_tudo_automatico(self):
+        # banco migrado por código antigo (v1): a v1 não pode cair por falta da tabela
+        ids = self.popular_generos()
+        self.con.execute('DROP TABLE IF EXISTS generos_manuais')
+        self.con.commit()
+        por_id = {o['id']: o['genero'] for o in self.ofertas('limite=200')['ofertas']}
+        self.assertEqual(por_id[ids['feminino']], 'feminino')
+        self.assertEqual(self.ids('genero=unissex'), [ids['unissex']])
+        self.assertEqual(sum(self.cats()['categorias'][-1]['generos'].values()), 4)
+
+    def test_ca6_query_only_com_correcoes_nao_grava(self):
+        # como o servidor.py abre a conexão da v1 (PRAGMA query_only)
+        ids = self.popular_generos()
+        self.corrigir(ids['sem'], 'unissex')
+        ro = abrir(self.caminho)
+        self.addCleanup(ro.close)
+        ro.execute('PRAGMA query_only=1')
+        antes = [tuple(r) for r in self.con.execute('SELECT * FROM generos_manuais ORDER BY item_pk')]
+        self.assertEqual(sorted(self.ids('genero=unissex&ordem=desconto')),
+                         sorted([ids['unissex'], ids['sem']]))
+        r = A.rota(ro, 'GET', '/api/v1/ofertas', pares('genero=unissex'), AFILIADO, AGORA)
+        self.assertEqual(r['total'], 2)
+        A.rota(ro, 'GET', '/api/v1/categorias', [], AFILIADO)
+        self.assertEqual(ro.total_changes, 0)
+        self.assertEqual([tuple(r) for r in self.con.execute('SELECT * FROM generos_manuais ORDER BY item_pk')], antes)
+
+    def test_ca6_versao_continua_1_e_json_valido(self):
+        self.popular_generos()
+        for r in (self.ofertas('genero=feminino'), self.cats()):
+            self.assertEqual(r['versao'], 1)
+            json.dumps(r, allow_nan=False)
 
 
 # ---------------------------------------------------------------- rota e CA9
@@ -726,7 +919,7 @@ class SoLeitura(Base):
             elif isinstance(no, ast.ImportFrom):
                 importados.add((no.module or '').split('.')[0])
         self.assertNotIn('servidor', importados)
-        self.assertLessEqual(importados, {'math', 're', 'datetime', 'disparo'})
+        self.assertLessEqual(importados, {'math', 're', 'datetime', 'disparo', 'genero'})
 
 
 if __name__ == '__main__':

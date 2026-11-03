@@ -1,4 +1,4 @@
-- [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio, Chrome headless, testes, scripts de dado; `--noproxy` sempre com aspas
+- [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio (exec no subshell para o PID), Chrome headless, testes; `--noproxy` com aspas
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global, regra da spec sem medir, cor da referência sem conferir
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
 - [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível persistente por config, toggle às cegas; formatos reais via GET
@@ -6,3 +6,4 @@
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
 - [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
+- [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes

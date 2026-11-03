@@ -126,7 +126,8 @@ describe('API v1 com o fetch do Node 22 (CA8)', () => {
     semCors(r);
     assert.deepEqual(await r.json(), {
       versao: 1, total: 1,
-      categorias: [{ nome: CAT, total: 1, lojas: { amazon: 1, ml: 0, shopee: 0 } }],
+      categorias: [{ nome: CAT, total: 1, lojas: { amazon: 1, ml: 0, shopee: 0 },
+        generos: { feminino: 0, masculino: 0, unissex: 0, sem: 1 } }],
     });
   });
 

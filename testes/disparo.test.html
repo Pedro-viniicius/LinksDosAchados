@@ -694,7 +694,7 @@ teste('CA2: criar regra envia os campos do plano, nasce pausada (ativa:0), vira 
   await esperar(() => W.location.hash === '#disparo' && carregou() && qa('[data-regra]').length === 1, 'voltar à lista com a regra');
   const p = reqs('POST', /disparo\/regras$/);
   igual(p.length, 1);
-  igual(p[0].corpo, { nome: 'Eletrônicos de manhã', numero_id: E.numeros[0].id, cats: [cat], lojas: ['ml'], palavras: ['fone', 'Bluetooth'],
+  igual(p[0].corpo, { nome: 'Eletrônicos de manhã', numero_id: E.numeros[0].id, cats: [cat], lojas: ['ml'], generos: [], palavras: ['fone', 'Bluetooth'],
     desconto_min: 15, ordem: 'cupom', template: 'Template 1', com_foto: 0, dias: [0, 1, 2, 3, 4], horarios: ['09:30', '18:00'],
     por_disparo: 2, max_por_dia: 12, repetir_apos_dias: 14, intervalo_seg: 90, ativa: 0 });
   afirma(!('so_com_cupom' in p[0].corpo) && !('categorias' in p[0].corpo), 'só os nomes do plano');
@@ -770,6 +770,36 @@ teste('CA2: editar regra carrega os valores, mostra categoria que não existe ma
   afirma(!('ativa' in p[0].corpo), 'editar não mexe em ativa');
   igual(p[0].corpo.nome, 'Nova'); igual(p[0].corpo.cats, [CAT1()]); igual(p[0].corpo.repetir_apos_dias, null);
   igual(toastTxt(), 'Regra salva.');
+});
+
+// Poucas navegações de propósito: o Chrome limita navegações por janela (flooding protection) e esta página já anda perto do limite.
+// O resto do campo (regra antiga sem "generos", lista que a tela não representa) está em genero.test.html, sem navegar.
+teste('CA-V11: o campo "Público" é rádio (Todos, Feminino, Masculino, Unissex), abre em Todos, grava [valor] e o cartão cita o público', async () => {
+  E.numeros.push(numeroFalso());
+  E.regras.push(regraFalsa({ nome: 'Antiga' }));
+  await abrir('#disparo/nova');
+  igual(qa('#f-publico input').map(i => i.type), ['radio', 'radio', 'radio', 'radio']);
+  igual(qa('#f-publico input').map(i => i.value), ['todos', 'feminino', 'masculino', 'unissex']);
+  igual(qa('#f-publico .chip').map(txt), ['Todos', 'Feminino', 'Masculino', 'Unissex']);
+  igual(q('#f-publico input:checked').value, 'todos', 'a regra nova abre em Todos');
+  afirma(q('#f-publico').getAttribute('role') === 'radiogroup' && q('#' + q('#f-publico').getAttribute('aria-labelledby')), 'grupo com nome');
+  igual(txt(q('#rotPublico')), 'Público');
+  igual(txt(q('#a-publico')), 'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.');
+  // fica entre "Lojas" e "Ordem de envio"
+  const ordem = qa('#frmRegra .campo .rot').map(txt);
+  igual(ordem.slice(ordem.indexOf('Lojas'), ordem.indexOf('Lojas') + 3), ['Lojas', 'Público', 'Ordem de envio']);
+  preencherRegra({ nome: 'Só elas' });
+  marcarChip('#f-publico', 'feminino');
+  igual(qa('#f-publico input:checked').map(i => i.value), ['feminino'], 'escolha única');
+  marcarChip('#f-publico', 'unissex');
+  igual(qa('#f-publico input:checked').map(i => i.value), ['unissex']);
+  marcarChip('#f-publico', 'feminino');
+  clicar('#btnSalvar');
+  await esperar(() => W.location.hash === '#disparo' && carregou() && qa('[data-regra]').length === 2, 'voltar à lista');
+  igual(reqs('POST', /disparo\/regras$/)[0].corpo.generos, ['feminino']);
+  const meta = n => txt([...qa('[data-regra]')].find(c => txt(c.querySelector('h3')) === n).querySelector('.meta'));
+  afirma(meta('Só elas').includes(CAT1() + ' · Feminino · Todas as lojas'), 'resumo: ' + meta('Só elas'));
+  afirma(!/Feminino|Masculino|Unissex/.test(meta('Antiga')), 'regra antiga (sem "generos") não cita o público: ' + meta('Antiga'));
 });
 
 teste('CA2: regra inexistente na rota de edição mostra o aviso com link para voltar', async () => {
@@ -1469,14 +1499,16 @@ teste('D4: o refresh de 30 s não redesenha as regras enquanto há foco nelas; d
   afirma(q('[data-regra="' + E.regras[0].id + '"]') === cA, 'o cartão que não mudou é o mesmo nó (reconciliado por id)');
 });
 
-teste('D5: na tela de disparo saem "Copiar todas", "Adicionar links" e o contador; ficam Template e "Editar templates"; painéis abertos fecham', async () => {
+teste('D5 (M7): na tela de disparo o cabeçalho fica só com o logo e "← Voltar às ofertas"; saem Template, "Editar templates", "Copiar todas", "Adicionar links", "Disparo automático" e o contador; painéis abertos fecham', async () => {
   E.numeros.push(numeroFalso());
   q('#btnAdd').click(); afirma(q('#addBox').classList.contains('open'), 'preparação: addBox aberto');
   const visivel = sel => { const e = q(sel); return !!e && W.getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0; };
   for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#tplSelect', '#btnTpl', '#btnDisparo']) afirma(visivel(sel), sel + ' visível nas ofertas');
+  afirma(!visivel('#btnVoltarCab'), '"Voltar" do cabeçalho só existe na tela de disparo');
+  afirma(!q('#btnTpl').closest('header') && !q('#tplSelect').closest('header') && !q('#btnCopyAll').closest('header'), 'Template, Editar templates e Copiar todas saíram do cabeçalho (M1)');
   await abrir('#disparo');
-  for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#addBox']) afirma(!visivel(sel), sel + ' deveria sumir na tela de disparo');
-  for (const sel of ['#tplSelect', '#btnTpl', '#btnDisparo']) afirma(visivel(sel), sel + ' deve ficar');
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#addBox', '#tplSelect', '#btnTpl', '#btnDisparo']) afirma(!visivel(sel), sel + ' deveria sumir na tela de disparo');
+  afirma(visivel('#btnVoltarCab') && txt(q('#btnVoltarCab')) === '← Voltar às ofertas', 'cabeçalho com "← Voltar às ofertas"');
   afirma(!q('#addBox').classList.contains('open') && !q('#tplBox').classList.contains('open'), 'painéis fechados ao entrar');
   await abrir('#disparo/nova');
   for (const sel of ['#btnCopyAll', '#btnAdd', '#count']) afirma(!visivel(sel), sel + ' continua oculto no formulário');
@@ -1485,9 +1517,9 @@ teste('D5: na tela de disparo saem "Copiar todas", "Adicionar links" e o contado
   afirma(q('#tplBox').classList.contains('open'), 'o painel de templates abre');
   await abrir('#disparo');
   afirma(q('#tplBox').classList.contains('open'), 'navegar dentro do disparo não fecha o painel que o dono abriu');
-  q('#telaDisparo a.voltar').click();
+  q('#btnVoltarCab').click();
   await esperar(() => tela().hidden, 'voltar');
-  for (const sel of ['#btnCopyAll', '#btnAdd', '#count']) afirma(visivel(sel), sel + ' volta nas ofertas');
+  for (const sel of ['#btnCopyAll', '#btnAdd', '#count', '#tplSelect', '#btnTpl', '#btnDisparo']) afirma(visivel(sel), sel + ' volta nas ofertas');
   q('#tplBox').classList.remove('open');
 });
 
