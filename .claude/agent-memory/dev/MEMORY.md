@@ -1,0 +1,1 @@
+- [Chrome headless nos testes do front](chrome-headless-testes.md) — virtual-time trava decode de imagem; runner `node testes/rodar.mjs`; clipboard real com grantPermissions

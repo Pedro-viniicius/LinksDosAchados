@@ -1,0 +1,2 @@
+- [Fatos dos CDNs de imagem](cdn-imagens-fatos.md) — CORS `*` na Amazon e no ML, padrões de URL, SL1000, gif "não disponível" do ML
+- [Teste do front](decisao-teste-front.md) — testes/*.test.html no Chrome headless --dump-dom; lógica em function global (proposta, aguarda aprovação)

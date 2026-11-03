@@ -1,0 +1,1 @@
+- [Testes do front (copiar-imagem)](testes-front-copiar-imagem.md) — comando Chrome headless, armadilhas do --dump-dom, stubs e portas do scratchpad

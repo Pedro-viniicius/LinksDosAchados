@@ -57,10 +57,10 @@
   .lbl select{font:var(--t-corpo);letter-spacing:0;text-transform:none;color:var(--tinta)}
   /* Botões: padrão = Tinta; .cta = Etiqueta (única ação principal); .secondary = contorno; .ghost = discreto */
   button{background:var(--tinta);color:var(--sobre-tinta);border:1px solid transparent;border-radius:var(--r);padding:0 var(--s4);min-height:var(--alvo);font-weight:500;cursor:pointer;transition:background .15s,border-color .15s}
-  button:hover:not(:disabled){opacity:.88}
+  button:hover:not(:disabled):not([aria-disabled="true"]){opacity:.88}
   button.cta{background:var(--etiqueta);color:var(--sobre-etiqueta);font-weight:600}
   button.secondary{background:transparent;color:var(--tinta);border-color:var(--linha)}
-  button.secondary:hover:not(:disabled){opacity:1;border-color:var(--mudo)}
+  button.secondary:hover:not(:disabled):not([aria-disabled="true"]){opacity:1;border-color:var(--mudo)}
   button.ghost{background:transparent;color:var(--tinta)}
   button.ghost:hover:not(:disabled){opacity:1;background:var(--linha)}
   button.danger{background:transparent;color:var(--falhou)}
@@ -101,7 +101,11 @@
   .card textarea{flex:1 0 auto}
   textarea:focus-visible,input:focus-visible,select:focus-visible{outline-offset:0;border-color:var(--foco)}
   .actions{display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center}
-  .card .actions .copy{flex:1 1 120px}
+  .card .actions .copy{flex:1 1 96px}
+  .copyimg{white-space:nowrap;min-width:calc(14ch + 2*var(--s4))}
+  .copyimg[data-estado="copiada"]{color:var(--enviado)}
+  .copyimg[aria-disabled="true"]:not([aria-busy="true"]){opacity:.45;cursor:not-allowed}
+  .copyimg[aria-busy="true"]{cursor:progress}
   .more{margin-left:auto}
   .more[open]{flex-basis:100%;margin-left:0}
   .more summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;gap:var(--s1);min-height:var(--alvo);padding:0 var(--s3);border-radius:var(--r);font:var(--t-legenda);font-weight:500;color:var(--mudo)}
@@ -187,9 +191,24 @@
 <script>
 const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n({DESCONTO_PRODUTO} OFF)\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}", "Template 2": "⚡ *OFERTA RELÂMPAGO* ⚡\n\n*{TITULO_PRODUTO}*\n🔥 *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 {LINK}", "Template 3": "🎫 *USE O CUPOM: {CUPOM}*\n\n*{TITULO_PRODUTO}*\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n\n🛒 Compre aqui: {LINK}", "Template 4": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_ANTIGO}~\n🔥 Por *{PRECO_PRODUTO}*\n💥 {DESCONTO_PRODUTO} OFF\n⭐ {NUMERO_VENDAS}\n🚚 {FRETE}\n🎫 Cupom: *{CUPOM}*\n\n🛒 Compre aqui: {LINK}\n\n⏳ Preço e estoque podem mudar a qualquer momento"};
 const LOJA = {amazon:'Amazon', ml:'Mercado Livre'};
+// Textos do botão "Copiar imagem" (usados em copiarImagem)
+const TXT_IMG = {
+  botao:'Copiar imagem',
+  carregando:'Copiando…',
+  ok:'✓ Imagem copiada',
+  toastOk:'Imagem copiada! Cole no WhatsApp e volte para copiar a mensagem.',
+  toastLegenda:'Mensagem copiada! Cole como legenda da imagem.',
+  semFoto:'Este produto não tem foto. Abra na loja e copie a imagem de lá, se quiser enviar com foto.',
+  rede:'Não consegui baixar a foto. Confira a internet e tente de novo; se repetir, abra na loja e copie a imagem de lá.',
+  indisponivel:'Esta foto não está mais disponível na loja. Abra na loja e copie a imagem de lá.',
+  bloqueado:'O Chrome não deixou copiar a imagem. Clique na página e tente de novo; se repetir, clique no cadeado ao lado do endereço e permita a área de transferência.',
+  semSuporte:'Este navegador não copia imagens. Use o Chrome.'
+};
 const $ = s=>document.querySelector(s);
 const esc = s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const toast = m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1300);};
+// O tempo na tela acompanha o tamanho do texto; um aviso novo cancela o timer do anterior, para não ser apagado por ele
+let toastTimer;
+const toast = m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),Math.max(1300,String(m).length*50));};
 const api = async(path, method='GET', body)=>{ const r=await fetch('/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); };
 
 let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
@@ -230,17 +249,107 @@ async function fetchItem(it, card){
   }catch(e){ st.className='status err'; st.textContent='Erro: '+e.message; btn.disabled=false; }
 }
 
+// "Copiar imagem": baixa a foto do CDN da loja (CORS, sem cookies), converte para PNG e põe na área de transferência.
+// Só aceita os hosts abaixo, para uma URL forjada no banco não virar requisição a outro lugar.
+const HOSTS_FOTO = ['m.media-amazon.com', 'http2.mlstatic.com'];
+const falhaFoto = motivo=>Object.assign(new Error(motivo), {motivo});
+
+// Amazon: pede a versão de até 1000 px trocando o sufixo `._<mods>_.<ext>`. Outros hosts ficam como estão.
+function urlFotoParaCopiar(url){
+  const s = String(url ?? '');
+  let host;
+  try{ host = new URL(s).hostname; }catch{ return s; }
+  if (host !== 'm.media-amazon.com') return s;
+  return s.replace(/\._[^/]*_\.(jpe?g|png|webp)$/i, '._AC_SL1000_.$1');
+}
+
+async function baixarComoPng(u){
+  let p;
+  try{ p = new URL(u); }catch{ throw falhaFoto('indisponivel'); }
+  if (p.protocol !== 'https:' || !HOSTS_FOTO.includes(p.hostname)) throw falhaFoto('indisponivel');
+  let r, blob;
+  try{
+    r = await fetch(p.href, {mode:'cors', credentials:'omit', signal: AbortSignal.timeout(15000)});
+  }catch{ throw falhaFoto('rede'); }   // TypeError (rede/CORS), AbortError ou TimeoutError
+  // A lista de hosts vale também para o destino final, depois de redirecionamentos.
+  // r.url só vem vazio em Response montada no próprio JS (stub de teste); resposta de rede sempre traz a URL.
+  const destino = String(r.url || '');
+  if (destino){
+    let f;
+    try{ f = new URL(destino); }catch{ throw falhaFoto('indisponivel'); }
+    if (f.protocol !== 'https:' || !HOSTS_FOTO.includes(f.hostname)) throw falhaFoto('indisponivel');
+  }
+  // O ML redireciona foto inexistente para um gif "não disponível" que responde 200
+  if (!r.ok || destino.includes('/img-not-available/')) throw falhaFoto('indisponivel');
+  if (!/^image\//i.test(r.headers.get('content-type')||'')) throw falhaFoto('indisponivel');
+  try{ blob = await r.blob(); }catch{ throw falhaFoto('rede'); }
+  let bmp;
+  try{ bmp = await createImageBitmap(blob); }catch{ throw falhaFoto('indisponivel'); }
+  const cv = document.createElement('canvas');
+  cv.width = bmp.width; cv.height = bmp.height;
+  const ctx = cv.getContext('2d');
+  // Fundo branco (o mesmo de --fundo-imagem): sem ele, a transparência vira preto quando o WhatsApp converte para JPEG
+  ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(bmp, 0, 0); bmp.close();
+  const png = await new Promise(ok=>cv.toBlob(ok, 'image/png'));
+  if (!png) throw falhaFoto('indisponivel');
+  return png;
+}
+
+// Promise<Blob image/png>; em erro, e.motivo é 'rede' ou 'indisponivel'
+async function fotoComoPng(url){
+  const maior = urlFotoParaCopiar(url);
+  try{ return await baixarComoPng(maior); }
+  catch(e){
+    if (e.motivo === 'indisponivel' && maior !== url) return baixarComoPng(url);
+    throw e;
+  }
+}
+
+async function copiarImagem(it, card, btn){
+  const st = card.querySelector('.status');
+  const erro = texto=>{ st.className='status err'; st.textContent=texto; };
+  if (!it.data?.imagem){ erro(TXT_IMG.semFoto); return; }
+  if (btn.getAttribute('aria-busy') === 'true') return;   // evita o clique duplo
+  if (!navigator.clipboard?.write || typeof window.ClipboardItem !== 'function'){ erro('Erro: '+TXT_IMG.semSuporte); return; }
+  // O nome acessível começa pelo texto visível em cada estado (WCAG 2.5.3); sem título, o botão não tem aria-label
+  const titulo = it.data.titulo;
+  const rotulo = (texto, ligacao)=>{ if (titulo) btn.setAttribute('aria-label', texto+ligacao+titulo); };
+  btn.setAttribute('aria-busy','true'); btn.setAttribute('aria-disabled','true');
+  btn.removeAttribute('data-estado'); btn.textContent = TXT_IMG.carregando; rotulo(TXT_IMG.carregando, ': ');
+  st.className='status'; st.textContent='';
+  // O write é chamado já no clique, com a Promise dentro do ClipboardItem, para o Chrome não perder o gesto do usuário
+  const png = fotoComoPng(it.data.imagem);
+  png.catch(()=>{});   // o motivo é lido no catch abaixo; isto só evita o aviso de rejeição não tratada
+  try{
+    await navigator.clipboard.write([new ClipboardItem({'image/png': png})]);
+    btn.setAttribute('data-estado','copiada'); btn.textContent = TXT_IMG.ok; rotulo(TXT_IMG.ok, ': ');
+    card.classList.add('img-done'); toast(TXT_IMG.toastOk);
+  }catch(e){
+    // Vale o motivo da nossa Promise; o write devolve um erro genérico quando ela falha
+    const motivo = (await png.then(()=>null, er=>er?.motivo || 'rede')) ?? (e?.name === 'NotAllowedError' ? 'bloqueado' : 'rede');
+    btn.textContent = TXT_IMG.botao; rotulo(TXT_IMG.botao, ' de ');
+    erro('Erro: '+(TXT_IMG[motivo] || TXT_IMG.rede));
+  }finally{
+    btn.removeAttribute('aria-busy'); btn.removeAttribute('aria-disabled');
+  }
+}
+
 function renderCard(card, it){
   const d = it.data;
   const meta = d ? [d.avaliacao, d.num_avaliacoes, d.vendas].filter(Boolean).map(esc).join(' · ') : '';
+  const rotImg = d&&d.titulo ? ` aria-label="Copiar imagem de ${esc(d.titulo)}"` : '';
   card.innerHTML = `
-    <div class="top"><span class="badge ${it.loja}">${LOJA[it.loja]||it.loja}</span><span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Copiado</span></div>
+    <div class="top"><span class="badge ${esc(it.loja)}">${esc(LOJA[it.loja]||it.loja)}</span><span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Mensagem copiada</span></div>
     ${d ? `<div class="info">${d.imagem?`<img loading="lazy" alt="" src="${esc(d.imagem)}">`:''}<div class="t"><h2 class="name" title="${esc(d.titulo)}">${esc(d.titulo)}</h2><div class="price"><span class="now">${esc(d.preco)}</span>${d.preco_antigo?'<s class="old"><span class="sr">Preço antigo </span>'+esc(d.preco_antigo)+'</s>':''}${d.desconto?'<span class="off">'+esc(d.desconto)+'</span>':''}</div>${meta?'<div class="meta">'+meta+'</div>':''}</div></div>` : ''}
     <textarea aria-label="Mensagem para copiar"></textarea>
     <div class="status" role="status"></div>
     <div class="actions">
       <button class="cta copy">Copiar</button>
-      <button class="secondary open">Abrir na loja</button>
+      ${d&&d.imagem
+        ? `<button type="button" class="secondary copyimg"${rotImg}>${TXT_IMG.botao}</button>`
+        : `<button type="button" class="secondary copyimg" aria-disabled="true" aria-describedby="semfoto-${esc(it.id)}"${rotImg}>${TXT_IMG.botao}</button><span class="sr" id="semfoto-${esc(it.id)}">${TXT_IMG.semFoto}</span>`}
+      <button class="ghost open">Abrir na loja</button>
       <details class="more">
         <summary>Mais ações</summary>
         <div class="rare">
@@ -252,7 +361,8 @@ function renderCard(card, it){
       </details>
     </div>`;
   const ta = card.querySelector('textarea'); ta.value = buildMsg(it);
-  card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast('Mensagem copiada!'); };
+  card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast(card.classList.contains('img-done') ? TXT_IMG.toastLegenda : 'Mensagem copiada!'); };
+  const ci = card.querySelector('.copyimg'); ci.onclick = ()=>copiarImagem(it, card, ci);
   const f = card.querySelector('.fetch'); if(f) f.onclick = ()=>fetchItem(it, card);
   card.querySelector('.open').onclick = ()=>window.open(it.url, '_blank');
   card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };

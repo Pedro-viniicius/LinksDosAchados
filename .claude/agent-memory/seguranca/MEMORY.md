@@ -1,0 +1,3 @@
+- [Áreas sensíveis](areas-sensiveis.md) — dado pessoal, entradas, saídas no front e invariantes (afiliado, 127.0.0.1)
+- [Problemas recorrentes](problemas-recorrentes.md) — escape faltando em innerHTML, CORS aberto, static da pasta toda, redirect sem checagem
+- [Riscos aceitos](riscos-aceitos.md) — nenhum aceito ainda; pendências levadas ao dono em 2026-11-03

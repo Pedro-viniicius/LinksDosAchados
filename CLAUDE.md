@@ -1,6 +1,6 @@
 ## Contexto do projeto
 
-> **A definir** (parcial): ainda não há suíte de testes. Os demais itens foram verificados em 2026-11-03.
+> **A definir** (parcial): dados de teste. Os demais itens foram verificados em 2026-11-03.
 
 - **Produto:** gerador de mensagens de ofertas ("achadinhos") para grupos de WhatsApp. O dono coleta produtos da Amazon e do Mercado Livre, escolhe um template e copia a mensagem pronta, sempre com link de afiliado. Uso local, uma pessoa, no computador. A visão fica em `docs/produto/visao.md` (a escrever na sessão `produto`).
 - **Stack:** Python 3.14 só com a biblioteca padrão no servidor (`http.server` + `sqlite3`); `beautifulsoup4` e `lxml` na coleta da Amazon; front em HTML, CSS e JS puros num arquivo só, sem build; fontes Geist e Geist Mono pelo Google Fonts (sem internet, cai na fonte do sistema). Identidade visual em `Identidade visual — links de afiliado.pdf`; decisões de UI em `docs/produto/specs/ux-ui-identidade.md`. Sem manifesto de dependências.
@@ -12,7 +12,7 @@
   - `mensagens.html` e `amazon.php`: cópia antiga do site na Hostinger. Não alterar.
   - A coleta do Mercado Livre roda no Chrome (Claude in Chrome), por causa do captcha; não há arquivo para ela no projeto.
   - Pastas de regra de negócio que o `designer` não pode tocar: `servidor.py`, `coletar_*.py`, `buscas.json`, `*.db`.
-- **Verificação:** `python3 -m py_compile servidor.py coletar_amazon.py` (passa); com o servidor no ar (`python3 servidor.py`), `curl -s -o /dev/null -w "%{http_code}" localhost:8765/api/items` deve dar 200. Suíte de testes: a definir (hoje não existe nenhum teste).
+- **Verificação:** `python3 -m py_compile servidor.py coletar_amazon.py` (passa); com o servidor no ar (`python3 servidor.py`), `curl -s -o /dev/null -w "%{http_code}" localhost:8765/api/items` deve dar 200. Testes do front: com o servidor no ar, `node testes/rodar.mjs copiar-imagem` deve imprimir `RESULTADO: OK` (exit 0). Requer Node 22+ (`WebSocket` nativo) e Chrome em `/usr/bin/google-chrome`; o runner abre o Chrome headless via CDP em tempo real (não use `--virtual-time-budget --dump-dom`, que sai antes do fim). Cada página fica em `testes/<nome>.test.html`, só faz GET na API real, usa itens falsos montados com `renderCard` e lê duas fotos reais dos CDNs (sem internet, esses 2 testes falham). Funções do front que precisam de teste ficam declaradas com `function`, para o iframe alcançar.
 - **Dados de teste:** a definir. Para não mexer nos dados reais, rode contra uma cópia do `achadinhos.db` (o caminho está na constante `DB` em `servidor.py`). Coletas acessam Amazon e Mercado Livre de verdade: nunca rode em teste.
 - **Regra do dono:** todo link gravado tem que ser de afiliado (Amazon `?tag=desejodemen01-20`; Mercado Livre `https://meli.la/...` da etiqueta `achadosmenicas`). Nunca troque um link de afiliado por um link comum.
 - **Dado pessoal (LGPD):** não há dado de cliente. O `_chat.txt` em `WhatsApp Chat - AmazonLinks/` tem o nome do dono; não copie para logs.

@@ -1,0 +1,810 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Copiar imagem</title>
+<!--
+  Testes da feature "Copiar imagem" (docs/produto/planos/copiar-imagem.md, etapa 3).
+  Sem dependência. Rodar com o servidor no ar (python3 servidor.py):
+
+    node testes/rodar.mjs copiar-imagem
+
+  O runner abre o Chrome headless em tempo real (CDP), lê o resultado e sai com código 0 só
+  quando a linha de resultado diz "OK". Não use --virtual-time-budget com --dump-dom: o
+  createImageBitmap/fetch de foto real não termina antes do dump e a página sai pendente.
+  Qualquer linha de falha lista o teste e o motivo.
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real, que só recebe GET da API real;
+  - fetch do iframe passa por uma guarda: POST, PATCH, PUT e DELETE em /api/ nunca saem;
+  - os itens são falsos (ids 9xxxxxxxx), montados com renderCard num div solto;
+  - nunca clica em .del, .mv, .fetch, #saveLinks nem #saveTpl;
+  - a única rede real nos testes são as duas fotos pontuais (Amazon e Mercado Livre).
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script e fora deste
+  comentário, para um grep no texto da página não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Copiar imagem</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+// As Promises e os erros do app nascem no iframe: os ouvintes precisam estar na janela dele (W),
+// além da desta página. Registrados em carregarApp().
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const URL_AMZ = 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_UL320_.jpg';
+const URL_AMZ_1000 = 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg';
+const URL_ML = 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-E.webp';
+
+let W, FETCH_ORIG, CI_ORIG, IMPL = null, TXT = null;
+const REG_FETCH = [];   // chamadas a fetch do iframe no teste corrente
+const VIOL = [];        // tentativas de escrita na API real (devem ficar vazias)
+const cartoes = [];
+
+async function carregarApp() {
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html'; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  CI_ORIG = W.ClipboardItem;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    REG_FETCH.push({ url, metodo, opcoes });
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return IMPL ? IMPL(url, opcoes) : FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  // espera o app terminar de carregar os dados reais (só GET)
+  await esperar(() => W.eval('items.length') > 0 && W.document.querySelectorAll('#grid .card').length > 0,
+    'o index.html carregar os itens do servidor (servidor no ar em :8765?)');
+  REG_FETCH.length = 0;
+  TXT = W.eval('TXT_IMG');
+}
+
+function restaurar() {
+  try { delete W.navigator.clipboard; } catch (e) { /* ignora */ }
+  Object.defineProperty(W, 'ClipboardItem', { value: CI_ORIG, configurable: true, writable: true });
+  IMPL = null;
+  REG_FETCH.length = 0;
+  while (cartoes.length) cartoes.pop().remove();
+  const t = W.document.getElementById('toast'); if (t) t.textContent = '';
+}
+
+function stubClipboard({ rejeitar, ignorarPromises } = {}) {
+  const calls = { write: [], text: [] };
+  const cb = {
+    write: async function (arr) {
+      calls.write.push(arr);                       // registrado de forma síncrona
+      if (ignorarPromises) {                       // write pendente que não encosta nas promises do item
+        await dormir(60);
+        throw new W.DOMException('Failed to write to clipboard', 'NotAllowedError');
+      }
+      // como o Chrome: espera as promises do ClipboardItem e só depois devolve o resultado do write,
+      // com um atraso (o Chrome real responde por IPC). Se a promise da foto falhar, o write rejeita
+      // com o erro genérico NotAllowedError, e não com o motivo real.
+      const res = await Promise.allSettled(arr.flatMap(it => Array.from(it.types).map(t => it.getType(t))));
+      await dormir(20);
+      if (rejeitar) throw rejeitar;
+      if (res.some(r => r.status === 'rejected')) throw new W.DOMException('Failed to write to clipboard', 'NotAllowedError');
+    },
+    writeText: async function (t) { calls.text.push(t); }
+  };
+  Object.defineProperty(W.navigator, 'clipboard', { value: cb, configurable: true });
+  return calls;
+}
+
+let seq = 0;
+function itemFalso(sobre = {}) {
+  const n = ++seq;
+  const it = {
+    id: 900000000 + n, loja: sobre.loja || 'amazon', cat: 'QA', busca: 'qa',
+    url: sobre.url || (sobre.loja === 'ml' ? 'https://meli.la/QA' + n : 'https://www.amazon.com.br/dp/B0QA' + n + '?tag=desejodemen01-20'),
+    data: { titulo: 'Produto de teste ' + n, preco: 'R$ 99,90', preco_antigo: 'R$ 150,00', desconto: '-34%', imagem: URL_AMZ }
+  };
+  if ('data' in sobre) it.data = sobre.data;
+  if (it.data) {
+    if ('imagem' in sobre) it.data.imagem = sobre.imagem;
+    if ('titulo' in sobre) it.data.titulo = sobre.titulo;
+  }
+  return it;
+}
+
+function montarCard(it, exigirBotao = true) {
+  const card = W.document.createElement('div');
+  card.className = 'card';
+  W.document.body.appendChild(card);
+  cartoes.push(card);
+  W.renderCard(card, it);
+  if (exigirBotao) afirma(card.querySelector('.copyimg'), 'renderCard não gerou o botão .copyimg');
+  return { card, it, btn: card.querySelector('.copyimg'), st: card.querySelector('.status'), ta: card.querySelector('textarea') };
+}
+
+async function imagem(l, a, cor) {   // PNG no realm do iframe; cor nula = transparente
+  const cv = W.document.createElement('canvas'); cv.width = l; cv.height = a;
+  if (cor) { const c = cv.getContext('2d'); c.fillStyle = cor; c.fillRect(0, 0, l, a); }
+  return new Promise(r => cv.toBlob(r, 'image/png'));
+}
+const resp = (blob, { status = 200, tipo = 'image/png', url = '' } = {}) => {
+  const r = new W.Response(blob, { status, headers: { 'content-type': tipo } });
+  if (url) Object.defineProperty(r, 'url', { value: url });
+  return r;
+};
+async function pixels(blob) {
+  const bmp = await W.createImageBitmap(blob);
+  const cv = W.document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+  const c = cv.getContext('2d'); c.drawImage(bmp, 0, 0);
+  return { largura: bmp.width, altura: bmp.height, px: (x, y) => Array.from(c.getImageData(x, y, 1, 1).data) };
+}
+async function ehPng(blob) {
+  const b = new Uint8Array(await blob.arrayBuffer());
+  return [0x89, 0x50, 0x4e, 0x47].every((v, i) => b[i] === v);
+}
+const funcao = nome => { const f = W[nome]; afirma(typeof f === 'function', 'index.html não declara a function global ' + nome); return f; };
+const semMarca = t => String(t).replace(/^\s*✓\s*/, '').trim().toLowerCase();
+function rotuloCoerente(btn, quando) {
+  const rot = btn.getAttribute('aria-label');
+  if (rot === null) return;   // sem aria-label o nome é o texto visível
+  const vis = semMarca(btn.textContent);
+  afirma(semMarca(rot).startsWith(vis), 'aria-label "' + rot + '" não começa com o texto visível "' + btn.textContent.trim() + '" (' + quando + ')');
+}
+const textoStatus = c => c.st.textContent.trim();
+const chamadasImagem = () => REG_FETCH.filter(c => !/^\/api\//.test(c.url));
+
+async function clicarEEsperarFim(c) {
+  c.btn.click();
+  await esperar(() => c.btn.dataset.estado === 'copiada' || c.st.classList.contains('err'),
+    'o clique em Copiar imagem terminar (sucesso ou erro)');
+}
+function afirmaErro(c, motivo) {
+  afirma(c.st.classList.contains('err'), '.status deveria ter a classe err');
+  igual(textoStatus(c), 'Erro: ' + TXT[motivo], 'texto do erro (' + motivo + ')');
+  afirma(c.btn.dataset.estado !== 'copiada', 'não pode marcar data-estado=copiada na falha');
+  afirma(c.btn.getAttribute('aria-busy') !== 'true', 'aria-busy deve sair depois da falha');
+  afirma(c.btn.getAttribute('aria-disabled') !== 'true', 'o botão deve voltar a ficar clicável depois da falha');
+  igual(c.btn.textContent.trim(), TXT.botao, 'texto do botão volta ao padrão');
+  rotuloCoerente(c.btn, 'depois da falha');
+  afirma(!c.card.classList.contains('img-done'), 'img-done não pode ser marcado na falha');
+  afirma(W.document.getElementById('toast').textContent !== TXT.toastOk, 'o toast de sucesso não pode aparecer na falha');
+}
+
+// ================================================================ CA1
+teste('CA1: card com foto tem um botão .secondary.copyimg logo depois de .copy, habilitado e com o texto padrão', async () => {
+  funcao('renderCard');
+  const c = montarCard(itemFalso());
+  igual(c.card.querySelectorAll('.copyimg').length, 1);
+  igual(c.btn.tagName, 'BUTTON');
+  igual(c.btn.getAttribute('type'), 'button');
+  afirma(c.btn.classList.contains('secondary'), 'deveria ter a classe secondary');
+  afirma(c.btn.previousElementSibling === c.card.querySelector('.copy'), 'deveria vir logo depois de .copy');
+  igual(c.btn.textContent.trim(), TXT.botao);
+  afirma(c.btn.getAttribute('aria-disabled') !== 'true', 'com foto não pode estar aria-disabled');
+  rotuloCoerente(c.btn, 'padrão');
+});
+
+teste('CA1: aria-label leva o título escapado e nenhum HTML do título vira marcação', async () => {
+  const c = montarCard(itemFalso({ titulo: 'Fone "Pro" <i>x</i> & cia' }));
+  igual(c.btn.getAttribute('aria-label'), 'Copiar imagem de Fone "Pro" <i>x</i> & cia');
+  igual(c.card.querySelectorAll('i').length, 0, 'tags <i> do título não podem virar elemento');
+});
+
+teste('CA1: sem título não há aria-label no botão', async () => {
+  const c = montarCard(itemFalso({ titulo: '' }));
+  igual(c.btn.getAttribute('aria-label'), null);
+  afirma(c.btn.getAttribute('aria-disabled') !== 'true', 'a foto existe; o botão fica habilitado');
+});
+
+teste('CA1: o clique chama clipboard.write de forma síncrona (gesto do usuário) e entra em carregando; segundo clique é ignorado', async () => {
+  funcao('copiarImagem');
+  const calls = stubClipboard();
+  const png = await imagem(40, 30, '#ff0000');
+  let liberar; const pendente = new Promise(r => { liberar = r; });
+  IMPL = () => pendente;
+  const c = montarCard(itemFalso());
+  c.st.textContent = 'sobra de erro antigo'; c.st.className = 'status err';
+  c.btn.click();
+  igual(calls.write.length, 1, 'write precisa ser chamado antes de qualquer await, ainda dentro do clique');
+  igual(c.btn.getAttribute('aria-busy'), 'true');
+  igual(c.btn.getAttribute('aria-disabled'), 'true');
+  igual(c.btn.textContent.trim(), TXT.carregando);
+  igual(textoStatus(c), '', 'o carregando limpa o .status');
+  rotuloCoerente(c.btn, 'carregando');
+  c.btn.click();
+  await dormir(30);
+  igual(calls.write.length, 1, 'clique durante o carregando não pode chamar write de novo');
+  igual(chamadasImagem().length, 1, 'clique durante o carregando não pode abrir segundo fetch');
+  liberar(resp(png));
+  await esperar(() => c.btn.dataset.estado === 'copiada', 'terminar a cópia');
+  igual(c.btn.getAttribute('aria-busy') === 'true', false, 'aria-busy sai no sucesso');
+  igual(c.btn.getAttribute('aria-disabled') === 'true', false, 'o botão volta a ficar clicável no sucesso');
+});
+
+teste('CA1: sucesso (stub): write recebe só image/png, PNG de verdade, tamanho natural; estado, selo e toast corretos', async () => {
+  funcao('copiarImagem');
+  const calls = stubClipboard();
+  const png = await imagem(40, 30, '#ff0000');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  igual(calls.write.length, 1);
+  igual(calls.write[0].length, 1, 'um ClipboardItem só');
+  igual(Array.from(calls.write[0][0].types), ['image/png']);
+  const blob = await calls.write[0][0].getType('image/png');
+  igual(blob.type, 'image/png');
+  afirma(await ehPng(blob), 'os bytes precisam ter a assinatura PNG');
+  const p = await pixels(blob);
+  igual([p.largura, p.altura], [40, 30], 'tamanho natural da foto');
+  igual(p.px(10, 10), [255, 0, 0, 255], 'pixel da foto preservado');
+  igual(c.btn.dataset.estado, 'copiada');
+  igual(c.btn.textContent.trim(), TXT.ok);
+  afirma(c.card.classList.contains('img-done'), 'o card deve ganhar img-done');
+  rotuloCoerente(c.btn, 'copiada');
+  igual(W.document.getElementById('toast').textContent, TXT.toastOk);
+  igual(textoStatus(c), '', 'sem erro no sucesso');
+  afirma(!c.st.classList.contains('err'), 'sem classe err no sucesso');
+});
+
+teste('CA1: depois do sucesso o botão continua clicável e copia de novo', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(10, 10, '#00ff00');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  c.btn.click();
+  await esperar(() => calls.write.length === 2, 'segundo write');
+  await esperar(() => c.btn.getAttribute('aria-busy') !== 'true', 'segunda cópia terminar');
+  igual(c.btn.dataset.estado, 'copiada');
+});
+
+teste('CA1: novo clique depois de um erro limpa o erro e conclui', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(10, 10, '#0000ff');
+  IMPL = () => Promise.reject(new W.TypeError('Failed to fetch'));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'rede');
+  IMPL = () => Promise.resolve(resp(png));
+  await clicarEEsperarFim(c);
+  igual(c.btn.dataset.estado, 'copiada');
+  igual(textoStatus(c), '', 'o erro antigo sai');
+  afirma(!c.st.classList.contains('err'), 'a classe err sai');
+  igual(calls.write.length, 2);
+});
+
+teste('CA1+CA2 (rede real): foto da Amazon vira image/png maior que 320 px, em SL1000, sem credenciais', async () => {
+  const calls = stubClipboard();
+  const c = montarCard(itemFalso({ imagem: URL_AMZ }));
+  await clicarEEsperarFim(c);
+  igual(textoStatus(c), '', 'sem erro');
+  igual(calls.write.length, 1);
+  igual(Array.from(calls.write[0][0].types), ['image/png']);
+  const blob = await calls.write[0][0].getType('image/png');
+  igual(blob.type, 'image/png');
+  afirma(await ehPng(blob), 'assinatura PNG');
+  const p = await pixels(blob);
+  afirma(p.largura > 320, 'largura ' + p.largura + ' deveria passar de 320 (versão SL1000)');
+  afirma(p.largura <= 1000 && p.altura <= 1000, 'não passa de 1000 px: ' + p.largura + 'x' + p.altura);
+  const reqs = chamadasImagem();
+  igual(reqs[0].url, URL_AMZ_1000, 'primeira requisição pede a versão grande');
+  igual(reqs[0].opcoes && reqs[0].opcoes.credentials, 'omit');
+  igual(reqs[0].opcoes && reqs[0].opcoes.mode, 'cors');
+  afirma(reqs[0].opcoes && reqs[0].opcoes.signal && typeof reqs[0].opcoes.signal.aborted === 'boolean', 'precisa de AbortSignal (timeout)');
+  igual(c.btn.dataset.estado, 'copiada');
+  afirma(c.card.classList.contains('img-done'), 'img-done');
+  igual(W.document.getElementById('toast').textContent, TXT.toastOk);
+});
+
+teste('CA1+CA2 (rede real): WEBP do Mercado Livre vira image/png, sem reescrever a URL', async () => {
+  const calls = stubClipboard();
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(textoStatus(c), '', 'sem erro');
+  igual(calls.write.length, 1);
+  igual(Array.from(calls.write[0][0].types), ['image/png']);
+  const blob = await calls.write[0][0].getType('image/png');
+  igual(blob.type, 'image/png');
+  afirma(await ehPng(blob), 'assinatura PNG (a origem era WEBP)');
+  const p = await pixels(blob);
+  afirma(p.largura > 0 && p.altura > 0, 'o PNG decodifica com tamanho');
+  igual(chamadasImagem().map(r => r.url), [URL_ML], 'uma requisição, na URL gravada');
+  igual(c.btn.dataset.estado, 'copiada');
+  afirma(c.card.classList.contains('img-done'), 'img-done');
+});
+
+// ================================================================ CA2
+teste('CA2: HOSTS_FOTO tem exatamente os dois CDNs', async () => {
+  igual(Array.from(W.eval('HOSTS_FOTO')), ['m.media-amazon.com', 'http2.mlstatic.com']);
+});
+
+const TABELA_URL = [
+  ['Amazon UL320', 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_UL320_.jpg', 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg'],
+  ['Amazon SX300_SY300_QL70', 'https://m.media-amazon.com/images/I/71abcDEF12L._AC_SX300_SY300_QL70_.jpg', 'https://m.media-amazon.com/images/I/71abcDEF12L._AC_SL1000_.jpg'],
+  ['Amazon com + no id', 'https://m.media-amazon.com/images/I/81+abcDEF-1L._AC_UL320_.jpg', 'https://m.media-amazon.com/images/I/81+abcDEF-1L._AC_SL1000_.jpg'],
+  ['Amazon png', 'https://m.media-amazon.com/images/I/51xyz._AC_UL320_.png', 'https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.png'],
+  ['Amazon já em SL1000 (idempotente)', URL_AMZ_1000, URL_AMZ_1000],
+  ['Amazon sem sufixo de tamanho', 'https://m.media-amazon.com/images/I/41abc.jpg', 'https://m.media-amazon.com/images/I/41abc.jpg'],
+  ['ML não muda', URL_ML, URL_ML],
+  ['outro host com o mesmo padrão não muda', 'https://example.com/images/I/x._AC_UL320_.jpg', 'https://example.com/images/I/x._AC_UL320_.jpg'],
+  ['string vazia', '', '']
+];
+for (const [nome, entrada, saida] of TABELA_URL) {
+  teste('CA2: urlFotoParaCopiar: ' + nome, async () => {
+    igual(funcao('urlFotoParaCopiar')(entrada), saida);
+  });
+}
+
+teste('CA2: sem SL1000 a Amazon cai para a URL gravada e a cópia conclui', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(30, 20, '#123456');
+  IMPL = url => Promise.resolve(url === URL_AMZ_1000 ? resp(new W.Blob(['x']), { status: 400, tipo: 'text/plain' }) : resp(png));
+  const c = montarCard(itemFalso({ imagem: URL_AMZ }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_AMZ_1000, URL_AMZ]);
+  igual(c.btn.dataset.estado, 'copiada');
+  const p = await pixels(await calls.write[0][0].getType('image/png'));
+  igual([p.largura, p.altura], [30, 20]);
+});
+
+teste('CA2: se SL1000 e a URL gravada falham, são só duas tentativas e o erro é indisponível', async () => {
+  stubClipboard();
+  IMPL = () => Promise.resolve(resp(new W.Blob(['x']), { status: 400, tipo: 'text/plain' }));
+  const c = montarCard(itemFalso({ imagem: URL_AMZ }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_AMZ_1000, URL_AMZ]);
+  afirmaErro(c, 'indisponivel');
+});
+
+teste('CA2: falha de rede em SL1000 não tenta a URL gravada (só indisponível tem fallback)', async () => {
+  stubClipboard();
+  IMPL = () => Promise.reject(new W.TypeError('Failed to fetch'));
+  const c = montarCard(itemFalso({ imagem: URL_AMZ }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().length, 1);
+  afirmaErro(c, 'rede');
+});
+
+teste('CA2: PNG transparente sai com fundo branco opaco e o canvas tem o tamanho natural', async () => {
+  const calls = stubClipboard();
+  const transp = await imagem(20, 12, null);
+  IMPL = () => Promise.resolve(resp(transp, { tipo: 'image/png' }));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  const p = await pixels(await calls.write[0][0].getType('image/png'));
+  igual([p.largura, p.altura], [20, 12]);
+  igual(p.px(5, 5), [255, 255, 255, 255], 'fundo branco opaco no lugar da transparência');
+});
+
+// ================================================================ CA3
+const SEM_FOTO = [
+  ['data nulo', { data: null }],
+  ['imagem vazia', { data: { titulo: 'Sem foto', preco: 'R$ 10,00', imagem: '' } }],
+  ['sem a chave imagem', { data: { titulo: 'Sem foto', preco: 'R$ 10,00' } }]
+];
+for (const [nome, sobre] of SEM_FOTO) {
+  teste('CA3: card sem foto (' + nome + ') mostra o botão com aria-disabled e a explicação no clique, sem copiar', async () => {
+    const calls = stubClipboard();
+    IMPL = () => Promise.reject(new W.TypeError('não deveria chamar fetch'));
+    const it = itemFalso(sobre);
+    const c = montarCard(it);
+    afirma(c.btn, 'o botão precisa existir também sem foto');    igual(c.btn.getAttribute('aria-disabled'), 'true');
+    afirma(!c.btn.hasAttribute('disabled'), 'usa aria-disabled, não disabled (continua focável)');
+    const alvo = c.card.querySelector('#semfoto-' + it.id);
+    igual(c.btn.getAttribute('aria-describedby'), 'semfoto-' + it.id);
+    afirma(alvo, 'o aria-describedby precisa apontar para um elemento do card');
+    igual(alvo.textContent.trim(), TXT.semFoto);
+    c.btn.click(); c.btn.click();
+    await dormir(30);
+    afirma(c.st.classList.contains('err'), '.status deveria ter a classe err');
+    afirma(textoStatus(c).includes(TXT.semFoto), 'o .status explica o motivo: ' + textoStatus(c));
+    igual(calls.write.length, 0, 'write não pode ser chamado');
+    igual(REG_FETCH.length, 0, 'fetch não pode ser chamado');
+    afirma(!c.btn.dataset.estado, 'sem data-estado');
+    afirma(c.btn.getAttribute('aria-busy') !== 'true', 'sem aria-busy');
+    afirma(!c.card.classList.contains('img-done'), 'sem img-done');
+  });
+}
+
+// ================================================================ CA4
+teste('CA4: TXT_IMG tem as 10 chaves, todas com texto, e os 4 erros e o aviso de sem foto são diferentes entre si', async () => {
+  const chaves = ['botao', 'carregando', 'ok', 'toastOk', 'toastLegenda', 'semFoto', 'rede', 'indisponivel', 'bloqueado', 'semSuporte'];
+  for (const k of chaves) afirma(typeof TXT[k] === 'string' && TXT[k].trim().length > 3, 'TXT_IMG.' + k + ' ausente ou vazio');
+  const erros4 = ['rede', 'indisponivel', 'bloqueado', 'semSuporte', 'semFoto'].map(k => TXT[k]);
+  igual(new Set(erros4).size, 5, 'textos de erro precisam ser distintos');
+  afirma(!TXT.ok.includes('Mensagem'), 'o sucesso da imagem não pode falar de mensagem');
+});
+
+const ERROS_REDE = [
+  ['TypeError (sem internet / CORS)', () => new W.TypeError('Failed to fetch')],
+  ['AbortError', () => new W.DOMException('abortado', 'AbortError')],
+  ['TimeoutError (15 s)', () => new W.DOMException('tempo', 'TimeoutError')]
+];
+for (const [nome, mk] of ERROS_REDE) {
+  teste('CA4: fetch com ' + nome + ' mostra o erro de rede', async () => {
+    const calls = stubClipboard();
+    IMPL = () => Promise.reject(mk());
+    const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+    await clicarEEsperarFim(c);
+    afirmaErro(c, 'rede');
+    igual(chamadasImagem().length, 1);
+    igual(calls.write.length, 1, 'write é chamado com a promise; ela é que falha');
+  });
+}
+
+let IMG_VALIDA = null;
+const ERROS_INDISP = [
+  ['HTTP 400 text/plain (foto inexistente na Amazon)', () => resp(new W.Blob(['bad']), { status: 400, tipo: 'text/plain' })],
+  ['HTTP 404', () => resp(new W.Blob(['x']), { status: 404, tipo: 'text/html' })],
+  ['HTTP 500', () => resp(new W.Blob(['x']), { status: 500, tipo: 'text/html' })],
+  // imagem decodificável de verdade: só a checagem de /img-not-available/ pode barrar este caso
+  ['gif de img-not-available do ML (200 image/gif, decodificável)', () => resp(IMG_VALIDA, { status: 200, tipo: 'image/gif', url: 'https://http2.mlstatic.com/img-not-available/x/E@2x.gif' })],
+  ['200 com content-type que não é imagem', () => resp(new W.Blob(['<html>']), { status: 200, tipo: 'text/html' })],
+  ['200 image/png com bytes que não decodificam', () => resp(new W.Blob([new Uint8Array([1, 2, 3, 4])]), { status: 200, tipo: 'image/png' })]
+];
+for (const [nome, mk] of ERROS_INDISP) {
+  teste('CA4: ' + nome + ' mostra imagem indisponível e não copia nada', async () => {
+    const calls = stubClipboard();
+    IMPL = () => Promise.resolve(mk());
+    const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+    await clicarEEsperarFim(c);
+    afirmaErro(c, 'indisponivel');
+    igual(chamadasImagem().length, 1, 'ML não tem fallback; uma tentativa');
+    // a promise entregue ao ClipboardItem tem que falhar (nada de gif/lixo na área de transferência)
+    let falhou = false;
+    try { await calls.write[0][0].getType('image/png'); } catch (e) { falhou = true; }
+    afirma(falhou, 'o ClipboardItem não pode entregar um blob nesse caso');
+  });
+}
+
+teste('CA4: foto que falha enquanto o write ainda está pendente não gera rejeição não tratada e mostra o motivo da foto', async () => {
+  // a rejeição não tratada seria registrada pelos ouvintes de erro do iframe (checados no fim de cada teste)
+  stubClipboard({ ignorarPromises: true });
+  IMPL = () => Promise.reject(new W.TypeError('Failed to fetch'));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'rede');
+});
+
+teste('CA4: write rejeitado com NotAllowedError (foto baixou) mostra área de transferência bloqueada', async () => {
+  stubClipboard({ rejeitar: new W.DOMException('negado', 'NotAllowedError') });
+  const png = await imagem(10, 10, '#abcdef');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'bloqueado');
+});
+
+teste('CA4: write rejeitado com erro desconhecido (foto baixou) cai em rede', async () => {
+  stubClipboard({ rejeitar: new W.Error('algo estranho') });
+  const png = await imagem(10, 10, '#abcdef');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'rede');
+});
+
+teste('CA4: se a foto falhou, o motivo vem da foto e não do NotAllowedError genérico do write', async () => {
+  stubClipboard({ rejeitar: new W.DOMException('negado', 'NotAllowedError') });
+  IMPL = () => Promise.resolve(resp(new W.Blob(['bad']), { status: 400, tipo: 'text/plain' }));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'indisponivel');
+});
+
+teste('CA4: sem ClipboardItem mostra navegador sem suporte, sem chamar fetch nem write', async () => {
+  const calls = stubClipboard();
+  IMPL = () => Promise.reject(new W.TypeError('não deveria chamar fetch'));
+  delete W.ClipboardItem;
+  afirma(typeof W.ClipboardItem === 'undefined', 'o teste precisa conseguir remover ClipboardItem');
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'semSuporte');
+  igual(REG_FETCH.length, 0, 'fetch');
+  igual(calls.write.length, 0, 'write');
+});
+
+teste('CA4: clipboard sem write mostra navegador sem suporte, sem chamar fetch', async () => {
+  Object.defineProperty(W.navigator, 'clipboard', { value: { writeText: async () => {} }, configurable: true });
+  IMPL = () => Promise.reject(new W.TypeError('não deveria chamar fetch'));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'semSuporte');
+  igual(REG_FETCH.length, 0, 'fetch');
+});
+
+teste('CA4: navigator.clipboard indefinido mostra navegador sem suporte, sem chamar fetch', async () => {
+  Object.defineProperty(W.navigator, 'clipboard', { value: undefined, configurable: true });
+  IMPL = () => Promise.reject(new W.TypeError('não deveria chamar fetch'));
+  const c = montarCard(itemFalso());
+  await clicarEEsperarFim(c);
+  afirmaErro(c, 'semSuporte');
+  igual(REG_FETCH.length, 0, 'fetch');
+});
+
+// ---- entrada externa: URL forjada no banco não vira requisição
+const URLS_FORJADAS = [
+  ['http (sem TLS) no host certo', 'http://m.media-amazon.com/images/I/x._AC_UL320_.jpg'],
+  ['host de terceiro', 'https://evil.example/x.png'],
+  ['host que só começa igual', 'https://m.media-amazon.com.evil.example/x.jpg'],
+  ['userinfo disfarçando o host', 'https://m.media-amazon.com@evil.example/x.jpg'],
+  ['o próprio servidor local (https)', 'https://localhost:8765/api/items'],
+  ['o próprio servidor local (http)', 'http://localhost:8765/api/items'],
+  ['caminho relativo para a API', '/api/items'],
+  ['javascript:', 'javascript:alert(1)'],
+  ['data:', 'data:image/png;base64,AAAA']
+];
+for (const [nome, u] of URLS_FORJADAS) {
+  teste('CA4/segurança: imagem forjada (' + nome + ') não gera requisição e mostra indisponível', async () => {
+    stubClipboard();
+    IMPL = () => Promise.reject(new W.TypeError('requisição indevida'));
+    const c = montarCard(itemFalso({ imagem: u }));
+    await clicarEEsperarFim(c);
+    igual(chamadasImagem().length, 0, 'nenhum fetch para a URL forjada');
+    afirmaErro(c, 'indisponivel');
+  });
+}
+
+teste('CA4/segurança: fotoComoPng rejeita com e.motivo "indisponivel" para host fora da lista, sem fetch', async () => {
+  IMPL = () => Promise.reject(new W.TypeError('requisição indevida'));
+  let motivo = null;
+  try { await funcao('fotoComoPng')('https://evil.example/x.png'); } catch (e) { motivo = e.motivo; }
+  igual(motivo, 'indisponivel');
+  igual(REG_FETCH.length, 0);
+});
+
+teste('CA4/segurança: fotoComoPng rejeita com e.motivo "rede" quando o fetch falha', async () => {
+  IMPL = () => Promise.reject(new W.TypeError('Failed to fetch'));
+  let motivo = null;
+  try { await funcao('fotoComoPng')(URL_ML); } catch (e) { motivo = e.motivo; }
+  igual(motivo, 'rede');
+});
+
+teste('CA4/segurança: o código novo não usa innerHTML, console nem eval', async () => {
+  for (const nome of ['urlFotoParaCopiar', 'fotoComoPng', 'copiarImagem']) {
+    const src = funcao(nome).toString();
+    afirma(!/innerHTML|outerHTML|insertAdjacentHTML|console\.|\beval\(|document\.write/.test(src), nome + ' usa API proibida pelo plano');
+  }
+});
+
+
+// ---- achados do revisor (rodada 2)
+teste('CA4/segurança: loja com HTML ou aspas não vira marcação nem atributo no card (esc na loja)', async () => {
+  const c = montarCard(itemFalso({ loja: '<b id="qa-loja-xss">x</b>' }), false);
+  igual(c.card.querySelectorAll('#qa-loja-xss, b').length, 0, 'tag injetada pela loja virou elemento');
+  afirma(c.card.querySelector('.badge').textContent.includes('<b id="qa-loja-xss">'), 'o texto da loja aparece escapado');
+  const c2 = montarCard(itemFalso({ loja: 'ml" data-qa-injetado="1' }), false);
+  const badge = c2.card.querySelector('.top span');
+  afirma(!badge.hasAttribute('data-qa-injetado'), 'a loja escapou do atributo class e injetou atributo');
+});
+
+const REDIRECIONADOS = [
+  ['host final de terceiro', 'https://evil.example/x.png'],
+  ['host final parecido', 'https://http2.mlstatic.com.evil.example/x.png'],
+  ['host final sem TLS', 'http://http2.mlstatic.com/x.png'],
+  ['host final é o servidor local', 'https://localhost:8765/api/items']
+];
+for (const [nome, final] of REDIRECIONADOS) {
+  teste('CA4/segurança: redirecionamento para fora da lista (' + nome + ') é indisponível e não copia a imagem', async () => {
+    const calls = stubClipboard();
+    const png = await imagem(10, 10, '#ff0000');
+    IMPL = () => Promise.resolve(resp(png, { status: 200, tipo: 'image/png', url: final }));
+    const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+    await clicarEEsperarFim(c);
+    afirmaErro(c, 'indisponivel');
+    let falhou = false;
+    try { await calls.write[0][0].getType('image/png'); } catch (e) { falhou = true; }
+    afirma(falhou, 'o ClipboardItem não pode entregar a imagem vinda de outro host');
+  });
+}
+
+teste('CA4/segurança: redirecionamento que termina em host permitido continua funcionando', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(10, 10, '#ff0000');
+  IMPL = () => Promise.resolve(resp(png, { status: 200, tipo: 'image/png', url: 'https://http2.mlstatic.com/outra/foto.webp' }));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(c.btn.dataset.estado, 'copiada');
+  igual(calls.write.length, 1);
+});
+
+teste('CA4: o toast de texto longo fica visível mais que 1,3 s e some sozinho', async () => {
+  const toast = W.eval('toast'); const el = W.document.getElementById('toast');
+  toast(TXT.toastOk);
+  await dormir(1500);
+  afirma(el.classList.contains('show'), 'o aviso longo (' + TXT.toastOk.length + ' caracteres) sumiu antes de dar para ler');
+  await esperar(() => !el.classList.contains('show'), 'o toast sumir sozinho', 1000, 10);
+});
+
+teste('CA4: um toast novo não é escondido pelo temporizador do anterior', async () => {
+  const toast = W.eval('toast'); const el = W.document.getElementById('toast');
+  toast('primeiro');
+  await dormir(1000);
+  toast('segundo');
+  await dormir(500);   // o temporizador do primeiro (1,3 s) já teria disparado
+  afirma(el.classList.contains('show'), 'o temporizador do primeiro toast escondeu o segundo');
+  igual(el.textContent, 'segundo');
+  await esperar(() => !el.classList.contains('show'), 'o toast sumir sozinho', 1000, 10);
+});
+
+// ================================================================ CA5
+const LOJAS_CA5 = [
+  ['Amazon', { loja: 'amazon' }, 'tag=desejodemen01-20'],
+  ['Mercado Livre', { loja: 'ml', imagem: URL_ML }, 'https://meli.la/QA']
+];
+for (const [nome, sobre, trecho] of LOJAS_CA5) {
+  teste('CA5: "Copiar" (' + nome + ') grava exatamente buildMsg, com o link de afiliado intacto, e o toast de sempre', async () => {
+    const calls = stubClipboard();
+    const it = itemFalso(sobre);
+    const c = montarCard(it, false);
+    c.card.querySelector('.copy').click();
+    await esperar(() => calls.text.length === 1, 'writeText');
+    igual(calls.text[0], funcao('buildMsg')(it));
+    afirma(calls.text[0].includes(it.url), 'o link do item precisa aparecer inteiro na mensagem');
+    afirma(calls.text[0].includes(trecho), 'link de afiliado (' + trecho + ')');
+    await esperar(() => W.document.getElementById('toast').textContent !== '', 'toast');
+    igual(W.document.getElementById('toast').textContent, 'Mensagem copiada!');
+    afirma(c.card.classList.contains('done'), '.done continua marcando a mensagem copiada');
+    igual(calls.write.length, 0, '"Copiar" não pode escrever imagem');
+  });
+}
+
+teste('CA5: depois da imagem copiada, "Copiar" grava a mesma mensagem e o toast manda colar como legenda', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(10, 10, '#ff00ff');
+  IMPL = () => Promise.resolve(resp(png));
+  const it = itemFalso();
+  const c = montarCard(it);
+  await clicarEEsperarFim(c);
+  c.card.querySelector('.copy').click();
+  await esperar(() => calls.text.length === 1, 'writeText');
+  igual(calls.text[0], W.buildMsg(it), 'a mensagem não muda por causa da imagem');
+  await esperar(() => W.document.getElementById('toast').textContent === TXT.toastLegenda, 'toast de legenda');
+  afirma(c.card.classList.contains('done'), '.done marca a mensagem copiada');
+});
+
+teste('CA5: copiar a imagem não mexe no texto da mensagem, não marca .done e não chama writeText', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(10, 10, '#ff00ff');
+  IMPL = () => Promise.resolve(resp(png));
+  const it = itemFalso();
+  const c = montarCard(it);
+  const antes = c.ta.value;
+  igual(antes, W.buildMsg(it));
+  await clicarEEsperarFim(c);
+  igual(c.ta.value, antes);
+  afirma(!c.card.classList.contains('done'), '.done é só da mensagem');
+  igual(calls.text.length, 0, 'writeText não é chamado');
+});
+
+teste('CA5: "Copiar" segue como único botão .cta e primeiro da linha; "Abrir na loja" é ghost; selo diz "Mensagem copiada"', async () => {
+  const c = montarCard(itemFalso(), false);
+  const ctas = c.card.querySelectorAll('.cta');
+  igual(ctas.length, 1);
+  afirma(ctas[0].classList.contains('copy'), 'o .cta é o .copy');
+  afirma(c.card.querySelector('.actions').firstElementChild === ctas[0], '.copy é o primeiro da linha de ações');
+  igual(ctas[0].textContent.trim(), 'Copiar');
+  const abrir = c.card.querySelector('.open');
+  afirma(abrir.classList.contains('ghost'), '.open deve ser ghost');
+  afirma(!abrir.classList.contains('cta'), '.open não é .cta');
+  igual(c.card.querySelector('.feito').textContent.trim(), '✓ Mensagem copiada');
+  afirma(!c.btn.classList.contains('cta'), 'Copiar imagem não é .cta');
+});
+
+teste('CA5: a mensagem de um card sem foto continua igual a buildMsg e o botão sem foto não mexe nela', async () => {
+  const it = itemFalso({ data: null });
+  const c = montarCard(it, false);
+  igual(c.ta.value, W.buildMsg(it));
+});
+
+// ================================================================ CA6
+teste('CA6: servidor.py não ganhou rota nem proxy de imagem', async () => {
+  const src = await (await FETCH_ORIG('/servidor.py')).text();
+  afirma(src.length > 1000, 'não consegui ler servidor.py pelo servidor estático');
+  const rotas = [...new Set([...src.matchAll(/['"](\/api\/[^'"]*)['"]/g)].map(m => m[1]))].sort();
+  igual(rotas, ['/api/', '/api/config/', '/api/fetch', '/api/items', '/api/ml-sem-afiliado']);
+  afirma(!/\/api\/(imagem|img|foto|proxy|copiar)/i.test(src), 'rota de proxy de imagem não faz parte do plano');
+});
+
+teste('CA6: index.html não ganhou script externo, import nem biblioteca; só as fontes que já existiam', async () => {
+  const src = await (await FETCH_ORIG('/index.html')).text();
+  afirma(!/<script[^>]+\bsrc=/i.test(src), 'script externo');
+  afirma(!/\bimport\s*\(|\bimportScripts\s*\(|^\s*import\s.+from\s/m.test(src), 'import dinâmico/estático');
+  const hrefs = [...src.matchAll(/<link[^>]+href="(https?:[^"]+)"/gi)].map(m => new URL(m[1]).host);
+  for (const h of hrefs) afirma(['fonts.googleapis.com', 'fonts.gstatic.com'].includes(h), 'link externo novo: ' + h);
+  afirma(!/https?:\/\/[^"'\s]*\.(js|mjs)\b/i.test(src), 'URL de .js externo');
+});
+
+// ================================================================ CA5 (fecho): a API real não mudou
+let API_ANTES = null;
+teste('CA5/CA6: nenhuma escrita na API real foi tentada e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await FETCH_ORIG('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    await carregarApp();
+    IMG_VALIDA = await imagem(16, 16, '#888888');
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      restaurar();
+      await t.fn();
+      await dormir(30);   // unhandledrejection só dispara depois do fim da microtask
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    } finally {
+      try { restaurar(); } catch (e) { /* ignora */ }
+    }
+  }
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>
