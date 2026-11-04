@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Abas (QA)</title>
+<!--
+  QA das 17 abas (docs/produto/planos/abas-nichadas-e-coleta.md, CA6; spec docs/produto/specs/abas-nichadas.md). Complementa
+  testes/abas.test.html (do dev) sem repetir: nomes hostis em "Outras" sem rolagem horizontal, activeCat salvo hostil, o
+  formulário da regra do disparo em tela estreita e o desaparecimento de "Outras" sem perder o seletor.
+  Roda sobre um banco JÁ MIGRADO (cópia), em servidor próprio:
+
+    ACHADINHOS_DB=<copia migrada> ACHADINHOS_PORTA=8776 ACHADINHOS_DISPARO=0 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe python3 servidor.py
+    PORTA=8776 node testes/rodar.mjs abas-qa
+
+  Só GET sai para a API (a guarda do iframe bloqueia o resto). Itens falsos (ids 9xxxxxxxx) só existem na memória do iframe.
+  As palavras de resultado ficam montadas por concatenação, fora deste comentário.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Abas (QA)</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+// A ordem do dono (17 abas), os 4 grupos da spec e as 3 abas com "Público".
+const ORDEM = ['Celulares e Informática', 'Áudio e Acessórios', 'TV, Alexa e Casa Conectada', 'Games', 'Eletroportáteis',
+  'Eletrodomésticos e Climatização', 'Cozinha', 'Cama, Mesa e Banho', 'Casa, Móveis e Ferramentas', 'Beleza e Cuidados',
+  'Perfumes e Perfumaria', 'Mercado e Limpeza', 'Pets', 'Bebês e Brinquedos', 'Suplementos e Fitness', 'Moda e Viagem', 'Natal e Papelaria'];
+const GRUPOS = [['Tecnologia', ORDEM.slice(0, 4)], ['Casa', ORDEM.slice(4, 9)], ['Beleza e consumo', ORDEM.slice(9, 13)], ['Família e estilo', ORDEM.slice(13, 17)]];
+const ANTIGAS = ['Black Friday | Eletrônicos', 'Eletrodomésticos', 'Casa e Decoração', 'Lista WhatsApp', 'Black Friday', 'Casa Nova'];
+const COM_PUBLICO = ['Perfumes e Perfumaria', 'Beleza e Cuidados', 'Moda e Viagem'];
+const PRIMEIRA = ORDEM[0];
+const CELULARES = ORDEM[0], TV = ORDEM[2], GAMES = ORDEM[3], ELETRODOMESTICOS = ORDEM[5], PETS = ORDEM[12], BELEZA = ORDEM[9], MODA = ORDEM[15], PERFUMES = ORDEM[10];
+const PAGINA = 24;   // PAGE em render()
+
+let W, FETCH_ORIG, API = null, API_ANTES = null;
+const VIOL = [];      // tentativas de escrita na API real (devem ficar vazias)
+const PATCHES = [];   // PATCH interceptado de "Mover para": { url, corpo, cabecalhos }
+const REG_FETCH = [];
+
+const daCat = c => API.filter(i => i.cat === c);
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => el.textContent.replace(/\s+/g, ' ').trim();
+const mesmo = (a, b, msg) => { if (a !== b) throw new Falha(msg || 'não é o mesmo nó do DOM'); };
+
+async function largura(px) {
+  document.getElementById('app').style.width = px + 'px';
+  await dormir(150);
+}
+
+async function abrirApp(activeCat) {
+  document.getElementById('app').style.width = '1100px';
+  localStorage.removeItem('activeCat');
+  if (activeCat !== undefined) localStorage.setItem('activeCat', activeCat);
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  PATCHES.length = 0; REG_FETCH.length = 0;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    REG_FETCH.push({ url, metodo });
+    if (metodo === 'PATCH' && /\/api\/items\/\d+$/.test(url)) {
+      PATCHES.push({ url, corpo: JSON.parse(opcoes.body), cabecalhos: opcoes.headers });
+      return Promise.resolve(new W.Response('{}', { headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (metodo !== 'GET' && /\/api\//.test(url)) {
+      VIOL.push(metodo + ' ' + url);
+      return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real'));
+    }
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  // pronto = a lista carregou (uma aba salva pode estar vazia: não dá para esperar por cartões)
+  await esperar(() => W.eval('ofertasProntas === true') && W.eval('items.length') > 0,
+    'o index.html carregar os itens (servidor da cópia migrada no ar? PORTA=...)');
+  await dormir(30);   // unhandledrejection só dispara depois do fim da microtask
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+// Item falso só na memória do iframe (id 9xxxxxxxx; nunca chega ao banco)
+let SEQ = 900000000;
+const falso = (cat, genero = 'sem', extra = {}) => {
+  const n = ++SEQ;
+  return { id: n, loja: 'amazon', item_id: 'FALSO' + n, cat, busca: 'termo falso', url: 'https://www.amazon.com.br/dp/B0FALSO' + n + '?tag=desejodemen01-20',
+    data: { titulo: 'Produto falso ' + n, preco: 'R$ 10,00' }, genero, genero_origem: '', genero_auto: genero, ...extra };
+};
+function usarItens(lista) {
+  W.eval('items = ' + JSON.stringify(lista) + '; page = 1; render();');
+}
+const normaliza = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');   // o separador de milhar do app
+
+const abas = () => qa('#tabs .tab');
+// Texto do botão sem o contador (o <span class="muted">N</span> no fim).
+const nomeDaAba = b => b.firstChild.textContent.replace(/\s+$/, '');
+// o contador tem separador de milhar ("3.110", como o controle Público)
+const contadorDaAba = b => +b.querySelector('.muted').textContent.replace(/\./g, '');
+const milhar = normaliza;
+const abaAtiva = () => abas().filter(b => b.classList.contains('active'));
+const abaPorNome = nome => abas().find(b => b.dataset.c === nome);
+const catAtiva = () => W.eval('activeCat');
+const cartoes = () => qa('#grid .card');
+const totalFiltrado = () => W.eval('filtrada().length');
+const tituloPager = () => q('.pager').textContent.replace(/\s+/g, ' ').trim();
+const selCat = () => q('#selCat');
+const visivel = el => !!el && W.getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+const semRolagemHorizontal = () => { const d = W.document.documentElement; return d.scrollWidth <= d.clientWidth + 1; };
+
+function clicar(botao) { botao.click(); }
+function escolher(select, valor) {
+  select.value = valor;
+  select.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+const textoAnuncio = (cat, n) => n === 0 ? cat + ': nenhuma oferta' : n === 1 ? cat + ': 1 oferta' : cat + ': ' + milhar(n) + ' ofertas';
+
+// ================================================================ precondição
+teste('o banco da cópia está migrado: toda categoria dos itens é uma das 17 abas finais', async () => {
+  await abrirApp();
+  const fora = [...new Set(API.map(i => i.cat))].filter(c => !ORDEM.includes(c));
+  afirma(fora.length === 0, 'categorias fora das 17 (rode sobre a cópia JÁ migrada): ' + JSON.stringify(fora));
+});
+
+// ================================================================ nomes hostis em "Outras"
+const HOSTIS = [
+  'X'.repeat(60),                                                     // uma palavra só, sem ponto de quebra
+  'Categoria legada com um nome absurdamente longo para uma aba de loja ' + 'palavra '.repeat(10).trim(),
+  'Legado 🎁🎄🧸 ‮evil‬',                                     // emoji e controle bidirecional
+  'a&b <b>x</b> "q"',                                                  // marcação
+];
+
+teste('CA6: categorias hostis em "Outras" (60 letras sem espaço, nome muito longo, emoji, marcação) não geram rolagem horizontal de 320 a 1280 px e nenhuma pílula vaza da faixa', async () => {
+  await abrirApp();
+  usarItens([...API.slice(0, 200), ...HOSTIS.map(c => falso(c))]);
+  for (const px of [320, 360, 375, 414, 600, 601, 768, 899, 900, 1024, 1280]) {
+    await largura(px);
+    afirma(semRolagemHorizontal(), px + ' px: rolagem horizontal (scrollWidth ' + W.document.documentElement.scrollWidth + ' > ' + W.document.documentElement.clientWidth + ')');
+    const celular = px <= 600;
+    afirma(visivel(q('#tabs')) !== celular && visivel(selCat()) === celular, px + ' px: exatamente um controle de categoria visível (celular=' + celular + ')');
+    if (celular) {
+      const r = selCat().getBoundingClientRect();
+      afirma(r.left >= 0 && r.right <= px, px + ' px: o seletor cabe na tela (' + r.left + ' a ' + r.right + ')');
+    } else {
+      const caixa = q('#tabs').getBoundingClientRect();
+      for (const b of abas()) {
+        const r = b.getBoundingClientRect();
+        afirma(r.left >= caixa.left - 1 && r.right <= caixa.right + 1, px + ' px: a pílula "' + b.dataset.c.slice(0, 20) + '" vaza das abas (' + r.left + ' a ' + r.right + ' contra ' + caixa.left + ' a ' + caixa.right + ')');
+        afirma(b.scrollWidth <= b.clientWidth + 1, px + ' px: o texto da pílula "' + b.dataset.c.slice(0, 20) + '" estoura a própria pílula');
+      }
+    }
+  }
+  // as hostis aparecem como texto, nunca como marcação, e o grupo é "Outras"
+  const outras = qa('#tabs .tabs-grupo').pop();
+  igual(txt(outras.querySelector('.lbl')), 'Outras');
+  igual([...outras.querySelectorAll('.tab')].map(b => b.dataset.c).sort(), [...HOSTIS].sort((a, b) => a.localeCompare(b, 'pt-BR')).sort());
+  afirma(!q('#tabs b') && !q('#selCat b'), 'a marcação do nome virou elemento');
+});
+
+teste('CA6/CA-D8: "Outras" some sem deixar rastro quando o último item legado sai, e a aba ativa que sumiu volta para a primeira, com o seletor em sincronia', async () => {
+  await abrirApp();
+  const legado = falso('Legado Temporário');
+  usarItens([...API.slice(0, 100), legado]);
+  clicar(abaPorNome('Legado Temporário'));
+  igual(catAtiva(), 'Legado Temporário');
+  igual(selCat().value, 'Legado Temporário');
+  igual(qa('#tabs .tabs-grupo').length, 5);
+  igual(cartoes().length, 1, 'o item legado está acessível na aba "Outras"');
+  usarItens(API.slice(0, 100));
+  igual(qa('#tabs .tabs-grupo').length, 4, 'o grupo Outras some');
+  igual(catAtiva(), PRIMEIRA, 'a aba que sumiu leva à primeira');
+  igual(selCat().value, PRIMEIRA, 'o seletor acompanha');
+  igual(abaAtiva().map(b => b.dataset.c), [PRIMEIRA]);
+  igual([...selCat().options].map(o => o.value), ORDEM, 'o seletor também perdeu a opção');
+  afirma(![...selCat().querySelectorAll('optgroup')].some(g => g.label === 'Outras'), 'optgroup Outras sobrou');
+});
+
+// ================================================================ activeCat hostil
+for (const hostil of ['__proto__', 'constructor', 'toString', 'celulares e informática', ' Celulares e Informática', 'Celulares e Informática ', 'Black Friday | Eletrônicos', '']) {
+  teste('CA-D6: activeCat salvo "' + hostil + '" abre na primeira aba, com uma só pílula ativa e o seletor igual', async () => {
+    await abrirApp(hostil);
+    igual(catAtiva(), PRIMEIRA);
+    igual(abaAtiva().map(b => b.dataset.c), [PRIMEIRA]);
+    igual(selCat().value, PRIMEIRA);
+    igual(abas().length, 17);
+    igual(qa('#tabs .tabs-grupo').length, 4, 'nenhuma "Outras" nasce do activeCat salvo');
+  });
+}
+
+// ================================================================ regra do disparo em tela estreita
+// Formulário da regra montado solto dentro da tela do disparo (sem navegar nem chamar a API) e medido em cada largura.
+async function formularioSemRolagem(nomes, larguras) {
+  await abrirApp();
+  usarItens([...API.slice(0, 50), ...nomes.map(c => falso(c))]);
+  W.eval("disp.numeros = [{id:1, nome:'N', grupo_nome:'G', ativo:1, telefone:''}]");
+  const tela = W.document.getElementById('telaDisparo'), ofertas = W.document.getElementById('telaOfertas');
+  const estavaEscondida = tela.hidden, ofertasEscondida = ofertas.hidden;
+  try {
+    tela.innerHTML = W.eval('htmlFormRegra(regraPadrao())');
+    tela.hidden = false; ofertas.hidden = true;
+    for (const px of larguras) {
+      await largura(px);
+      afirma(semRolagemHorizontal(), px + ' px: rolagem horizontal (scrollWidth ' + W.document.documentElement.scrollWidth + ' > ' + W.document.documentElement.clientWidth + ')');
+      for (const chip of qa('#f-cats .chip > span')) {
+        const r = chip.getBoundingClientRect();
+        afirma(r.left >= -1 && r.right <= px + 1, px + ' px: o chip "' + txt(chip).slice(0, 25) + '" vaza da tela (' + r.left + ' a ' + r.right + ')');
+      }
+    }
+    igual(qa('#f-cats .grupo-cats legend').map(txt), [...GRUPOS.map(g => g[0]), 'Outras']);
+  } finally {
+    tela.hidden = estavaEscondida; ofertas.hidden = ofertasEscondida; tela.innerHTML = '';
+    W.eval('disp.numeros = null');
+  }
+}
+
+teste('CA-D12: o formulário da regra, com as 17 categorias e uma legada de nome longo (várias palavras), não tem rolagem horizontal em 320, 375 e 720 px e os chips cabem na tela', async () => {
+  await formularioSemRolagem([HOSTIS[1], HOSTIS[2]], [320, 375, 720]);
+});
+
+// Q1 (baixa): palavra única de ~31 letras ou mais numa categoria legada estoura o chip e a tela a 320 px
+teste('Q1: no formulário da regra, uma categoria legada de uma palavra só (60 letras) não pode causar rolagem horizontal a 320 px', async () => {
+  await formularioSemRolagem([HOSTIS[0]], [320, 375]);
+});
+
+teste('CA-D12: "Marcar o grupo" de "Outras" só mexe nas caixas dela; "Marcar o grupo" com tudo já marcado desmarca; resumo da regra com 17 nomes vai inteiro no title', async () => {
+  await abrirApp();
+  usarItens([...API.slice(0, 50), falso('Legado A'), falso('Legado B')]);
+  W.eval("disp.numeros = [{id:1, nome:'N', grupo_nome:'G', ativo:1, telefone:''}]");
+  const tela = W.document.getElementById('telaDisparo'), ofertas = W.document.getElementById('telaOfertas');
+  try {
+    tela.innerHTML = W.eval('htmlFormRegra(regraPadrao())'); tela.hidden = false; ofertas.hidden = true;
+    const grupos = qa('#f-cats .grupo-cats'), outras = grupos[grupos.length - 1];
+    const antes = qa('#f-cats input').map(i => i.checked);
+    outras.querySelector('[data-acao="cats-grupo"]').click();
+    const depois = qa('#f-cats input').map(i => i.checked);
+    const idx = qa('#f-cats input').filter(i => outras.contains(i)).map(i => qa('#f-cats input').indexOf(i));
+    igual(idx.length, 2);
+    for (let k = 0; k < depois.length; k++) igual(depois[k], idx.includes(k) ? true : antes[k], 'caixa ' + k);
+    igual(txt(outras.querySelector('[data-acao="cats-grupo"]')), 'Desmarcar o grupo');
+    igual(outras.querySelector('[data-acao="cats-grupo"]').getAttribute('aria-label'), 'Desmarcar o grupo Outras', 'o nome acessível acompanha o texto visível (WCAG 2.5.3)');
+    outras.querySelector('[data-acao="cats-grupo"]').click();
+    igual(qa('#f-cats input').map(i => i.checked), antes, 'segundo clique desmarca de volta');
+    igual(outras.querySelector('[data-acao="cats-grupo"]').getAttribute('aria-label'), 'Marcar o grupo Outras');
+  } finally { tela.hidden = true; ofertas.hidden = false; tela.innerHTML = ''; W.eval('disp.numeros = null'); }
+  // resumo no cartão: com 17 categorias, 2 nomes + "+15" e a lista inteira no title
+  const regra = { id: 7, nome: 'R', ativo: 1, cats: ORDEM, generos: [], lojas: [], ordem: 'aleatoria', horarios: [], numero_ids: [], template: 1 };
+  let html = '';
+  try { html = W.eval('htmlRegra(' + JSON.stringify(regra) + ')'); } catch (e) { html = null; }
+  if (html !== null) {
+    const host = document.createElement('div'); host.innerHTML = html;
+    const meta = host.querySelector('.meta');
+    if (meta) {
+      afirma(txt(meta).includes(ORDEM[0] + ', ' + ORDEM[1] + ' +15'), 'resumo: ' + txt(meta));
+      const sp = meta.querySelector('span[title]');
+      afirma(sp && sp.title === ORDEM.join(', '), 'title com a lista inteira');
+    }
+  }
+});
+
+teste('só GET saiu para a API e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    API = JSON.parse(API_ANTES);
+    afirma(Array.isArray(API) && API.length > 0, '/api/items vazio');
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

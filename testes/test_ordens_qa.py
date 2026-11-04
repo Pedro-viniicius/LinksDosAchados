@@ -7,7 +7,7 @@ Uso:  python3 testes/test_ordens_qa.py -v
 Complementa test_coletar_amazon.py e test_coletar_amazon_qa.py sem repetir o que eles provam:
   - o buscas.json é conferido de forma independente (lista congelada dos 28 termos antigos, bytes UTF-8,
     NFC, hash das outras abas);
-  - a URL e a chave da relevância são comparadas, para os 140 termos reais, com a fórmula do código
+  - a URL e a chave da relevância são comparadas, para os 319 termos reais (as 17 abas), com a fórmula do código
     antigo escrita aqui de novo;
   - o progresso antigo (28 termos feitos) é reaproveitado e só os 14 novos são baixados;
   - cada ordem tem a sua chave e a sua URL (`&s=`), uma queda no meio preserva o progresso, e a CLI
@@ -46,6 +46,8 @@ assert os.path.realpath(S.DB) != DB_REAL and os.path.realpath(C.FEITOS) != FEITO
     'o teste não pode tocar os dados reais'
 
 PERFUMES = 'Perfumes e Perfumaria'
+# Campos que fazem um achado passar no piso da Amazon (nota >= 4,5 e >= 100 avaliações); os parses falsos os usam
+NO_PISO = {'avaliacao': '4,6 de 5 estrelas', 'num_avaliacoes': '1.234', 'vendas': ''}
 # Os 28 termos de "Perfumes e Perfumaria" antes da E3, congelados aqui (texto idêntico, byte a byte).
 ANTIGOS_28 = [
     'Perfume masculino importado', 'Perfume feminino importado', 'Perfume masculino nacional',
@@ -68,11 +70,21 @@ PRIMEIROS_21 = [
     'Body splash masculino', 'Colônia feminina', 'Colônia masculina', 'Hidratante corporal perfumado',
     'Óleo corporal perfumado', 'Desodorante corporal perfumado', 'Kit sabonete perfumado',
     'Perfume para cabelo', 'Miniatura de perfume', 'Kit perfume', 'Loção pós-barba']
-# Hash (json compacto, UTF-8) das outras três abas em HEAD antes da E3: não podem mudar.
+# Hash (json compacto, UTF-8) das outras três abas em HEAD antes da E3: os termos originais não podem mudar.
+# Em 04/11/2026 a lista de presentes do casamento acrescentou termos no FIM de duas abas (ORIGINAIS = quantos havia).
+# Esses hashes valem para a fixture testes/fixtures/buscas-2026-11-04.json (4 abas, 158 termos): o buscas.json vivo
+# virou o mapa das 17 abas e esses termos hoje moram em outras abas (ver test_coletar_amazon_qa.py).
+ORIGINAIS = {'Eletrodomésticos': 19, 'Casa e Decoração': 19}  # abas sem entrada: hash da aba inteira
+TOTAL_TERMOS = 319  # 158 de 04/11/2026 + 161 novos das 17 abas
 HASH_OUTRAS_ABAS = {
     'Black Friday | Eletrônicos': '4ba0c9f013b6643bb51026517b1fc3907e39b0e5f4af4a06f1afe809f428165e',
     'Eletrodomésticos': 'c738485e8052d4f2d5ee0e3bf9138cfe6a2ce7a84f2a70373d7bcd9d9bcd48c1',
     'Casa e Decoração': 'c8b7d72fa91c595b73972c5a4ce5fc21f750c8c4adf9d52ad11fec07722942f7'}
+ABAS_17 = [
+    'Celulares e Informática', 'Áudio e Acessórios', 'TV, Alexa e Casa Conectada', 'Games', 'Eletroportáteis',
+    'Eletrodomésticos e Climatização', 'Cozinha', 'Cama, Mesa e Banho', 'Casa, Móveis e Ferramentas',
+    'Beleza e Cuidados', PERFUMES, 'Mercado e Limpeza', 'Pets', 'Bebês e Brinquedos', 'Suplementos e Fitness',
+    'Moda e Viagem', 'Natal e Papelaria']
 VALORES_S = {'vendidos': 'exact-aware-popularity-rank', 'avaliados': 'review-rank', 'caros': 'price-desc-rank'}
 
 
@@ -84,6 +96,12 @@ def buscas_reais():
     with open(os.path.join(RAIZ, 'buscas.json'), 'rb') as f:
         bruto = f.read()
     return bruto, json.loads(bruto.decode('utf-8'))
+
+
+def buscas_antigas():
+    """O buscas.json de 04/11/2026 (4 abas), congelado na fixture."""
+    with open(os.path.join(RAIZ, 'testes', 'fixtures', 'buscas-2026-11-04.json'), encoding='utf-8') as f:
+        return json.load(f)
 
 
 def url_antiga(termo):
@@ -134,12 +152,21 @@ class TestTermos42(unittest.TestCase):
         self.assertTrue(unicodedata.is_normalized('NFC', texto), 'o arquivo todo tem que estar em NFC')
         self.assertNotIn('\\u', texto, 'termos com acento ficam como UTF-8, não como escape')
 
-    def test_ca4_as_outras_tres_abas_nao_mudaram(self):
+    def test_ca4_as_outras_tres_abas_da_fixture_nao_mudaram_e_os_termos_seguem_no_arquivo_vivo(self):
+        antiga = buscas_antigas()
         for aba, esperado in HASH_OUTRAS_ABAS.items():
             with self.subTest(aba):
-                h = hashlib.sha256(json.dumps(self.buscas[aba], ensure_ascii=False).encode('utf-8')).hexdigest()
+                h = hashlib.sha256(json.dumps(antiga[aba][:ORIGINAIS.get(aba)], ensure_ascii=False).encode('utf-8')).hexdigest()
                 self.assertEqual(h, esperado)
-        self.assertEqual(list(self.buscas), list(HASH_OUTRAS_ABAS) + [PERFUMES], 'as quatro abas, na ordem de sempre')
+        self.assertEqual(list(antiga), list(HASH_OUTRAS_ABAS) + [PERFUMES], 'as quatro abas de 04/11, na ordem de sempre')
+        vivos = {t for ts in self.buscas.values() for t in ts}
+        for aba, ts in antiga.items():
+            for t in ts:
+                self.assertIn(t, vivos, f'{t!r} (de {aba}) sumiu do buscas.json')
+
+    def test_ca1_as_17_abas_na_ordem_exata_e_a_perfumaria_igual_a_de_antes(self):
+        self.assertEqual(list(self.buscas), ABAS_17)
+        self.assertEqual(self.buscas[PERFUMES], buscas_antigas()[PERFUMES])
 
     def test_ca4_termos_novos_nao_colidem_com_termo_de_outra_aba(self):
         outros = {t for aba, ts in self.buscas.items() if aba != PERFUMES for t in ts}
@@ -160,8 +187,8 @@ class TestUrlEChave(unittest.TestCase):
     def setUpClass(cls):
         cls.termos = [t for ts in buscas_reais()[1].values() for t in ts]
 
-    def test_ca5_relevancia_dos_140_termos_reais_tem_a_url_e_a_chave_de_hoje(self):
-        self.assertEqual(len(self.termos), 140)
+    def test_ca5_relevancia_dos_termos_reais_tem_a_url_e_a_chave_de_hoje(self):
+        self.assertEqual(len(self.termos), TOTAL_TERMOS)
         for t in self.termos:
             self.assertEqual(C.url_busca(t), url_antiga(t), t)
             self.assertEqual(C.url_busca(t, 'relevancia'), url_antiga(t), t)
@@ -181,7 +208,7 @@ class TestUrlEChave(unittest.TestCase):
     def test_ca5_chaves_de_ordens_diferentes_nunca_se_confundem_nem_pelo_feitos(self):
         # o feitos() reescreve `busca|a|b` como `busca|b`: a chave `ordem|…` não pode ser tocada por isso
         chaves = {C.chave_busca(t, o) for t in self.termos for o in C.ORDENS}
-        self.assertEqual(len(chaves), 140 * 4)
+        self.assertEqual(len(chaves), TOTAL_TERMOS * 4)
         caminho = os.path.join(TMP, 'feitos-chaves.txt')
         with open(caminho, 'w', encoding='utf-8') as f:
             f.write(''.join(c + '\n' for c in chaves))
@@ -238,7 +265,7 @@ class TestColetaComOrdens(unittest.TestCase):
         k = q['k'][0].replace(' ', '_')
         s = q.get('s', ['rel'])[0]
         return [{'asin': 'B' + hashlib.sha1(f'{k}|{s}|{i}'.encode()).hexdigest()[:9].upper(),
-                 'data': {'titulo': f'{k} {s} {i}', 'preco': 'R$ 1,00'}} for i in range(2)]
+                 'data': {'titulo': f'{k} {s} {i}', 'preco': 'R$ 1,00', **NO_PISO}} for i in range(2)]
 
     def linhas_feitos(self):
         if not os.path.exists(self.feitos):
@@ -329,11 +356,11 @@ class TestColetaComOrdens(unittest.TestCase):
         self.assertEqual(self.linhas_feitos(), [])
         self.assertEqual(self.itens(), [])
 
-    def test_ca5_sem_cat_a_relevancia_continua_coletando_as_quatro_abas(self):
+    def test_ca5_sem_cat_a_relevancia_continua_coletando_todas_as_abas(self):
         C.coletar_buscas()
-        self.assertEqual(len(self.baixados), 140)
+        self.assertEqual(len(self.baixados), TOTAL_TERMOS)
         self.assertEqual(self.baixados, [url_antiga(t) for ts in buscas_reais()[1].values() for t in ts])
-        self.assertEqual(len(self.linhas_feitos()), 140)
+        self.assertEqual(len(self.linhas_feitos()), TOTAL_TERMOS)
         self.assertTrue(all(l.startswith('busca|') for l in self.linhas_feitos()))
 
     def test_ca5_item_ja_coletado_por_relevancia_nao_vira_duplicado_em_outra_ordem(self):
@@ -341,7 +368,7 @@ class TestColetaComOrdens(unittest.TestCase):
         antes = self.itens()
         C.coletar_buscas(PERFUMES, ['vendidos'])   # o parse falso devolve outros ASIN por ordem: não repete
         # um ASIN que a relevância já trouxe e a ordem traz de novo mantém linha, cat e url
-        with mock.patch.object(C, 'parse_busca', lambda h: [{'asin': 'B0REPETIDO', 'data': {'titulo': 'Repetido', 'preco': 'R$ 5,00'}}]):
+        with mock.patch.object(C, 'parse_busca', lambda h: [{'asin': 'B0REPETIDO', 'data': {'titulo': 'Repetido', 'preco': 'R$ 5,00', **NO_PISO}}]):
             self.feitos_antes = self.linhas_feitos()
             C.coletar_buscas(PERFUMES, ['caros'])
         repetidos = [i for i in self.itens() if i['item_id'] == 'B0REPETIDO']

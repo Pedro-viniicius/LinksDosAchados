@@ -12,8 +12,11 @@ import sqlite3
 import unicodedata
 
 GENEROS = ('feminino', 'masculino', 'unissex', 'sem')
+PERFUMARIA = 'Perfumes e Perfumaria'
+BELEZA = 'Beleza e Cuidados'
+MODA = 'Moda e Viagem'
 # Só estas abas têm público. Aba nova: acrescente o nome exato aqui (o teste confere com o buscas.json).
-ABAS_COM_GENERO = ('Perfumes e Perfumaria',)
+ABAS_COM_GENERO = (PERFUMARIA, BELEZA, MODA)
 
 # Os padrões rodam sobre o texto já sem acento e em minúsculas (`_norm`), e com `\b` nas pontas.
 _U = r'unissex|unisex|unissexo|ambos os sexos'
@@ -35,6 +38,22 @@ _RE_LINHA_U = re.compile(r'\bck one\b')
 # de 2026-11-03 (medido), e o que escapar o dono corrige à mão.
 _RE_NAO_PERFUME = re.compile(
     r'\b(?:vinhos?|tintos?|bota|botas|botina|botinas|coturno|coturnos|sapato|sapatos|tenis|sandalias?)\b')
+
+# Beleza e Cuidados tem a sua lista, sem as linhas de perfume: só barbear e barba são masculinos.
+# `barbear` com prefixo (barbearia, barbear) e `barba` como palavra inteira, para não pegar "barbante".
+# Falsos positivos que sobram: título sem palavra de gênero que cite "barba" para outro fim (cera facial
+# "buço e barba", creme "para barba e cabelo" de uso unissex) sai masculino; o dono corrige à mão.
+# A guarda tira o que é de depilação e a linha Gillette Venus (lâmina de barbear feminina). "Barbeador"
+# fica de fora de propósito: existe barbeador feminino e o título costuma trazer a palavra de gênero.
+_RE_BELEZA_M = re.compile(r'\b(?:barbear|barba\b|pos[- ]?barba\b|aparador de barba\b)')
+_RE_BELEZA_NAO_BARBA = re.compile(r'\b(?:venus|depil)')
+# Moda e Viagem não tem linha de produto: só palavra de gênero (título e depois busca).
+
+# Linhas de produto por aba: (masculino, feminino, unissex, guarda de ruído). None = não há.
+_LINHAS = {
+    PERFUMARIA: (_RE_LINHA_M, _RE_LINHA_F, _RE_LINHA_U, _RE_NAO_PERFUME),
+    BELEZA: (_RE_BELEZA_M, None, None, _RE_BELEZA_NAO_BARBA),
+}
 
 
 def _norm(texto):
@@ -63,6 +82,7 @@ def _por_palavras(texto):
 
 def classificar(cat, busca, titulo):
     """(genero, origem). origem: 'titulo' (palavra ou linha de produto no título), 'busca' ou '' (sem).
+    A linha de produto é por aba (`_LINHAS`): perfume só na perfumaria, barba só na beleza, nenhuma na moda.
     Aba fora de `ABAS_COM_GENERO` é sempre ('sem', '')."""
     if cat not in ABAS_COM_GENERO:
         return 'sem', ''
@@ -70,12 +90,13 @@ def classificar(cat, busca, titulo):
     g = _por_palavras(t)
     if g:
         return g, 'titulo'
-    if not _RE_NAO_PERFUME.search(t):
-        if _RE_LINHA_M.search(t):
+    linha_m, linha_f, linha_u, guarda = _LINHAS.get(cat, (None, None, None, None))
+    if guarda is not None and not guarda.search(t):
+        if linha_m and linha_m.search(t):
             return 'masculino', 'titulo'
-        if _RE_LINHA_F.search(t):
+        if linha_f and linha_f.search(t):
             return 'feminino', 'titulo'
-        if _RE_LINHA_U.search(t):
+        if linha_u and linha_u.search(t):
             return 'unissex', 'titulo'
     g = _por_palavras(_norm(busca))
     if g:

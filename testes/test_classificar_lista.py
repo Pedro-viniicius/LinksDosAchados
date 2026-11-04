@@ -33,6 +33,8 @@ assert os.path.dirname(S.DB) == T.TMP_AMBIENTE, 'o teste não pode tocar o banco
 
 SCRIPT = os.path.join(TS.RAIZ, 'classificar_lista.py')
 SCRIPT_MIGRAR = os.path.join(TS.RAIZ, 'migrar_categorias.py')
+# O buscas.json de 2026-11-04, antes das 17 abas: o mapa contra o qual a classificação foi feita.
+BUSCAS_HISTORICO = os.path.join(TS.RAIZ, 'testes', 'fixtures', 'buscas-2026-11-04.json')
 ORIGEM = 'Lista WhatsApp'
 DESTINO = 'Black Friday | Eletrônicos'
 ANTIGO = T.ANTIGO
@@ -163,7 +165,8 @@ class TestMapa(unittest.TestCase):
         self.assertEqual(C.carregar_mapa(), MAPA)
 
     def test_subtemas_novos_nao_entram_no_buscas_json(self):
-        buscas = M.carregar_mapa()
+        """Contra o buscas.json da época (fixture); no de hoje, quem confere é o test_migrar_categorias.py."""
+        buscas = M.carregar_mapa(BUSCAS_HISTORICO)
         for busca in MAPA_PLANO:
             if busca in SUBTEMAS_NOVOS:
                 self.assertNotIn(busca, buscas)
@@ -334,6 +337,9 @@ class TestClassificacao(BancoTemporario):
         self.assertEqual(len(T.backups(self.dir)), 1)
 
     def test_avisa_quando_migrar_categorias_ainda_nao_rodou(self):
+        """O aviso olha as abas que o migrar_categorias.py de 2026-11-03 tirava, não as M.ORIGENS de hoje
+        (que incluem o próprio destino: com elas, o aviso sairia sempre, como no dry-run acima)."""
+        self.assertEqual(C.ORIGENS_ANTIGAS, ('Black Friday', 'Casa Nova'))
         executar(self.db, "INSERT INTO items (id,loja,item_id,cat,busca,url,posicao) VALUES "
                           "(901,'ml','MLB901','Black Friday','iPhone 17','https://meli.la/z',901)")
         for args in (('--dry-run',), ()):

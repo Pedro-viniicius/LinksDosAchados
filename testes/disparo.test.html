@@ -559,12 +559,18 @@ teste('números: se o servidor devolve 409 ao excluir, a explicação aparece (c
 teste('CA2: o formulário tem as 5 seções, chips de categorias vindos de cats(), lojas, 7 ordens, dias e horários', async () => {
   E.numeros.push(numeroFalso());
   await abrir('#disparo/nova');
-  igual(qa('#frmRegra fieldset legend').map(txt), ['1. Identificação', '2. O que enviar', '3. Quando enviar', '4. Repetição', '5. Mensagem e prévia']);
+  igual(qa('#frmRegra > fieldset > legend').map(txt), ['1. Identificação', '2. O que enviar', '3. Quando enviar', '4. Repetição', '5. Mensagem e prévia']);
   const reais = W.eval('cats()');
   afirma(reais.length > 1, 'o banco real precisa ter categorias');
   igual(qa('#f-cats input').map(i => i.value), reais, 'chips = cats()');
+  // as categorias vêm em grupos (os mesmos das abas), um fieldset com legend por grupo; categoria fora das 17 cai em "Outras"
+  const grupos = qa('#f-cats .grupo-cats');
+  igual(grupos.slice(0, 4).map(f => txt(f.querySelector('legend'))), ['Tecnologia', 'Casa', 'Beleza e consumo', 'Família e estilo']);
+  igual(grupos.slice(0, 4).map(f => f.querySelectorAll('input').length), [4, 5, 4, 4]);
+  afirma(grupos.slice(4).every(f => txt(f.querySelector('legend')) === 'Outras'), 'depois dos 4 grupos só "Outras"');
+  igual(grupos.map(f => f.tagName), grupos.map(() => 'FIELDSET'));
   const contagens = qa('#f-cats .chip .num').map(txt);
-  igual(contagens, reais.map(c => String(W.eval('items.filter(i=>i.cat===' + JSON.stringify(c) + ').length'))), 'contagem de itens por categoria');
+  igual(contagens, reais.map(c => W.eval('fmtNum(items.filter(i=>i.cat===' + JSON.stringify(c) + ').length)')), 'contagem de itens por categoria');
   igual(qa('#f-cats input:checked').length, 0, 'nenhuma marcada');
   igual(qa('#f-lojas input').map(i => i.value), ['amazon', 'ml', 'shopee']);
   igual(qa('#f-lojas .chip').map(txt), ['Amazon', 'Mercado Livre', 'Shopee']);
@@ -596,6 +602,26 @@ teste('CA2: "Marcar todas" e "Limpar" nas categorias; atalhos de dias; contador 
   clicar('[data-acao="cats-limpar"]');
   igual(qa('#f-cats input:checked').length, 0);
   afirma(txt(q('#f-contador')).startsWith('Escolha ao menos uma categoria'), txt(q('#f-contador')));
+  // "Marcar o grupo" / "Desmarcar o grupo": marca as caixas só daquele grupo e o texto acompanha (também quando se marca à mão)
+  const g1 = q('#f-cats .grupo-cats'), caixas1 = [...g1.querySelectorAll('input')], b1 = g1.querySelector('[data-acao="cats-grupo"]');
+  igual(txt(b1), 'Marcar o grupo');
+  igual(b1.getAttribute('aria-label'), 'Marcar o grupo Tecnologia');
+  clicar(b1);
+  igual(caixas1.map(i => i.checked), [true, true, true, true]);
+  igual(qa('#f-cats input:checked').length, caixas1.length, 'só as caixas do grupo');
+  igual(txt(b1), 'Desmarcar o grupo');
+  igual(b1.getAttribute('aria-label'), 'Desmarcar o grupo Tecnologia');
+  igual(txt(q('#f-cats .grupo-cats:nth-child(2) [data-acao="cats-grupo"]')), 'Marcar o grupo', 'os outros grupos não mudam');
+  caixas1[0].click();
+  igual(txt(b1), 'Marcar o grupo', 'desmarcar uma caixa à mão devolve "Marcar o grupo"');
+  clicar(b1);
+  igual(caixas1.every(i => i.checked), true, 'com uma desmarcada o clique marca o grupo todo');
+  clicar(b1);
+  igual(qa('#f-cats input:checked').length, 0, 'com o grupo todo marcado o clique desmarca');
+  clicar('[data-acao="cats-todas"]');
+  igual(qa('#f-cats [data-acao="cats-grupo"]').map(txt), qa('#f-cats .grupo-cats').map(() => 'Desmarcar o grupo'), '"Marcar todas" também atualiza os botões');
+  clicar('[data-acao="cats-limpar"]');
+  igual(qa('#f-cats [data-acao="cats-grupo"]').map(txt), qa('#f-cats .grupo-cats').map(() => 'Marcar o grupo'));
   marcarChip('#f-cats', CAT1());
   const esperado = W.eval('items.filter(i=>i.cat===cats()[0] && i.data && i.data.titulo && i.data.preco).length');
   afirma(txt(q('#f-contador')).includes('Cerca de ' + W.eval('fmtNum(' + esperado + ')')) || esperado === 0, 'contador: ' + txt(q('#f-contador')) + ' (esperado ' + esperado + ')');
@@ -784,7 +810,7 @@ teste('CA-V11: o campo "Público" é rádio (Todos, Feminino, Masculino, Unissex
   igual(q('#f-publico input:checked').value, 'todos', 'a regra nova abre em Todos');
   afirma(q('#f-publico').getAttribute('role') === 'radiogroup' && q('#' + q('#f-publico').getAttribute('aria-labelledby')), 'grupo com nome');
   igual(txt(q('#rotPublico')), 'Público');
-  igual(txt(q('#a-publico')), 'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.');
+  igual(txt(q('#a-publico')), 'Vale só para categorias que separam por público: Perfumes e Perfumaria, Beleza e Cuidados e Moda e Viagem. Nas outras, a regra envia tudo.');
   // fica entre "Lojas" e "Ordem de envio"
   const ordem = qa('#frmRegra .campo .rot').map(txt);
   igual(ordem.slice(ordem.indexOf('Lojas'), ordem.indexOf('Lojas') + 3), ['Lojas', 'Público', 'Ordem de envio']);
@@ -946,7 +972,13 @@ teste('CA2: cartão da regra ativa: Ativa, próximo horário, resumo da agenda, 
   const c = q('[data-regra]');
   igual(txt(c.querySelector('.estado')), 'Ativa');
   const t = txt(c);
-  afirma(t.includes(CAT1() + ', B, C +1'), 'até 3 categorias e "+N": ' + t);
+  const vis = txt(c.querySelector('.meta span[title] [aria-hidden]')); // só o texto visível; o .sr tem a lista inteira
+  afirma(vis.includes(CAT1() + ', B +2'), 'até 2 categorias e "+N": ' + vis);
+  afirma(!vis.includes(CAT1() + ', B, C'), 'a 3ª categoria não aparece no resumo: ' + vis);
+  afirma(txt(c.querySelector('.meta span[title] .sr')).includes(CAT1() + ', B, C, D'), 'leitor de tela recebe a lista completa');
+  const resumo = [...c.querySelectorAll('.meta span[title]')].find(x => txt(x).includes('+2'));
+  afirma(resumo, 'o resumo das categorias leva o title');
+  igual(resumo.getAttribute('title'), CAT1() + ', B, C, D', 'o title tem a lista inteira');
   afirma(t.includes('Amazon e Mercado Livre · Maiores descontos'), t);   // regraFalsa() tem lojas amazon e ml: o resumo não inclui a Shopee
   afirma(t.includes('seg a sex, 09:00 e 12:00 · 1 por horário · máx. 20/dia'), t);
   afirma(/Último envio: hoje \d\d:\d\d/.test(t) || /Último envio: ontem \d\d:\d\d/.test(t), t);

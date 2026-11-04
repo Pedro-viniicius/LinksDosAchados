@@ -74,13 +74,27 @@
   button:disabled{opacity:.45;cursor:not-allowed}
   button[aria-disabled="true"]:not(.copyimg){opacity:.45;cursor:not-allowed}
   main{max-width:1200px;margin:0 auto;padding:var(--s5) var(--s4) var(--s7)}
-  .tabs{display:flex;flex-wrap:wrap;gap:var(--s2);margin-bottom:var(--s4)}
-  .tab{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--alvo);padding:0 var(--s4);border-radius:var(--r-pill);border:1px solid var(--linha);background:var(--superficie);color:var(--tinta);font-weight:400}
+  /* Abas em faixas por grupo (desktop): rótulo do grupo à esquerda (144px) e as pílulas à direita; entre grupos s3, entre linhas de um mesmo grupo s2 (a linha que quebra não parece outro grupo). No celular o #tabs some e entra o #selCat. */
+  .tabs{display:flex;flex-direction:column;gap:var(--s3);margin-bottom:var(--s3)}
+  .tabs-grupo{display:grid;grid-template-columns:144px minmax(0,1fr);column-gap:var(--s2);align-items:start}
+  .tabs-grupo>.lbl{min-height:var(--alvo)}
+  .tabs-pilulas{display:flex;flex-wrap:wrap;gap:var(--s2);min-width:0}
+  .sel-cat{display:none}
+  .tab{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--alvo);max-width:100%;padding:0 var(--s4);border-radius:var(--r-pill);border:1px solid var(--linha);background:var(--superficie);color:var(--tinta);font-weight:400;text-align:left;overflow-wrap:anywhere}
   .tab:hover:not(:disabled){opacity:1;border-color:var(--mudo)}
+  /* reserva a largura do nome em negrito: a aba ativa não alarga nem faz a faixa quebrar de outro jeito ao trocar de aba */
+  .tab .nome{display:inline-flex;flex-direction:column}
+  .tab .nome::after{content:attr(data-n);font-weight:600;height:0;overflow:hidden;visibility:hidden;pointer-events:none}
   .tab .muted{font-family:var(--mono);font-variant-numeric:tabular-nums}
   .tab.active{background:var(--etiqueta-clara);border-color:var(--etiqueta-escura);font-weight:600}
   .tab.active .muted{color:var(--tinta)}
-  .total{margin:calc(-1*var(--s2)) 0 var(--s3)}
+  .total{margin:0 0 var(--s3)}
+  .dica-publico{margin:calc(-1*var(--s2)) 0 var(--s3);max-width:65ch;font:var(--t-legenda);color:var(--mudo)}
+  .dica-publico[hidden]{display:none}
+  @media (max-width:900px){
+    .tabs-grupo{grid-template-columns:minmax(0,1fr);row-gap:var(--s1)}
+    .tabs-grupo>.lbl{min-height:0}
+  }
   /* Barra da lista: o que só afeta a mensagem dos cartões (Template, editar, copiar a página) */
   .barra-lista{margin-bottom:var(--s3);gap:var(--s2) var(--s3)}
   .barra-lista .lbl select{font:var(--t-corpo);letter-spacing:0;text-transform:none;color:var(--tinta)}
@@ -164,9 +178,11 @@
     main{padding:var(--s4) var(--s3) var(--s6)}
     .bar .grp{width:100%}
     .bar .grp button{flex:1 1 0;min-height:44px;padding:0 var(--s2)}
-    /* abas em 2 colunas: o texto quebra em 2 linhas, a contagem fica à direita */
-    .tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
-    .tab{min-height:44px;padding:var(--s1) var(--s3);flex-direction:column;align-items:flex-start;justify-content:center;gap:0;border-radius:var(--r);text-align:left;min-width:0;overflow-wrap:anywhere}
+    /* 17 abas no celular: as faixas saem e entra o seletor "Categoria" (44px, largura total, nome do grupo no optgroup) */
+    .tabs{display:none}
+    .sel-cat{display:block;margin-bottom:var(--s2)}
+    .sel-cat .lbl{margin-bottom:var(--s1)}
+    .sel-cat select{width:100%;min-height:44px;font-size:16px;text-overflow:ellipsis}
     .more .rare .lbl{grid-template-columns:minmax(0,1fr);gap:var(--s1)}
     .barra-lista .lbl{width:100%}
     .barra-lista .lbl select{flex:1;min-height:44px}
@@ -220,6 +236,7 @@
   #estadoLista:empty{display:none}
   #estadoLista .vazio{min-height:144px;justify-content:center}
   #telaOfertas.sem-dados>:not(#estadoLista):not(#anuncioLista){display:none}
+  #telaOfertas.aba-vazia>:is(.filters,.barra-lista,.pager,#publicoBox,#grid){display:none}
   .dsp fieldset{border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);margin:0 0 var(--s4);min-width:0;background:var(--superficie)}
   .dsp legend{font:var(--t-subtitulo);padding:0 var(--s2)}
   .dsp .ajuda{font:var(--t-legenda);color:var(--mudo);margin-bottom:var(--s3)}
@@ -238,7 +255,7 @@
   button.linklike{background:none;border:0;padding:0;min-height:var(--alvo);color:var(--tinta);text-decoration:underline;font:inherit;font-weight:400;text-align:left}
   button.linklike:hover:not(:disabled){opacity:1;background:none;text-decoration-thickness:2px}
   .chips{display:flex;flex-wrap:wrap;gap:var(--s2)}
-  .chips.cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .chips.cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}   /* 3 colunas na regra (720px): nome inteiro, sem quebrar palavra no meio */
   .chip{position:relative;display:inline-flex;min-width:0}
   .chip>span{display:inline-flex;align-items:center;gap:var(--s1);min-height:var(--alvo);padding:0 var(--s3);border:1px solid var(--linha-campo);border-radius:var(--r-pill);background:var(--superficie);color:var(--tinta);cursor:pointer;user-select:none;overflow-wrap:anywhere}
   .chip>span .num{font:var(--t-mono-p);color:var(--mudo);white-space:nowrap;flex:none}
@@ -248,9 +265,14 @@
   .chip input:focus-visible+span{outline:2px solid var(--foco);outline-offset:2px}
   .chip input[aria-invalid="true"]+span{border-color:var(--falhou)}
   .chips.cats .chip{display:flex}
-  .chips.cats .chip>span{width:100%;border-radius:var(--r);padding:var(--s2) var(--s3);justify-content:flex-start}
+  .chips.cats .chip>span{width:100%;border-radius:var(--r);padding:var(--s2) var(--s3);justify-content:flex-start;overflow-wrap:anywhere;min-width:0}
   .chips.cats .chip>span .num{margin-left:auto}
   .atalhos{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s2)}
+  /* categorias da regra em grupos: o fieldset de dentro não repete o cartão do fieldset da seção */
+  .dsp fieldset.grupo-cats{border:0;border-radius:0;padding:0;margin:0 0 var(--s4);background:none}
+  .dsp fieldset.grupo-cats legend{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo);padding:0;margin-bottom:var(--s2)}
+  .grupos-cats{margin-top:var(--s2)}
+  .grupo-cats button.secondary{margin-top:var(--s2);padding:0 var(--s3);font:var(--t-legenda);font-weight:500}
   .horarios{list-style:none;margin:0 0 var(--s2);padding:0;display:flex;flex-direction:column;gap:var(--s2)}
   .horarios li{display:flex;gap:var(--s2);align-items:center}
   .resumo{font:var(--t-legenda);color:var(--mudo);margin-top:var(--s2)}
@@ -287,6 +309,10 @@
   body.em-disparo .bar{justify-content:flex-start;gap:var(--s5)}
   @media (max-width:600px){
     .dsp fieldset{padding:var(--s3)}
+    .dsp fieldset.grupo-cats{padding:0}
+    .grupo-cats button.secondary{min-height:44px}
+    .chips.cats{grid-template-columns:minmax(0,1fr)}
+    .chips.cats .chip>span{min-height:44px}
     .barra-form{position:sticky;bottom:0;background:var(--papel);padding:var(--s3) 0;border-top:1px solid var(--linha);z-index:2}
     .barra-form button{flex:1 1 120px}
     .previa .corpo{flex-direction:column}
@@ -340,6 +366,7 @@
 <main aria-busy="true">
 <div id="telaOfertas" class="sem-dados">
   <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
+  <div class="sel-cat"><label class="lbl" id="lblSelCat" for="selCat"></label><select id="selCat"></select></div>
   <p class="muted total" id="count"></p>
   <div id="publicoBox"></div>
   <p class="sr" id="anuncioLista" role="status" aria-live="polite"></p>
@@ -371,7 +398,7 @@ const DEFAULT_TEMPLATES = {"Template 1": "*{TITULO_PRODUTO}*\n\n😱 De ~{PRECO_
 const LOJA = {amazon:'Amazon', ml:'Mercado Livre', shopee:'Shopee'};
 // Público (gênero) dos itens. ABAS_COM_GENERO espelha genero.ABAS_COM_GENERO do servidor (aba nova: mude lá e aqui) e GENEROS, genero.GENEROS.
 // Fora dessas abas todo item é "sem" e nada filtra por público. Cada constante fica numa linha só: testes/test_front_constantes.py confere com o genero.py.
-const ABAS_COM_GENERO = ['Perfumes e Perfumaria'];
+const ABAS_COM_GENERO = ['Perfumes e Perfumaria','Beleza e Cuidados','Moda e Viagem'];
 const GENEROS = ['feminino','masculino','unissex','sem'];
 const NOME_GENERO = {feminino:'Feminino', masculino:'Masculino', unissex:'Unissex', sem:'Sem gênero'};
 const OPCOES_PUBLICO = [['todos','Todos'],['feminino','Feminino'],['masculino','Masculino'],['unissex','Unissex'],['sem','Sem gênero']];
@@ -381,6 +408,17 @@ const TXT_GENERO = {
   semServidor:'Não consegui falar com o servidor. Verifique se ele está aberto e tente de novo.',
   naoExiste:'Este item não existe mais. Recarregue a página.',
   naoSalvou:'Não consegui salvar o público. Tente de novo.',
+};
+// Abas (categorias) na ordem do dono, a mesma das chaves do buscas.json (testes/test_front_constantes.py confere). Elas aparecem sempre, mesmo com 0 itens.
+// GRUPOS_ABAS corta essa ordem em faixas contíguas (só apresentação): quantas abas cada grupo tem, na ordem de TXT_ABAS.grupos. Cada constante fica numa linha só.
+const ORDEM_ABAS = ['Celulares e Informática','Áudio e Acessórios','TV, Alexa e Casa Conectada','Games','Eletroportáteis','Eletrodomésticos e Climatização','Cozinha','Cama, Mesa e Banho','Casa, Móveis e Ferramentas','Beleza e Cuidados','Perfumes e Perfumaria','Mercado e Limpeza','Pets','Bebês e Brinquedos','Suplementos e Fitness','Moda e Viagem','Natal e Papelaria'];
+const GRUPOS_ABAS = [4,5,4,4];
+const TXT_ABAS = {
+  rotuloSelect:'Categoria',
+  grupos:['Tecnologia','Casa','Beleza e consumo','Família e estilo'], outras:'Outras',
+  anuncio:'{ABA}: {N} ofertas', anuncioUma:'{ABA}: 1 oferta', anuncioNenhuma:'{ABA}: nenhuma oferta',
+  dicaSemPublico:'A maior parte desta categoria não separa por público ({SEM} de {TODOS}). Veja em "Sem gênero".',
+  marcarGrupo:'Marcar o grupo', desmarcarGrupo:'Desmarcar o grupo',
 };
 // Estados da lista de ofertas: carregando, erro de carga, sem resultado e sem nenhuma oferta
 const TXT_LISTA = {
@@ -429,7 +467,22 @@ $('#fLoja').insertAdjacentHTML('beforeend', Object.entries(LOJA).map(([k,t])=>`<
 let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
 let activeCat = localStorage.getItem('activeCat') || '';
 let page=1;
-const cats = ()=>[...new Set(items.map(i=>i.cat))];
+// Itens por aba, numa passada só. As 17 abas de ORDEM_ABAS vêm sempre (as sem item contam 0); a categoria do banco que não está nelas
+// (legado ou criada à mão) vai no grupo "Outras", no fim, em ordem alfabética. `adicionais` são nomes que precisam aparecer mesmo sem item (regra do disparo).
+function contarAbas(){
+  const c = new Map();
+  for (const i of items) c.set(i.cat, (c.get(i.cat) || 0) + 1);
+  return c;
+}
+function gruposDeAbas(contagem, adicionais=[]){
+  let ini = 0;
+  const grupos = GRUPOS_ABAS.map((n,k)=>{ const abas = ORDEM_ABAS.slice(ini, ini+n); ini += n; return {rotulo:TXT_ABAS.grupos[k], abas}; });
+  const outras = [...new Set([...contagem.keys(), ...adicionais])].filter(c=>!ORDEM_ABAS.includes(c)).sort((a,b)=>String(a).localeCompare(String(b), 'pt-BR'));
+  if (outras.length) grupos.push({rotulo:TXT_ABAS.outras, abas:outras});
+  return grupos;
+}
+// Lista plana na mesma ordem das abas: alimenta "Mover para", "Adicionar em" e a escolha de categorias da regra
+function cats(contagem=contarAbas()){ return gruposDeAbas(contagem).flatMap(g=>g.abas); }
 const num = p=>parseFloat(String(p||'').replace(/[^\d,]/g,'').replace(',','.'))||0;
 const pct = d=>parseInt(String(d||'').replace(/\D/g,''))||0;
 
@@ -577,7 +630,7 @@ async function copiarImagem(it, card, btn){
   }
 }
 
-function renderCard(card, it){
+function renderCard(card, it, abas=cats()){   // `abas`: o render() calcula a lista uma vez e passa a cada cartão
   card.dataset.id = it.id;   // corrigirGenero acha o cartão que está na tela por este id, mesmo se render() recriou o cartão
   const d = it.data;
   const meta = d ? [d.avaliacao, d.num_avaliacoes, d.vendas].filter(Boolean).map(esc).join(' · ') : '';
@@ -598,7 +651,7 @@ function renderCard(card, it){
         <div class="rare">
           ${it.loja==='amazon'?'<button class="secondary fetch">Atualizar preço</button>':''}
           <button class="secondary reset">Recarregar</button>
-          <label class="lbl">Mover para <select class="mv">${cats().map(c=>`<option ${c===it.cat?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ nova...</option></select></label>
+          <label class="lbl">Mover para <select class="mv">${abas.map(c=>`<option ${c===it.cat?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ nova...</option></select></label>
           ${htmlCampoGenero(it)}
           <button class="danger del">Excluir</button>
         </div>
@@ -703,13 +756,41 @@ function filtrada(){
   return l;
 }
 
+// Abas: as faixas por grupo (#tabs, desktop) e o seletor (#selCat, celular) saem da mesma lista. A marcação só é refeita quando a lista de abas muda
+// (aparece ou some uma "Outras"); nas trocas de aba e de público só mudam o ativo e as contagens, e o foco do teclado fica onde está.
+function desenharAbas(grupos, contagem){
+  const estrutura = grupos.map(g=>g.rotulo+'\n'+g.abas.join('\n')).join('\n\n'), box = $('#tabs'), sel = $('#selCat');
+  if (box.dataset.estrutura !== estrutura){
+    box.dataset.estrutura = estrutura;
+    box.innerHTML = grupos.map((g,k)=>`<div class="tabs-grupo" role="group" aria-labelledby="tg-${k}"><span class="lbl" id="tg-${k}">${esc(g.rotulo)}</span><div class="tabs-pilulas">${g.abas.map(c=>`<button type="button" class="tab" data-c="${esc(c)}" aria-pressed="false"><span class="nome" data-n="${esc(c)}">${esc(c)}</span> <span class="muted"></span></button>`).join('')}</div></div>`).join('');
+    sel.innerHTML = grupos.map(g=>`<optgroup label="${esc(g.rotulo)}">${g.abas.map(c=>`<option value="${esc(c)}"></option>`).join('')}</optgroup>`).join('');
+  }
+  const mudar = (el, t)=>{ if (el.textContent !== t) el.textContent = t; };
+  for (const b of box.querySelectorAll('.tab')){
+    const ativa = b.dataset.c === activeCat;
+    b.classList.toggle('active', ativa); b.setAttribute('aria-pressed', ativa);
+    mudar(b.querySelector('.muted'), fmtNum(contagem.get(b.dataset.c) || 0));
+  }
+  for (const o of sel.options) mudar(o, `${o.value} (${fmtNum(contagem.get(o.value) || 0)})`);
+  sel.value = activeCat; sel.title = activeCat;
+}
+// Trocar de aba (botão ou seletor): zera a busca e a página, restaura o público lembrado (o render lê generoEscolhido) e anuncia o resultado
+function escolherAba(c){
+  activeCat = c; page = 1; $('#fBusca').value = ''; render();
+  const n = filtrada().length, t = n === 0 ? TXT_ABAS.anuncioNenhuma : n === 1 ? TXT_ABAS.anuncioUma : TXT_ABAS.anuncio;
+  $('#anuncioLista').textContent = t.replace('{ABA}', activeCat).replace('{N}', fmtNum(n));
+}
+$('#tabs').addEventListener('click', ev=>{ const b = ev.target.closest('.tab'); if (b) escolherAba(b.dataset.c); });
+$('#selCat').addEventListener('change', ev=>escolherAba(ev.target.value));
+$('#lblSelCat').textContent = TXT_ABAS.rotuloSelect;
+
 function render(){
   if (!ofertasProntas) return;   // carregando ou com erro de carga: o bloco do estado fica, nada de lista
   const foco = guardarFoco();
-  const cs = cats(); if(!cs.includes(activeCat)) activeCat = cs[0] || '';
+  const contagem = contarAbas(), grupos = gruposDeAbas(contagem), cs = grupos.flatMap(g=>g.abas);
+  if(!cs.includes(activeCat)) activeCat = cs[0] || '';   // aba que não existe mais: a primeira, "Celulares e Informática"
   localStorage.setItem('activeCat', activeCat);
-  $('#tabs').innerHTML = cs.map(c=>`<button type="button" class="tab ${c===activeCat?'active':''}" data-c="${esc(c)}" aria-pressed="${c===activeCat}">${esc(c)} <span class="muted">${fmtNum(items.filter(i=>i.cat===c).length)}</span></button>`).join('');
-  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{activeCat=t.dataset.c; page=1; $('#fBusca').value=''; render();});
+  desenharAbas(grupos, contagem);
   // "Sem gênero" que zerou (com a loja e o título de agora) cai em "Todos" antes de filtrar
   if (abaTemGenero(activeCat) && generoEscolhido(activeCat)==='sem' && !contarGeneros(filtrarItens({semGenero:true, semBusca:true})).sem) guardarGenero(activeCat, '');
   atualizarPublico();
@@ -727,11 +808,12 @@ function render(){
   const pagerHtml = pages>1 ? `<button class="secondary pg" data-a="primeira" data-p="1" ${page===1?'disabled':''}>« Primeira</button><button class="secondary pg" data-a="anterior" data-p="${page-1}" ${page===1?'disabled':''}>‹ Anterior</button><span class="muted">Página ${page} de ${pages} · ${list.length} itens</span><button class="secondary pg" data-a="proxima" data-p="${page+1}" ${page===pages?'disabled':''}>Próxima ›</button><button class="secondary pg" data-a="ultima" data-p="${pages}" ${page===pages?'disabled':''}>Última »</button>` : `<span class="muted">${list.length} itens</span>`;
   document.querySelectorAll('.pager').forEach(el=>{ el.innerHTML=pagerHtml; el.querySelectorAll('.pg').forEach(b=>b.onclick=()=>{page=+b.dataset.p; render(); window.scrollTo({top:0,behavior:'smooth'});}); });
   const grid=$('#grid'); grid.innerHTML='';
-  list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; renderCard(c,it); grid.appendChild(c); });
+  list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; renderCard(c,it,cs); grid.appendChild(c); });
   $('#addCat').innerHTML = cs.map(c=>`<option ${c===activeCat?'selected':''}>${esc(c)}</option>`).join('');
-  // sem nenhuma oferta: só o aviso; filtro que zera a lista: aviso no lugar do grid, com a saída
+  // sem nenhuma oferta: só o aviso; aba sem item (as 17 aparecem sempre): o aviso com as abas à vista, sem filtros; filtro que zera a lista: aviso no lugar do grid, com a saída
   const g = generoEscolhido(activeCat);
   if (!items.length) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), true);
+  else if (!contagem.get(activeCat)) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), false, true);
   else if (!list.length) definirEstadoLista(htmlEstadoLista('status', g ? TXT_LISTA.semResultadoPublico.replace('{PUBLICO}', NOME_GENERO[g]) : TXT_LISTA.semResultado, 'limpar', TXT_LISTA.limpar), false);
   else definirEstadoLista('', false);
   devolverFoco(foco);
@@ -739,9 +821,10 @@ function render(){
 // ---- Estados da lista (M3). `#estadoLista` mostra o bloco; com `sem-dados` o resto da tela (abas, filtros, paginação, grade) fica escondido.
 let ofertasProntas = false, disparoIniciado = false;
 const htmlEstadoLista = (papel, texto, acao, rotulo)=>`<div class="vazio" role="${papel}"><p>${esc(texto)}</p>${acao ? `<button type="button" class="secondary" data-acao="${acao}">${esc(rotulo)}</button>` : ''}</div>`;
-function definirEstadoLista(html, semDados){
+function definirEstadoLista(html, semDados, abaVazia=false){
   $('#estadoLista').innerHTML = html;
   $('#telaOfertas').classList.toggle('sem-dados', semDados);
+  $('#telaOfertas').classList.toggle('aba-vazia', abaVazia);
 }
 // Volta loja, busca, ordem, título e público ao padrão; a aba fica
 function limparFiltros(){
@@ -780,27 +863,31 @@ async function carregarOfertas(){
   ofertasProntas = true;
   $('main').removeAttribute('aria-busy');
   render();
-  if (doEstado){ const a = $('#tabs .tab.active') || $('#estadoLista button') || $('#btnAdd'); a.focus({preventScroll:true}); }
+  if (doEstado){ const a = controleDeAba() || $('#estadoLista button') || $('#btnAdd'); a.focus({preventScroll:true}); }
   return true;
 }
 // ---- Foco (M5). render() recria os botões das abas e da paginação: guarda onde o foco estava e devolve ao botão equivalente.
 function guardarFoco(){
   const a = document.activeElement; if (!a || !a.closest) return null;
   const aba = a.closest('#tabs .tab'); if (aba) return {tipo:'aba', c:aba.dataset.c};
+  if (a.id === 'selCat') return {tipo:'selCat'};
   const pg = a.closest('.pager .pg'); if (pg) return {tipo:'pg', fundo:!!pg.closest('.pager.bottom'), acao:pg.dataset.a};
   return null;
 }
 // Botão da paginação ao qual o foco volta quando o da mesma ação saiu de cena (desabilitado na primeira/última página)
 const FOCO_PAGINACAO = {primeira:['primeira','proxima','anterior','ultima'], anterior:['anterior','proxima','primeira','ultima'], proxima:['proxima','anterior','ultima','primeira'], ultima:['ultima','anterior','primeira','proxima']};
+// O controle de categoria que está na tela: a aba ativa no desktop, o seletor no celular (o outro fica com display:none)
+function controleDeAba(){ return [$('#tabs .tab.active'), $('#selCat')].find(e=>e && e.offsetParent !== null) || null; }
 function devolverFoco(foco){
   if (!foco) return;
   let alvo = null;
   if (foco.tipo === 'aba') alvo = [...document.querySelectorAll('#tabs .tab')].find(b=>b.dataset.c === foco.c);
+  else if (foco.tipo === 'selCat') alvo = $('#selCat');
   else{
     const botoes = [...document.querySelectorAll(foco.fundo ? '.pager.bottom .pg' : '.pager:not(.bottom) .pg')].filter(b=>!b.disabled);
     for (const a of FOCO_PAGINACAO[foco.acao] || []){ alvo = botoes.find(b=>b.dataset.a === a); if (alvo) break; }
   }
-  if (!alvo) alvo = document.querySelector('#tabs .tab.active');   // a paginação sumiu (uma página só) ou a aba não existe mais
+  if (!alvo) alvo = controleDeAba();   // a paginação sumiu (uma página só) ou a aba não existe mais
   if (alvo) alvo.focus({preventScroll:true});   // sem rolar: o clique da paginação já rola a página
 }
 // Controle "Público": existe só em aba com gênero. Se as opções não mudaram, só atualiza o marcado e as contagens (o foco do teclado fica).
@@ -814,11 +901,16 @@ function atualizarPublico(){
   let fs = box.querySelector('fieldset');
   if (!fs || fs.dataset.opcoes !== chaves){
     const tinhaFoco = fs && fs.contains(document.activeElement) ? document.activeElement.value : null;   // o controle é recriado quando "Sem gênero" aparece ou some
-    box.innerHTML = `<fieldset class="seg-filtro" data-opcoes="${chaves}"><legend>${esc(TXT_GENERO.legenda)}</legend><div class="opcoes">${ops.map(([k,t])=>`<label><input type="radio" name="publico" value="${k}" class="sr"><span>${esc(t)} <span class="num"></span></span></label>`).join('')}</div></fieldset>`;
+    box.innerHTML = `<fieldset class="seg-filtro" data-opcoes="${chaves}"><legend>${esc(TXT_GENERO.legenda)}</legend><div class="opcoes">${ops.map(([k,t])=>`<label><input type="radio" name="publico" value="${k}" class="sr"><span>${esc(t)} <span class="num"></span></span></label>`).join('')}</div></fieldset><p class="dica-publico" id="dicaPublico" hidden></p>`;
     fs = box.querySelector('fieldset');
     if (tinhaFoco){ const r = [...fs.querySelectorAll('input')].find(i=>i.value === tinhaFoco) || fs.querySelector('input[value="todos"]'); if (r) r.focus({preventScroll:true}); }
   }
   fs.querySelectorAll('input').forEach(i=>{ i.checked = i.value === g; i.nextElementSibling.querySelector('.num').textContent = fmtNum(c[i.value]); });
+  // dica: "Sem gênero" é 50% ou mais da aba (com a loja e o título de agora); texto só, sem alerta. O padrão continua "Todos".
+  const dica = box.querySelector('.dica-publico'), mostrar = c.todos > 0 && c.sem * 2 >= c.todos;
+  dica.hidden = !mostrar;
+  dica.textContent = mostrar ? TXT_ABAS.dicaSemPublico.replace('{SEM}', fmtNum(c.sem)).replace('{TODOS}', fmtNum(c.todos)) : '';
+  if (mostrar) fs.setAttribute('aria-describedby', 'dicaPublico'); else fs.removeAttribute('aria-describedby');
 }
 $('#publicoBox').addEventListener('change', ev=>{
   const r = ev.target.closest('input[name="publico"]'); if (!r) return;
@@ -913,7 +1005,7 @@ const TXT_DISPARO = {
   sucessoRegra:'Regra salva. Ela está pausada: ative quando quiser começar.',
   sucessoRegraEdit:'Regra salva.',
   sucessoNumero:'Número salvo.',
-  publico:'Público', publicoAjuda:'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.',
+  publico:'Público', publicoAjuda:'Vale só para categorias que separam por público: {ABAS}. Nas outras, a regra envia tudo.',   // {ABAS} sai de ABAS_COM_GENERO
   ordens:[['relevancia','Mais relevantes'],['desconto','Maiores descontos'],['menor_preco','Mais baratos'],['maior_preco','Mais caros'],['cupom','Com cupom primeiro'],['recentes','Mais recentes'],['aleatoria','Aleatória']],
   dias:['seg','ter','qua','qui','sex','sáb','dom'],
   status:{pendente:['Na fila',''], enviando:['Enviando…',''], enviado:['✓ Enviado','ok'], pulado:['– Pulado',''], erro:['✕ Falhou','ruim'], incerto:['? Incerto','ruim'], expirado:['– Expirado','']},
@@ -968,7 +1060,8 @@ const textoLojas = l=>{
   if (k.length && k.length === Object.keys(LOJA).length) return 'Todas as lojas';
   return k.length ? listaTexto(k.map(x=>LOJA[x])) : (l[0] || '');
 };
-const textoCats = c=>c.slice(0,3).join(', ')+(c.length > 3 ? ' +'+(c.length-3) : '');
+// Resumo das categorias no cartão da regra: até 2 nomes e "+N" (a lista inteira vai no title, ver htmlRegra)
+const textoCats = c=>c.slice(0,2).join(', ')+(c.length > 2 ? ' +'+(c.length-2) : '');
 // Público da regra no cartão: vazio em "Todos" (lista vazia); senão os nomes na ordem de GENEROS
 const textoPublico = g=>listaTexto(GENEROS.filter(x=>(g||[]).includes(x)).map(x=>NOME_GENERO[x]));
 const horariosOrdenados = h=>[...h].sort();
@@ -1142,7 +1235,7 @@ function htmlRegra(r){
   return `<article class="dcard${r.ativa ? '' : ' pausada'}" data-regra="${r.id}" aria-labelledby="rt-${r.id}">
     <div class="linha1"><h3 class="name" id="rt-${r.id}" title="${esc(r.nome)}">${esc(r.nome)}</h3><span class="estado ${estado[1]}">${estado[0]}</span></div>
     ${r.aviso ? `<p class="aviso">Atenção: ${esc(r.aviso)}</p>` : ''}
-    <p class="meta">${[textoCats(r.cats), textoPublico(r.generos), textoLojas(r.lojas), NOME_ORDEM[r.ordem] || r.ordem].filter(Boolean).map(esc).join(' · ')}</p>
+    <p class="meta">${[r.cats.length ? `<span${r.cats.length > 2 ? ` title="${esc(r.cats.join(', '))}"` : ''}>${r.cats.length > 2 ? `<span aria-hidden="true">${esc(textoCats(r.cats))}</span><span class="sr">${esc(r.cats.join(', '))}</span>` : esc(textoCats(r.cats))}</span>` : '', ...[textoPublico(r.generos), textoLojas(r.lojas), NOME_ORDEM[r.ordem] || r.ordem].map(esc)].filter(Boolean).join(' · ')}</p>
     <p class="meta">${n ? `${esc(n.nome)} · <span aria-hidden="true">${esc(mascararTelefone(n.telefone))}</span><span class="sr">${n.telefone ? 'telefone com final '+esc(soDigitos(n.telefone).slice(-4)) : esc(TXT_DISPARO.semTelefone)}</span> · Grupo: ${esc(n.grupo_nome)}` : esc(TXT_DISPARO.numeroRemovido)}</p>
     <p class="meta">${esc(resumoAgenda(r))}</p>
     <p class="meta">Último envio: ${monoSePar(ultimoEnvio(r.id))} · Próximo: ${monoSePar(proximo)}${naFila ? ` · ${naFila} na fila` : ''}</p>
@@ -1464,8 +1557,24 @@ function publicoDaRegra(v){
   const g = v.generos || [];
   return !g.length ? 'todos' : g.length === 1 && g[0] !== 'sem' && GENEROS.includes(g[0]) ? g[0] : null;
 }
+// Categorias da regra em grupos (os mesmos das abas, na mesma ordem): um fieldset por grupo, com "Marcar o grupo" / "Desmarcar o grupo"
+const rotuloBotaoGrupo = (marcado, rotulo)=>(marcado ? TXT_ABAS.desmarcarGrupo : TXT_ABAS.marcarGrupo)+' '+rotulo;
+function htmlGrupoCats(g, v, contagem, extras){
+  const marcado = g.abas.every(c=>v.cats.includes(c));
+  return `<fieldset class="grupo-cats"><legend>${esc(g.rotulo)}</legend>
+        <div class="chips cats">${g.abas.map(c=>htmlChip('checkbox','cat',c,v.cats.includes(c),`${esc(c)} <span class="num">${extras.includes(c) ? 'sem itens' : fmtNum(contagem.get(c) || 0)}</span>`)).join('')}</div>
+        <button type="button" class="secondary" data-acao="cats-grupo" aria-label="${esc(rotuloBotaoGrupo(marcado, g.rotulo))}">${esc(marcado ? TXT_ABAS.desmarcarGrupo : TXT_ABAS.marcarGrupo)}</button></fieldset>`;
+}
+// O texto do botão de cada grupo acompanha as caixas marcadas (também depois de "Marcar todas", "Limpar" ou de marcar à mão)
+function atualizarBotoesGrupo(){
+  document.querySelectorAll('#f-cats .grupo-cats').forEach(fs=>{
+    const marcado = [...fs.querySelectorAll('input')].every(i=>i.checked), b = fs.querySelector('[data-acao="cats-grupo"]');
+    b.textContent = marcado ? TXT_ABAS.desmarcarGrupo : TXT_ABAS.marcarGrupo;
+    b.setAttribute('aria-label', rotuloBotaoGrupo(marcado, fs.querySelector('legend').textContent));
+  });
+}
 function htmlFormRegra(v){
-  const todas = cats(), extras = v.cats.filter(c=>!todas.includes(c));
+  const contagem = contarAbas(), todas = cats(contagem), extras = v.cats.filter(c=>!todas.includes(c)), grupos = gruposDeAbas(contagem, extras);
   const nums = disp.numeros;
   const tpls = Object.keys(templates), tplFalta = v.template && !tpls.includes(v.template);
   return `<form id="frmRegra" novalidate>
@@ -1476,11 +1585,11 @@ function htmlFormRegra(v){
   </fieldset>
   <fieldset><legend>2. O que enviar</legend>
     <div class="campo"><span class="rot" id="rotCats">Categorias</span>
-      <div class="chips cats" id="f-cats" role="group" aria-labelledby="rotCats" aria-describedby="e-cats">${todas.map(c=>htmlChip('checkbox','cat',c,v.cats.includes(c),`${esc(c)} <span class="num">${items.filter(i=>i.cat === c).length}</span>`)).join('')}${extras.map(c=>htmlChip('checkbox','cat',c,true,`${esc(c)} <span class="num">sem itens</span>`)).join('')}</div>
+      <div class="grupos-cats" id="f-cats" role="group" aria-labelledby="rotCats" aria-describedby="e-cats">${grupos.map(g=>htmlGrupoCats(g, v, contagem, extras)).join('')}</div>
       <div class="atalhos"><button type="button" class="linklike" data-acao="cats-todas">Marcar todas</button><button type="button" class="linklike" data-acao="cats-limpar">Limpar</button></div>${campoErro('cats')}</div>
     <div class="campo"><span class="rot" id="rotLojas">Lojas</span><p class="ajuda" id="a-lojas">A regra só envia itens das lojas marcadas.</p>
       <div class="chips" id="f-lojas" role="group" aria-labelledby="rotLojas" aria-describedby="a-lojas e-lojas">${Object.entries(LOJA).map(([k,t])=>htmlChip('checkbox','lojas',k,v.lojas.includes(k),esc(t))).join('')}</div>${campoErro('lojas')}</div>
-    <div class="campo"><span class="rot" id="rotPublico">${esc(TXT_DISPARO.publico)}</span><p class="ajuda" id="a-publico">${esc(TXT_DISPARO.publicoAjuda)}</p>
+    <div class="campo"><span class="rot" id="rotPublico">${esc(TXT_DISPARO.publico)}</span><p class="ajuda" id="a-publico">${esc(TXT_DISPARO.publicoAjuda.replace('{ABAS}', listaTexto(ABAS_COM_GENERO)))}</p>
       <div class="chips seg" id="f-publico" role="radiogroup" aria-labelledby="rotPublico" aria-describedby="a-publico" data-original="${esc(JSON.stringify(v.generos || []))}">${OPCOES_PUBLICO.filter(o=>o[0] !== 'sem').map(([k,t])=>htmlChip('radio','publico',k,k === publicoDaRegra(v),esc(t))).join('')}</div></div>
     <div class="campo"><span class="rot" id="rotOrdem">Ordem de envio</span>
       <div class="chips seg" id="f-ordem" role="radiogroup" aria-labelledby="rotOrdem">${TXT_DISPARO.ordens.map(([k,t])=>htmlChip('radio','ordem',k,k === v.ordem,esc(t))).join('')}</div></div>
@@ -1614,7 +1723,7 @@ async function atualizarPrevia(){
 let capTocada = false;
 function aoMudarForm(ev){
   if (ev && ev.target && ev.target.closest && ev.target.closest('#f-por, #f-max, #f-horarios')) capTocada = true;
-  marcarSujo(true); atualizarDerivados();
+  marcarSujo(true); atualizarBotoesGrupo(); atualizarDerivados();
   clearTimeout(tempoPrevia); tempoPrevia = setTimeout(atualizarPrevia, 500);
 }
 async function telaRegra(r, seq){
@@ -1743,6 +1852,7 @@ $('#telaDisparo').addEventListener('click', ev=>{
     case 'foco': focarCampo(b.dataset.alvo); break;
     case 'cats-todas': document.querySelectorAll('#f-cats input').forEach(i=>i.checked = true); aoMudarForm(); break;
     case 'cats-limpar': document.querySelectorAll('#f-cats input').forEach(i=>i.checked = false); aoMudarForm(); break;
+    case 'cats-grupo': { const caixas = [...b.closest('.grupo-cats').querySelectorAll('input')], marcar = !caixas.every(i=>i.checked); caixas.forEach(i=>i.checked = marcar); aoMudarForm(); break; }
     case 'dias-todos': document.querySelectorAll('#f-dias input').forEach(i=>i.checked = true); aoMudarForm(); break;
     case 'dias-util': document.querySelectorAll('#f-dias input').forEach(i=>i.checked = +i.value < 5); aoMudarForm(); break;
     case 'add-horario': {

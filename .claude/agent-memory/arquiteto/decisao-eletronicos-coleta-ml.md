@@ -6,7 +6,7 @@ metadata:
 ---
 O plano está em `docs/produto/planos/eletronicos-e-coleta-ml.md` (rev. 2, 2026-11-03).
 
-**Decisão do dono.** As abas finais são "Lista WhatsApp", "Black Friday | Eletrônicos" (com `|`), "Eletrodomésticos", "Casa e Decoração" e "Perfumes e Perfumaria" (nova). Eletrodoméstico tem aba própria. "Black Friday" e "Casa Nova" deixam de existir.
+**Decisão do dono (superada em 2026-11-04 pelas 17 abas de [[decisao-abas-nichadas]]).** As abas eram "Lista WhatsApp", "Black Friday | Eletrônicos" (com `|`), "Eletrodomésticos", "Casa e Decoração" e "Perfumes e Perfumaria" (nova). Eletrodoméstico tem aba própria. "Black Friday" e "Casa Nova" deixam de existir.
 
 **Fatos do código e do banco:**
 - `buscas.json` é o mapa único termo → categoria. O `coletar_ml.js` embute uma cópia, e um teste confere as duas.

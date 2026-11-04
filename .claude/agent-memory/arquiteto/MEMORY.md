@@ -1,8 +1,10 @@
 - [Fatos dos CDNs de imagem](cdn-imagens-fatos.md) — CORS `*` na Amazon e no ML, padrões de URL, SL1000, gif "não disponível" do ML
 - [Teste do front](decisao-teste-front.md) — testes/*.test.html via node testes/rodar.mjs (CDP); lógica em function global; adotado em fcfcff8
 - [Blindar servidor](decisao-blindar-servidor.md) — allowlist Host/Origin + origens do ML, estático por lista, env DB/porta, unittest (implementado em 11ce20e)
-- [Abas e coleta ML](decisao-eletronicos-coleta-ml.md) — abas finais do dono, migrar_categorias.py, progresso por termo (armadilha do `|`), coletar_ml.js
+- [Abas e coleta ML](decisao-eletronicos-coleta-ml.md) — abas de 03/11 (superadas), migrar_categorias.py, progresso por termo (armadilha do `|`), coletar_ml.js
 - [Disparo automático](decisao-disparo-automatico.md) — transporte por interface (manual 1º), disparo.py sem importar servidor, user_version, pesquisa WhatsApp
 - [Shopee e perfumaria](decisao-shopee-perfumaria.md) — Shopee via Open API (não console), chave ordem|<ordem>|<termo>, 42 termos, fatos dos links Shopee
 - [API para o Achadinho Turbo](decisao-api-achadinho-turbo.md) — /api/v1 pull, Bearer em api_token.txt, cursor (atualizado_em,id), fatos do Turbo (oferta, fontes, segredos)
 - [Gênero nas categorias](decisao-genero-categorias.md) — gênero derivado em genero.py, generos_manuais (user_version 2), só Perfumaria, medições por aba
+- [Abas nichadas](decisao-abas-nichadas.md) — 17 abas, migrar com SUBTEMAS_LISTA, piso por coleta, preço antigo no upsert, Shopee importar
+- [Preço sempre atualizado](decisao-atualizar-precos.md) — items.preco_em (v3, backfill criado_em), validade em config, atualizar_precos.py com FONTES, trava no disparo

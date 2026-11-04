@@ -933,6 +933,107 @@ CONSULTAS_V1 = [
 ]
 
 
+BELEZA = 'Beleza e Cuidados'
+MODA = 'Moda e Viagem'
+PETS = 'Pets'
+
+
+class BelezaEModaNosTresConsumidores(ServidorQa):
+    """CA5 (plano abas-nichadas-e-coleta): Beleza e Moda têm público e os três consumidores concordam.
+    Banco novo só com itens sintéticos; o código de perfume vale só na perfumaria."""
+
+    ITENS = [
+        (BELEZA, 'Espuma de Barbear Gillette', 'masculino'), (BELEZA, 'Kit Pós-barba Nivea', 'masculino'),
+        (BELEZA, 'Hidratante Corporal Feminino', 'feminino'), (BELEZA, 'Hidratante unissex', 'unissex'),
+        (BELEZA, 'Shampoo Elseve Óleo Extraordinário', 'sem'), (BELEZA, 'Dior Sauvage Eau de Toilette', 'sem'),
+        (BELEZA, 'Depilador Gillette Venus Barbear', 'sem'),
+        (MODA, 'Camisa Masculina Slim', 'masculino'), (MODA, 'Vestido Feminino Longo', 'feminino'),
+        (MODA, 'Chinelo unissex', 'unissex'), (MODA, 'Mala de bordo 10 kg', 'sem'),
+        (MODA, 'Dior Sauvage Eau de Toilette', 'sem'),
+        (PERF, 'Dior Sauvage Eau de Toilette', 'masculino'),
+        (PETS, 'Coleira Masculina para Cães', 'sem'), (PETS, 'Perfume Feminino Pet', 'sem'),
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        lote = [amazon(f'B0BM{n:06d}', t, cat=c) for n, (c, t, _) in enumerate(cls.ITENS)]
+        st, corpo = cls.pedir_classe('POST', '/api/items', {'items': lote})
+        assert st == 200, corpo
+
+    @classmethod
+    def pedir_classe(cls, metodo, caminho, corpo):
+        st, dados = req(cls.porta, metodo, caminho, corpo, local(cls.porta))
+        return st, (json.loads(dados) if dados else None)
+
+    def por_titulo(self):
+        return {(i['cat'], i['data']['titulo']): i for i in self.itens()}
+
+    def disparo_ids(self, cats, generos=()):
+        con = abrir_ro(self.db)
+        try:
+            regra = {'numero_id': 0, 'cats': list(cats), 'lojas': list(LOJAS), 'palavras': [], 'desconto_min': 0,
+                     'repetir_apos_dias': None, 'generos': list(generos)}
+            return {i['id'] for i in D.elegiveis(con, regra, AGORA, S.eh_link_afiliado)}
+        finally:
+            con.close()
+
+    def test_get_items_traz_o_publico_esperado_e_a_linha_de_perfume_so_vale_na_perfumaria(self):
+        mundo = self.por_titulo()
+        for cat, titulo, esperado in self.ITENS:
+            with self.subTest(cat=cat, titulo=titulo):
+                self.assertEqual(mundo[(cat, titulo)]['genero'], esperado)
+        for cat in (PETS,):
+            for (c, t), i in mundo.items():
+                if c == cat:
+                    self.assertEqual((i['genero'], i['genero_origem']), ('sem', ''))
+
+    def test_v1_ofertas_e_categorias_concordam_com_o_get_items(self):
+        mundo = self.por_titulo()
+        for cat in (BELEZA, MODA, PERF):
+            with self.subTest(cat=cat):
+                ofertas, total = self.v1_todas('cat=' + urllib.parse.quote(cat))
+                esperado = {i['id']: i['genero'] for (c, t), i in mundo.items() if c == cat}
+                self.assertEqual({o['id']: o['genero'] for o in ofertas}, esperado)
+                for g in GENEROS:
+                    st, corpo = self.v1('/api/v1/ofertas?cat=' + urllib.parse.quote(cat) + f'&genero={g}&limite=1&ordem=relevancia')
+                    self.assertEqual(corpo['total'], sum(1 for v in esperado.values() if v == g), g)
+        st, corpo = self.v1('/api/v1/categorias')
+        cats = {c['nome']: c for c in corpo['categorias']}
+        for cat in (BELEZA, MODA):
+            cont = collections.Counter(i['genero'] for (c, t), i in mundo.items() if c == cat)
+            self.assertEqual(cats[cat]['generos'], {g: cont[g] for g in GENEROS}, cat)
+            self.assertEqual(sum(cats[cat]['generos'].values()), cats[cat]['total'])
+        self.assertEqual(cats[PETS]['generos'], {'feminino': 0, 'masculino': 0, 'unissex': 0, 'sem': cats[PETS]['total']})
+
+    def test_disparo_filtra_beleza_e_moda_e_deixa_pets_passar_inteira(self):
+        mundo = self.por_titulo()
+        todos = self.disparo_ids((BELEZA, MODA, PETS))
+        pets = {i['id'] for (c, t), i in mundo.items() if c == PETS}
+        self.assertEqual(len(pets), 2)
+        for g in GENEROS:
+            with self.subTest(genero=g):
+                esperado = {i['id'] for (c, t), i in mundo.items() if c in (BELEZA, MODA) and i['genero'] == g} | pets
+                self.assertEqual(self.disparo_ids((BELEZA, MODA, PETS), [g]), esperado)
+        masc_fem = self.disparo_ids((BELEZA, MODA, PETS), ['masculino', 'feminino'])
+        self.assertTrue(pets <= masc_fem)
+        self.assertEqual(todos, self.disparo_ids((BELEZA, MODA, PETS), list(GENEROS)))
+
+    def test_correcao_manual_na_moda_vale_nos_tres_e_em_pets_e_recusada(self):
+        mundo = self.por_titulo()
+        mala = mundo[(MODA, 'Mala de bordo 10 kg')]['id']
+        self.addCleanup(self.corrigir, mala, None)
+        st, item = self.corrigir(mala, 'feminino')
+        self.assertEqual(st, 200, item)
+        self.assertEqual((item['genero'], item['genero_origem'], item['genero_auto']), ('feminino', 'manual', 'sem'))
+        ofertas, _ = self.v1_todas('cat=' + urllib.parse.quote(MODA))
+        self.assertEqual(next(o for o in ofertas if o['id'] == mala)['genero'], 'feminino')
+        self.assertIn(mala, self.disparo_ids((MODA,), ['feminino']))
+        self.assertNotIn(mala, self.disparo_ids((MODA,), ['sem']))
+        st, _ = self.corrigir(mundo[(PETS, 'Coleira Masculina para Cães')]['id'], 'masculino')
+        self.assertEqual(st, 400)
+
+
 class V1NadaQueExistiaMuda(unittest.TestCase):
     """O código do commit anterior e o atual respondem igual, menos o campo novo `genero` (e `generos`
     em categorias), sobre o mesmo banco real migrado."""

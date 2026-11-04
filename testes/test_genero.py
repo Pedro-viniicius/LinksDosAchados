@@ -24,6 +24,8 @@ sys.path.insert(0, RAIZ)
 import genero as G   # noqa: E402
 
 PERF = 'Perfumes e Perfumaria'
+BELE = 'Beleza e Cuidados'
+MODA = 'Moda e Viagem'
 ELET = 'Black Friday | Eletrônicos'
 CASA = 'Casa e Decoração'
 ELDO = 'Eletrodomésticos'
@@ -84,6 +86,54 @@ CASOS = [
     (PERF, 'Malbec O Boticário', 'Vinho Tinto Malbec Argentino Pampa Del Sebo', S, ''),
     (PERF, 'Malbec O Boticário', 'Don Nicolás Malbec Vinho Tinto Argentino 750ml', S, ''),
     (PERF, 'Paco Rabanne Invictus', 'BOTA INVICTUS INTERCEPTOR TAN Nº 37', S, ''),
+    # Beleza e Cuidados: palavra de gênero (título > busca), lista própria de barbear e barba, e o resto é 'sem'.
+    (BELE, 'Nivea Milk 400 ml', 'Creme Hidratante Nivea Men Max Hydration 400ml', M, 'titulo'),
+    (BELE, 'Kit shampoo e condicionador', 'Kit Shampoo e Condicionador Feminino Lisos 400ml', F, 'titulo'),
+    (BELE, 'Aparador de barba', 'Aparador de Barba e Cabelo Recarregável Masculino', M, 'titulo'),
+    (BELE, 'Aparador de barba', 'Aparador de Barba Philips Série 3000', M, 'titulo'),
+    (BELE, 'Hidratante facial', 'Gel de Barbear Gillette Foamy 200ml', M, 'titulo'),
+    (BELE, 'Hidratante facial', 'Loção Pós-Barba Nivea Men Sensitive', M, 'titulo'),
+    (BELE, 'Hidratante facial', 'Óleo para Barba Viking 30ml', M, 'titulo'),
+    (BELE, 'Hidratante facial', 'Kit Barbearia Cerveja Barba e Bigode', M, 'titulo'),
+    (BELE, 'Prancha alisadora', 'Prancha Alisadora Unissex Profissional Bivolt', U, 'titulo'),
+    (BELE, 'Kit shampoo e condicionador', 'Kit Shampoo Masculino e Feminino Anticaspa', U, 'titulo'),
+    (BELE, 'Barbeador elétrico', 'Barbeador Elétrico Philips Série 3000 Recarregável', S, ''),
+    (BELE, 'Base de maquiagem', 'Base de Maquiagem Líquida Alta Cobertura Fps 30', S, ''),
+    (BELE, 'Kit shampoo e condicionador', 'Kit Shampoo e Condicionador Elseve Reparação Total 5', S, ''),
+    (BELE, 'Secador de cabelo', 'Secador de Cabelo Taiff 2000W', S, ''),
+    (BELE, 'Máscara capilar', 'Máscara Capilar Lola Cosmetics Morte Súbita 450g', S, ''),
+    (BELE, 'Protetor solar facial', 'Protetor Solar Facial La Roche-Posay Anthelios Fps 70', S, ''),
+    # Beleza: depilação e Gillette Venus (lâmina feminina) não viram masculino por citar "barbear".
+    (BELE, 'Barbeador elétrico', 'Gillette Venus Aparelho de Barbear Feminino 2 un', F, 'titulo'),
+    (BELE, 'Barbeador elétrico', 'Gillette Venus Smooth Aparelho para Barbear', S, ''),
+    (BELE, 'Kit shampoo e condicionador', 'Depilador Facial Cera Quente Buço e Barba', S, ''),
+    # Beleza: as linhas de perfume não valem ("Invictus", "Sauvage", "Million", "Malbec", "CK One", "La Vie est Belle").
+    (BELE, 'Hidratante facial', 'Sabonete Líquido Malbec Hidratante Corporal 250ml', S, ''),
+    (BELE, 'Hidratante facial', 'Hidratante Corporal Million Gold 200ml', S, ''),
+    (BELE, 'Hidratante facial', 'Desodorante Ck One 150ml', S, ''),
+    (BELE, 'Hidratante facial', 'Creme La Vie est Belle 200ml', S, ''),
+    # Beleza: só a busca decide (palavra de gênero no termo).
+    (BELE, 'Shampoo masculino', 'Shampoo Anticaspa 400ml', M, 'busca'),
+    # Moda e Viagem: só palavra de gênero, título > busca; sem linha de produto.
+    (MODA, 'Tênis Nike', 'Tênis Nike Revolution 7 Masculino', M, 'titulo'),
+    (MODA, 'Bolsa feminina', 'Bolsa Transversal Feminina Couro Sintético', F, 'titulo'),
+    (MODA, 'Pijama feminino', 'Pijama Feminino Longo Algodão Inverno', F, 'titulo'),
+    (MODA, 'Relógio masculino', 'Relógio Casio Standard Masculino Analógico', M, 'titulo'),
+    (MODA, 'Relógio feminino', 'Relógio Technos Elegance Feminino Dourado', F, 'titulo'),
+    (MODA, 'Mochila para notebook', 'Mochila Unissex Impermeável Notebook 15.6', U, 'titulo'),
+    (MODA, 'Relógio masculino', 'Relógio Casio Vintage A168 Unissex', U, 'titulo'),
+    (MODA, 'Relógio masculino', 'Relógio Casio Vintage A168WG-9WDF', M, 'busca'),
+    (MODA, 'Pijama feminino', 'Pijama Longo Algodão Inverno', F, 'busca'),
+    (MODA, 'Relógio masculino', 'Relógio Feminino Dourado Analógico', F, 'titulo'),
+    (MODA, 'Kit camisetas', 'Kit Camisetas Básicas 3 Peças Algodão', S, ''),
+    (MODA, 'Tênis de corrida', 'Tênis Asics Gel-Excite 10', S, ''),
+    (MODA, 'Mala de bordo', 'Mala de Bordo Rígida 10 kg Cadeado Tsa', S, ''),
+    (MODA, 'Óculos de sol', 'Óculos de Sol Ray-Ban Aviador', S, ''),
+    (MODA, 'Chinelo Havaianas', 'Chinelo Havaianas Top Branco', S, ''),
+    # Moda: as linhas de perfume e de barba não valem (tênis "Sauvage", "Invictus", "barba" em camiseta).
+    (MODA, 'Tênis Adidas', 'Tênis Invictus Sauvage Casual', S, ''),
+    (MODA, 'Kit camisetas', 'Camiseta Estampa Barba Ruiva Algodão', S, ''),
+    (MODA, 'Kit camisetas', 'Camiseta Pós-Barba Club', S, ''),
     # As outras abas são sempre 'sem', mesmo com palavra de gênero no título.
     (ELET, 'Relógio inteligente smartwatch', 'Relógio Inteligente Smartwatch GPS Autônomo NOVANTE Masculino Feminino Chamadas Bluetooth Preto', S, ''),
     (ELET, 'Samsung Galaxy Fit3', 'Relógio Digital Feminino Masculino Smartwatch Inteligente Bluetooth, Full Touch', S, ''),
@@ -166,7 +216,38 @@ class TestClassificar(unittest.TestCase):
     def test_aba_com_nome_parecido_nao_vale(self):
         # a comparação é pelo nome exato da aba
         self.assertEqual(G.classificar('perfumes e perfumaria', '', 'Perfume Masculino'), (S, ''))
+        self.assertEqual(G.classificar('beleza e cuidados', '', 'Creme Masculino'), (S, ''))
+        self.assertEqual(G.classificar(MODA + ' ', '', 'Relógio Masculino'), (S, ''))
         self.assertEqual(G.classificar(PERF + ' ', '', 'Perfume Masculino'), (S, ''))
+
+    def test_linha_de_produto_e_por_aba(self):
+        # o mesmo título muda de resultado conforme a aba: cada aba tem a sua lista de linhas
+        for titulo in ('Gel de Barbear 200ml', 'Loção Pós Barba'):
+            with self.subTest(titulo=titulo):
+                self.assertEqual(G.classificar(PERF, '', titulo), (M, 'titulo'))
+                self.assertEqual(G.classificar(BELE, '', titulo), (M, 'titulo'))
+                self.assertEqual(G.classificar(MODA, '', titulo), (S, ''))
+        # "barba" solta é só da beleza (a lista de perfume ficou como era)
+        self.assertEqual(G.classificar(PERF, '', 'Óleo para Barba 30ml'), (S, ''))
+        self.assertEqual(G.classificar(BELE, '', 'Óleo para Barba 30ml'), (M, 'titulo'))
+        # linha de perfume só na perfumaria
+        for titulo in ('Invictus 100ml', 'Sauvage 100ml', 'One Million 100ml', 'Malbec 100ml',
+                       'Ck One 100ml', 'La Vie est Belle 50ml'):
+            with self.subTest(titulo=titulo):
+                self.assertNotEqual(G.classificar(PERF, '', titulo)[0], S)
+                self.assertEqual(G.classificar(BELE, '', titulo), (S, ''))
+                self.assertEqual(G.classificar(MODA, '', titulo), (S, ''))
+        # "barbear" tem prefixo (barbearia); "barba" é palavra inteira (barbante, barbaridade não casam)
+        self.assertEqual(G.classificar(BELE, '', 'Kit Barbearia Completo'), (M, 'titulo'))
+        for titulo in ('Barbante de Algodão', 'Esmalte Barbaridade 8ml', 'Barbie Maquiagem Infantil'):
+            with self.subTest(titulo=titulo):
+                self.assertEqual(G.classificar(BELE, '', titulo), (S, ''))
+        # a palavra de gênero continua vencendo a linha e a guarda
+        self.assertEqual(G.classificar(BELE, '', 'Gillette Venus Barbear Feminino'), (F, 'titulo'))
+        self.assertEqual(G.classificar(BELE, '', 'Cera Depilatória Masculina'), (M, 'titulo'))
+        # beleza e moda: a guarda de ruído da perfumaria não vale (nem existe: palavra de gênero é o que conta)
+        self.assertEqual(G.classificar(MODA, '', 'Bota Masculina Couro'), (M, 'titulo'))
+        self.assertEqual(G.classificar(BELE, '', 'Vinho Tinto Pós Barba'), (M, 'titulo'))
 
     def test_guarda_de_ruido_nao_atinge_perfume(self):
         # a guarda só desliga a linha de produto; palavra de gênero continua valendo
@@ -181,7 +262,7 @@ class TestClassificar(unittest.TestCase):
 class TestAbas(unittest.TestCase):
     def test_constantes(self):
         self.assertEqual(G.GENEROS, ('feminino', 'masculino', 'unissex', 'sem'))
-        self.assertEqual(G.ABAS_COM_GENERO, (PERF,))
+        self.assertEqual(G.ABAS_COM_GENERO, (PERF, BELE, MODA))
 
     def test_abas_com_genero_existem_no_buscas_json(self):
         with open(os.path.join(RAIZ, 'buscas.json'), encoding='utf-8') as f:
@@ -191,6 +272,7 @@ class TestAbas(unittest.TestCase):
         # as demais abas do buscas.json continuam sem público
         for aba in abas - set(G.ABAS_COM_GENERO):
             self.assertEqual(G.classificar(aba, 'Perfume masculino', 'Perfume Masculino'), (S, ''))
+            self.assertEqual(G.classificar(aba, 'Barba masculino', 'Gel de Barbear Masculino'), (S, ''))
 
 
 def _banco(com_tabela=True):
@@ -313,6 +395,10 @@ class TestDoItem(unittest.TestCase):
     def test_fora_da_aba_e_sempre_sem_e_a_correcao_fica_guardada(self):
         m = {1: F}
         self.assertEqual(G.do_item(1, CASA, '', 'Sofá Lady', m), (S, ''))
+        # nas abas novas com público a correção manual vale
+        self.assertEqual(G.do_item(1, BELE, '', 'Shampoo 400ml', {1: M}), (M, 'manual'))
+        self.assertEqual(G.do_item(1, MODA, '', 'Tênis Masculino', {1: F}), (F, 'manual'))
+        self.assertEqual(G.do_item(2, MODA, '', 'Tênis Masculino', {1: F}), (M, 'titulo'))
         self.assertEqual(G.do_item(1, ELET, '', 'Smartwatch Masculino', m), (S, ''))
         self.assertEqual(m, {1: F})
         # voltando para a aba, a correção vale de novo

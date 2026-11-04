@@ -2,6 +2,7 @@
 
 - Plano: `docs/produto/planos/api-achadinho-turbo.md`. Código: `api_ofertas.py` (regra das ofertas) e `servidor.py` (token, guarda HTTP e log).
 - Estado descrito aqui: o código final da etapa 2, conferido em 2026-11-03, mais o público (`genero`) da etapa 5 do plano `docs/produto/planos/genero-nas-categorias.md` (código do público em `genero.py`). Os campos, parâmetros e erros que já existiam não mudaram e a `versao` continua 1.
+- Atualizado em 2026-11-04 (plano `docs/produto/planos/abas-nichadas-e-coleta.md`): as abas passam a ser 17 e 3 delas têm público. **Só os nomes de `categoria` e as abas com `generos` mudam; nenhum campo, parâmetro ou erro é novo.** Veja "Abas" e a nota de renomeação.
 - Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
 
 ## Como usar em 1 minuto
@@ -55,6 +56,40 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 - Horários (`criado_em`, `atualizado_em`) são texto ISO **local do computador, sem fuso**, com precisão de segundo (`2026-11-03T12:24:23`). Trate como texto.
 - Medido em 2026-11-03 com 8.380 itens: cada pedido leva cerca de meio segundo e uma página de 200 ofertas tem cerca de 120 KB. A v1 lê o banco inteiro a cada pedido, então **numa varredura completa use `limite=200`** (o máximo: menos pedidos) e **não faça pedidos em paralelo**.
 
+## Abas
+
+São 17 abas. Os valores de `categoria` (e do filtro `cat`) são estes, **exatamente assim**, na ordem do `buscas.json` e da barra do site (a API lista as categorias em ordem alfabética, não nesta):
+
+1. `Celulares e Informática`
+2. `Áudio e Acessórios`
+3. `TV, Alexa e Casa Conectada`
+4. `Games`
+5. `Eletroportáteis`
+6. `Eletrodomésticos e Climatização`
+7. `Cozinha`
+8. `Cama, Mesa e Banho`
+9. `Casa, Móveis e Ferramentas`
+10. `Beleza e Cuidados`
+11. `Perfumes e Perfumaria`
+12. `Mercado e Limpeza`
+13. `Pets`
+14. `Bebês e Brinquedos`
+15. `Suplementos e Fitness`
+16. `Moda e Viagem`
+17. `Natal e Papelaria`
+
+**Têm público (`genero`) 3 abas:** `Perfumes e Perfumaria`, `Beleza e Cuidados` e `Moda e Viagem` (`genero.ABAS_COM_GENERO`). Nelas, `generos` em `/categorias` traz a contagem por público; nas outras 14, tudo em `sem`. Aba nova ou renomeada: a lista pode mudar, então leia `/api/v1/categorias` em vez de fixar os nomes no consumidor. Os 17 nomes cabem no limite de 20 `cat` por pedido.
+
+**Nota de renomeação (2026-11-04).** As abas antigas deixaram de existir. Os itens foram redistribuídos pelo termo de busca, com `migrar_categorias.py`, e quem filtrava por um nome antigo passa a receber 0 ofertas (sem erro: o valor é só texto):
+
+| Aba antiga (`categoria`) | Foi para |
+|---|---|
+| `Black Friday \| Eletrônicos` | `Celulares e Informática`, `Áudio e Acessórios`, `TV, Alexa e Casa Conectada`, `Games` |
+| `Eletrodomésticos` | `Eletroportáteis`, `Eletrodomésticos e Climatização` |
+| `Casa e Decoração` | `Cozinha`, `Cama, Mesa e Banho`, `Casa, Móveis e Ferramentas` |
+
+`Perfumes e Perfumaria` não mudou (mesmos itens). **A migração regrava o `atualizado_em`** dos itens que trocaram de aba (e dos que perderam um preço antigo implausível, de 5× o preço ou mais): na ordem `atualizacao` eles reaparecem depois do cursor, e a `chave` evita repetir o envio. Quem guardou um `cursor` não precisa recomeçar do zero.
+
 ## `GET /api/v1/ofertas`
 
 Parâmetros (todos opcionais). **A validação é estrita:** parâmetro desconhecido, parâmetro repetido onde não pode, valor vazio onde não pode e valor fora da faixa dão 400. Nenhuma mensagem de erro devolve o valor enviado.
@@ -68,7 +103,7 @@ Parâmetros (todos opcionais). **A validação é estrita:** parâmetro desconhe
 | `ordem` | `atualizacao` (padrão), `relevancia`, `desconto`, `menor_preco`, `maior_preco`, `cupom` ou `recentes`. `aleatoria` (que existe no disparo) dá 400: ela não pagina. |
 | `limite` | Inteiro de 1 a 200. Padrão 50. |
 | `cursor` | O valor de `proximo` da página anterior, na **mesma ordem**. Opaco: não monte nem altere. Cursor adulterado ou de outra ordem dá 400. |
-| `genero` | Público: `feminino`, `masculino`, `unissex` ou `sem`, exatamente assim (minúsculas, sem acento). Repetível, até os 4; o mesmo valor duas vezes dá 400. Sem `genero`: todos. Vários: qualquer um deles. O filtro é **exato** e vale para todas as abas: `genero=feminino` só traz ofertas com `"genero": "feminino"`, e as abas que não separam por público (tudo fora de `Perfumes e Perfumaria`) são sempre `sem`. Para "perfumes femininos e toda a Casa", faça dois pedidos (um com `cat` e `genero`, outro só com `cat`). |
+| `genero` | Público: `feminino`, `masculino`, `unissex` ou `sem`, exatamente assim (minúsculas, sem acento). Repetível, até os 4; o mesmo valor duas vezes dá 400. Sem `genero`: todos. Vários: qualquer um deles. O filtro é **exato** e vale para todas as abas: `genero=feminino` só traz ofertas com `"genero": "feminino"`, e as abas que não separam por público (todas fora das 3 de "Abas") são sempre `sem`. Para "perfumes femininos e toda a Cozinha", faça dois pedidos (um com `cat` e `genero`, outro só com `cat`). |
 
 Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
 
@@ -93,7 +128,7 @@ Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `chave` | texto | `<loja>:<item_id>`, por exemplo `amazon:B0G5NZ82TJ`. **Use para deduplicar**: é única por oferta e estável. |
 | `loja` | texto | `amazon`, `ml` ou `shopee`. |
 | `item_id` | texto | Código do produto na loja (ASIN, MLB..., `<shopId>.<itemId>`). |
-| `categoria` | texto | Nome da aba do Etiqueta (por exemplo `Perfumes e Perfumaria`). |
+| `categoria` | texto | Nome da aba do Etiqueta, uma das 17 de "Abas" (por exemplo `Perfumes e Perfumaria`). |
 | `busca` | texto | Termo de busca que trouxe o item. Pode ser vazio. |
 | `titulo` | texto | Título, não vazio. |
 | `link` | texto | **Link de afiliado da própria loja**, pronto para usar: Amazon `https://www.amazon.com.br/...?tag=desejodemen01-20`, ML `https://meli.la/...`, Shopee `https://s.shopee.com.br/...`. |
@@ -108,7 +143,7 @@ Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `cupom` | texto | Texto do cupom, `""` quando não há. |
 | `criado_em` | texto | Quando o item entrou no banco. |
 | `atualizado_em` | texto | Última gravação do item (nova coleta, reclassificação, correção do público pelo site). |
-| `genero` | texto | Público da oferta: `feminino`, `masculino`, `unissex` ou `sem`. Só a aba `Perfumes e Perfumaria` separa por público; nas outras é sempre `sem`. Vem da correção que o dono fez no site ou, sem ela, do título e do termo de busca (`genero.py`). Na perfumaria, `sem` é item sem público definido (hidratante, sabonete, infantil...). Vem depois dos outros campos; consumidor antigo pode ignorá-lo. |
+| `genero` | texto | Público da oferta: `feminino`, `masculino`, `unissex` ou `sem`. Só as 3 abas com público (`Perfumes e Perfumaria`, `Beleza e Cuidados` e `Moda e Viagem`) separam por público; nas outras 14 é sempre `sem`. Vem da correção que o dono fez no site ou, sem ela, do título e do termo de busca (`genero.py`). Nas abas com público, `sem` é item sem público definido (hidratante, sabonete, infantil...). Vem depois dos outros campos; consumidor antigo pode ignorá-lo. |
 
 ### Quando uma oferta NÃO sai
 
@@ -149,15 +184,23 @@ Nas ordens por deslocamento, uma coleta entre duas páginas pode deslocar itens;
 
 Não aceita parâmetros (qualquer um dá 400). Conta só as ofertas que passam nas condições acima, em ordem alfabética (sem diferenciar acentos). Cada categoria traz o `total`, a contagem por loja (`lojas`, as 3 chaves sempre) e a contagem por público (`generos`, as 4 chaves sempre, na ordem `feminino`, `masculino`, `unissex`, `sem`). As abas que não separam por público têm tudo em `sem`. A soma de `generos` é o `total` da categoria, e cada número bate com o `total` de `/api/v1/ofertas?cat=<nome>&genero=<valor>` **numa ordem diferente de `atualizacao`** (por exemplo, `ordem=relevancia`). Na ordem padrão `atualizacao`, o `total` desconta os itens alterados nos últimos 60 s (a folga do cursor), então logo depois de uma coleta ou de uma correção pelo site os dois números podem diferir por alguns itens.
 
+Exemplo (valores ilustrativos; mostra uma aba sem público e as três com público, em ordem alfabética):
+
 ```json
 {"versao": 1,
- "categorias": [{"nome": "Casa e Decoração", "total": 1089,
-                 "lojas": {"amazon": 533, "ml": 556, "shopee": 0},
-                 "generos": {"feminino": 0, "masculino": 0, "unissex": 0, "sem": 1089}},
+ "categorias": [{"nome": "Beleza e Cuidados", "total": 120,
+                 "lojas": {"amazon": 80, "ml": 30, "shopee": 10},
+                 "generos": {"feminino": 40, "masculino": 20, "unissex": 5, "sem": 55}},
+                {"nome": "Cozinha", "total": 604,
+                 "lojas": {"amazon": 300, "ml": 304, "shopee": 0},
+                 "generos": {"feminino": 0, "masculino": 0, "unissex": 0, "sem": 604}},
+                {"nome": "Moda e Viagem", "total": 90,
+                 "lojas": {"amazon": 60, "ml": 20, "shopee": 10},
+                 "generos": {"feminino": 30, "masculino": 35, "unissex": 5, "sem": 20}},
                 {"nome": "Perfumes e Perfumaria", "total": 2764,
                  "lojas": {"amazon": 2228, "ml": 0, "shopee": 536},
                  "generos": {"feminino": 629, "masculino": 865, "unissex": 160, "sem": 1110}}],
- "total": 3853}
+ "total": 3578}
 ```
 
 ## Erros
@@ -215,7 +258,7 @@ const { ofertas, proximo, total } = await r.json();
 - **Sem limite de taxa.** Um consumidor local, com token. Se um dia a API sair do computador do dono (VPS), isso e o HTTPS passam a ser requisito.
 - **O token não protege mais que hoje contra outro processo no mesmo computador:** `GET /api/items` (a API da interface) continua aberto a quem não manda `Origin`. O que a v1 ganha é barrar o navegador e ter o contrato pronto para o dia em que o consumidor estiver em outra máquina.
 - **Item apagado some sem aviso:** a API só lista o que existe agora. O consumidor relê a lista a cada execução.
-- **Reclassificar abas** (`migrar_categorias.py`, `classificar_lista.py`) regrava `atualizado_em` de muitos itens; eles reaparecem na ordem `atualizacao`. É esperado: a `chave` evita repetir o envio.
+- **Reclassificar abas** (`migrar_categorias.py`, `classificar_lista.py`) regrava `atualizado_em` de muitos itens; eles reaparecem na ordem `atualizacao`. É esperado: a `chave` evita repetir o envio. Foi o que a migração para as 17 abas fez em 2026-11-04 (veja "Abas").
 - Não existe `GET /api/v1/ofertas/<id>` (rota desconhecida dá 404).
 
 ## Guia de encaixe no Achadinho Turbo

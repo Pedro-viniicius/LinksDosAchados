@@ -284,5 +284,73 @@ class TestTiposErrados(T.ServidorTeste):
         self.assertEqual(self.pedir('GET', '/api/items')[0], 200)
 
 
+class TestPrecoAntigoQa(T.ServidorTeste):
+    """CA4 (plano abas-nichadas-e-coleta): bordas do saneamento do preço antigo, pela porta de verdade."""
+
+    AMZ = 'https://www.amazon.com.br/dp/{}?tag=desejodemen01-20'
+
+    def gravar(self, item_id, preco, antigo, desconto='-50%', loja='amazon'):
+        url = self.AMZ.format(item_id) if loja == 'amazon' else 'https://meli.la/' + item_id[-6:]
+        st, _, corpo = self.postar([{'loja': loja, 'item_id': item_id, 'cat': 'Pets', 'url': url,
+                                     'data': {'titulo': 'T ' + item_id, 'preco': preco, 'preco_antigo': antigo,
+                                              'desconto': desconto, 'avaliacao': '4,8 de 5 estrelas', 'vendas': '10 vendidos'}}])
+        self.assertEqual(st, 200, corpo)
+        return next(i for i in self.itens() if i['item_id'] == item_id)
+
+    def test_formatos_reais_de_preco_com_milhar_mantem_o_antigo_plausivel(self):
+        casos = [('R$ 1.299,90', 'R$ 1.599,00'), ('R$ 4.285', 'R$ 5.399'), ('R$ 69,90', 'R$ 349,49'),
+                 ('R$ 10', 'R$ 49'), ('R$\xa01.299,90', 'R$\xa02.000,00')]
+        for n, (p, a) in enumerate(casos):
+            with self.subTest(preco=p, antigo=a):
+                it = self.gravar(f'B0QAPL{n:04d}', p, a)
+                self.assertEqual((it['data']['preco_antigo'], it['data']['desconto']), (a, '-50%'))
+
+    def test_exatamente_5x_ou_mais_limpa_so_antigo_e_desconto_e_preserva_o_resto(self):
+        casos = [('R$ 69,90', 'R$ 349,50'), ('R$ 10', 'R$ 50'), ('R$ 19,00', 'R$ 19.000,00'), ('R$ 4.285', 'R$ 21.425')]
+        for n, (p, a) in enumerate(casos):
+            with self.subTest(preco=p, antigo=a):
+                item_id = f'B0QAIM{n:04d}'
+                it = self.gravar(item_id, p, a, '-80%')
+                d = it['data']
+                self.assertEqual((d['preco'], d['preco_antigo'], d['desconto']), (p, '', ''))
+                self.assertEqual((d['avaliacao'], d['vendas'], d['titulo']), ('4,8 de 5 estrelas', '10 vendidos', 'T ' + item_id))
+                self.assertEqual(it['url'], self.AMZ.format(item_id))
+
+    def test_item_limpo_volta_a_ter_antigo_se_a_coleta_seguinte_trouxer_um_plausivel(self):
+        it = self.gravar('B0QAVOLTA1', 'R$ 20,00', 'R$ 200,00')
+        self.assertEqual(it['data']['preco_antigo'], '')
+        it = self.gravar('B0QAVOLTA1', 'R$ 20,00', 'R$ 30,00', '-33%')
+        self.assertEqual((it['data']['preco_antigo'], it['data']['desconto']), ('R$ 30,00', '-33%'))
+
+    def test_preco_ilegivel_ou_zero_nao_mexe_no_antigo(self):
+        for n, p in enumerate(['R$ 0,00', '', 'R$ 10 - R$ 20', 'sob consulta']):
+            with self.subTest(preco=p):
+                it = self.gravar(f'B0QAZR{n:04d}', p, 'R$ 9.999,00', '-90%')
+                self.assertEqual((it['data']['preco_antigo'], it['data']['desconto']), ('R$ 9.999,00', '-90%'))
+
+    def test_entradas_hostis_nao_derrubam_o_servidor(self):
+        hostis = ['\u0663\u0660', '9' * 150, '1.' * 90, 'R$ ' + '1' * 190, '0,' + '0' * 150 + '1', '\uff11\uff10']
+        for n, p in enumerate(hostis):
+            with self.subTest(preco=p[:20]):
+                self.gravar(f'B0QAHO{n:04d}', p, 'R$ 100,00')
+                self.gravar(f'B0QAHP{n:04d}', 'R$ 10,00', p)
+        self.assertEqual(self.pedir('GET', '/api/items')[0], 200)
+
+    def test_ml_com_desconto_legitimo_de_77_porcento_nao_e_limpo(self):
+        it = self.gravar('MLBQA0000077', 'R$ 230,00', 'R$ 1.000,00', '-77%', loja='ml')
+        self.assertEqual((it['data']['preco_antigo'], it['data']['desconto']), ('R$ 1.000,00', '-77%'))
+
+    def test_q2_patch_de_data_tambem_nao_grava_antigo_implausivel(self):
+        """O botao "Buscar dados" do cartao grava pelo PATCH /api/items/<id> com data: mesma regra do CA4
+        ("nao e gravado por nenhuma loja"), mas o PATCH nao passa por preco_antigo_plausivel."""
+        it = self.gravar('B0QAPATCH1', 'R$ 30,00', 'R$ 40,00', '-25%')
+        st, _, corpo = self.pedir('PATCH', f"/api/items/{it['id']}",
+                                  {'data': {'titulo': 'T', 'preco': 'R$ 69,90', 'preco_antigo': 'R$ 349,50', 'desconto': '-80%'}},
+                                  self.local())
+        self.assertEqual(st, 200, corpo)
+        d = next(i for i in self.itens() if i['item_id'] == 'B0QAPATCH1')['data']
+        self.assertEqual((d['preco'], d['preco_antigo'], d['desconto']), ('R$ 69,90', '', ''))
+
+
 if __name__ == '__main__':
     unittest.main()

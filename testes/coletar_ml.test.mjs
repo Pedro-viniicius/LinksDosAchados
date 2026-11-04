@@ -21,13 +21,18 @@ const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const FONTE = fs.readFileSync(path.join(RAIZ, 'coletar_ml.js'), 'utf8');
 const FIXTURE = fs.readFileSync(path.join(RAIZ, 'testes', 'fixtures', 'ml-busca.html'), 'utf8');
 const BUSCAS_JSON = JSON.parse(fs.readFileSync(path.join(RAIZ, 'buscas.json'), 'utf8'));
+// Estado de 2026-11-04 (4 abas) congelado: o que vale só para o histórico aponta para cá.
+const ABAS_17 = ['Celulares e Informática', 'Áudio e Acessórios', 'TV, Alexa e Casa Conectada', 'Games',
+  'Eletroportáteis', 'Eletrodomésticos e Climatização', 'Cozinha', 'Cama, Mesa e Banho',
+  'Casa, Móveis e Ferramentas', 'Beleza e Cuidados', 'Perfumes e Perfumaria', 'Mercado e Limpeza', 'Pets',
+  'Bebês e Brinquedos', 'Suplementos e Fitness', 'Moda e Viagem', 'Natal e Papelaria'];
 const CREATELINK = JSON.parse(fs.readFileSync(path.join(RAIZ, 'testes', 'fixtures', 'ml-createlink.json'), 'utf8'));
 const LISTA = 'https://lista.mercadolivre.com.br';
 const WWW = 'https://www.mercadolivre.com.br';
 const SERVIDOR = 'http://localhost:8765';
 const CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
   'vendas', 'frete', 'cupom', 'imagem'];
-const BF = 'Black Friday | Eletrônicos';
+const ABA_TV = 'TV, Alexa e Casa Conectada';   // aba do termo 'Smart TV'
 
 // objetos do contexto vm têm outros protótipos: compara pelo JSON
 const js = (v) => JSON.parse(JSON.stringify(v));
@@ -101,8 +106,9 @@ function fetchFalso({ pagina = paginaPorSlug, urlFinal, statusML = 200, servidor
     doServidor: () => chamadas.filter((c) => !c.url.startsWith('/')) };
 }
 
+const ALT_NO_PISO = 'Classificação 4.8 de 5 estrelas. Mais de 100 produtos vendidos.';
 const ITEM_TV = {
-  loja: 'ml', item_id: 'MLB4100000001', cat: BF, busca: 'Smart TV',
+  loja: 'ml', item_id: 'MLB4100000001', cat: ABA_TV, busca: 'Smart TV',
   url: 'https://produto.mercadolivre.com.br/MLB-4100000001',
   data: {
     titulo: 'Smart TV Samsung 50" Crystal UHD 4K {2025}', preco: 'R$ 2.569', preco_antigo: 'R$ 2.999',
@@ -111,20 +117,20 @@ const ITEM_TV = {
   },
 };
 const ITEM_BOX = {
-  loja: 'ml', item_id: 'MLB4100000002', cat: BF, busca: 'Smart TV',
+  loja: 'ml', item_id: 'MLB4100000002', cat: ABA_TV, busca: 'Smart TV',
   url: 'https://produto.mercadolivre.com.br/MLB-4100000002',
   data: {
     titulo: "TV Box D'Ouro <Ultra> 4K", preco: 'R$ 124,20', preco_antigo: 'R$ 130,74', desconto: '-5%',
-    avaliacao: '4.2 de 5 estrelas', num_avaliacoes: '', vendas: 'Mais de 25 produtos vendidos', frete: '',
+    avaliacao: '4.6 de 5 estrelas', num_avaliacoes: '', vendas: 'Mais de 120 produtos vendidos', frete: '',
     cupom: '', imagem: 'https://http2.mlstatic.com/D_Q_NP_2X_611234-MLA100016350069_122025-E.webp',
   },
 };
 const ITEM_SUPORTE = {
-  loja: 'ml', item_id: 'MLB4100000003', cat: BF, busca: 'Smart TV',
+  loja: 'ml', item_id: 'MLB4100000003', cat: ABA_TV, busca: 'Smart TV',
   url: 'https://produto.mercadolivre.com.br/MLB-4100000003',
   data: {
-    titulo: 'Suporte de parede para TV', preco: 'R$ 1.877', preco_antigo: '', desconto: '', avaliacao: '',
-    num_avaliacoes: '', vendas: '', frete: 'Frete grátis', cupom: '',
+    titulo: 'Suporte de parede para TV', preco: 'R$ 1.877', preco_antigo: '', desconto: '',
+    avaliacao: '4.5 de 5 estrelas', num_avaliacoes: '', vendas: 'Mais de 50 produtos vendidos', frete: 'Frete grátis', cupom: '',
     imagem: 'https://http2.mlstatic.com/D_Q_NP_2X_978870-MLM89623083412_082025-E.webp',
   },
 };
@@ -179,16 +185,23 @@ describe('BUSCAS igual a buscas.json (CA13)', () => {
     const igual = JSON.stringify(ML.BUSCAS) === JSON.stringify(BUSCAS_JSON);
     if (!igual) console.log('\n' + blocoBuscas(BUSCAS_JSON) + '\n');
     assert.ok(igual, 'ColetaML.BUSCAS diverge de buscas.json (bloco certo impresso acima)');
-    assert.ok(Object.isFrozen(ML.BUSCAS) && Object.isFrozen(ML.BUSCAS[BF]));
+    assert.ok(Object.isFrozen(ML.BUSCAS) && Object.isFrozen(ML.BUSCAS[ABA_TV]));
+  });
+
+  test('buscas.json tem as 17 abas do mapa do dono, com esses nomes e nessa ordem (CA1)', () => {
+    assert.deepEqual(Object.keys(BUSCAS_JSON), ABAS_17);
+    const { ML } = carregar();
+    assert.deepEqual(Object.keys(ML.BUSCAS), ABAS_17);
+    for (const aba of ABAS_17) assert.ok(BUSCAS_JSON[aba].length > 0, aba + ' sem termos');
   });
 
   test('categoriaDe segue buscas.json e o ALIAS', () => {
     const { ML } = carregar();
-    assert.equal(ML.categoriaDe('Smart TV'), BF);
-    assert.equal(ML.categoriaDe('Caixa inteligente assistente virtual'), BF);
-    assert.equal(ML.categoriaDe('Smart speaker Alexa'), BF);
-    assert.equal(ML.categoriaDe('Geladeira'), 'Eletrodomésticos');
-    assert.equal(ML.categoriaDe('Sofa\u0301'), 'Casa e Decoração');   // NFD vira NFC
+    assert.equal(ML.categoriaDe('Smart TV'), ABA_TV);
+    assert.equal(ML.categoriaDe('Caixa inteligente assistente virtual'), ABA_TV);
+    assert.equal(ML.categoriaDe('Smart speaker Alexa'), ABA_TV);
+    assert.equal(ML.categoriaDe('Geladeira'), 'Eletrodomésticos e Climatização');
+    assert.equal(ML.categoriaDe('Sofa\u0301'), 'Casa, Móveis e Ferramentas');   // NFD vira NFC
     assert.equal(ML.categoriaDe(' Body splash '), 'Perfumes e Perfumaria');
     for (const t of ['Black Friday', 'Casa Nova', 'constructor', '__proto__', '', 'smart tv']) {
       assert.equal(ML.categoriaDe(t), null, t);
@@ -223,7 +236,7 @@ describe('parser da página de busca (CA12)', () => {
 
   test('extrairItens devolve os 3 válidos no formato do banco', () => {
     const { ML } = carregar();
-    const itens = js(ML.extrairItens(FIXTURE, 'Smart TV', BF, 30));
+    const itens = js(ML.extrairItens(FIXTURE, 'Smart TV', ABA_TV, 30));
     assert.deepEqual(itens, [ITEM_TV, ITEM_BOX, ITEM_SUPORTE]);
     for (const it of itens) {
       assert.match(it.item_id, /^MLB\d+$/);
@@ -235,7 +248,7 @@ describe('parser da página de busca (CA12)', () => {
 
   test('ignora id repetido, card sem título e a url click1 do anúncio', () => {
     const { ML } = carregar();
-    const itens = js(ML.extrairItens(FIXTURE, 'Smart TV', BF, 30));
+    const itens = js(ML.extrairItens(FIXTURE, 'Smart TV', ABA_TV, 30));
     assert.equal(itens.filter((i) => i.item_id === 'MLB4100000001').length, 1);
     assert.ok(!itens.some((i) => i.data.titulo.includes('repetido')));
     assert.ok(!itens.some((i) => i.item_id === 'MLB4100000005'));
@@ -245,8 +258,8 @@ describe('parser da página de busca (CA12)', () => {
 
   test('respeita o máximo por termo', () => {
     const { ML } = carregar();
-    assert.equal(ML.extrairItens(FIXTURE, 'Smart TV', BF, 2).length, 2);
-    assert.equal(ML.extrairItens(FIXTURE, 'Smart TV', BF).length, 3);
+    assert.equal(ML.extrairItens(FIXTURE, 'Smart TV', ABA_TV, 2).length, 2);
+    assert.equal(ML.extrairItens(FIXTURE, 'Smart TV', ABA_TV).length, 3);
   });
 
   test('página sem polycard, captcha ou vazia não gera itens', () => {
@@ -255,23 +268,24 @@ describe('parser da página de busca (CA12)', () => {
     const captcha = '<html><body><form action="/captcha">Confirme que você é humano</form></body></html>';
     for (const h of [semPoly, captcha, '', null, '.q("sem fim']) {
       assert.equal(ML.literalQ(h), null);
-      assert.deepEqual(js(ML.extrairItens(h, 'Smart TV', BF, 30)), []);
+      assert.deepEqual(js(ML.extrairItens(h, 'Smart TV', ABA_TV, 30)), []);
     }
   });
 
   test('literal .q("…") sem fim não esconde o próximo, que tem os polycards', () => {
     const { ML } = carregar();
     const html = '<script>a.q("quebrado\n</script>' + FIXTURE;
-    assert.equal(ML.extrairItens(html, 'Smart TV', BF, 30).length, 3);
+    assert.equal(ML.extrairItens(html, 'Smart TV', ABA_TV, 30).length, 3);
   });
 
   test('chaves e barras dentro de strings não quebram o balanceamento', () => {
     const { ML } = carregar();
     const titulo = 'barra \\ chave } aspa " apóstrofo \' menor <';
     const interno = JSON.stringify({ r: [{ polycard: { metadata: { id: 'MLB1234567' },
-      components: [{ type: 'title', title: { text: titulo } }] } }, { polycard: 'não é objeto' }] });
+      components: [{ type: 'title', title: { text: titulo } }, { type: 'review_compacted', review_compacted: { alt_text: ALT_NO_PISO } }] } },
+      { polycard: 'não é objeto' }] });
     const literal = JSON.stringify(interno).replace(/'/g, "\\'").replace(/</g, '\\x3C');
-    const itens = js(ML.extrairItens(`<script>a.q(${literal});</script>`, 'Smart TV', BF, 30));
+    const itens = js(ML.extrairItens(`<script>a.q(${literal});</script>`, 'Smart TV', ABA_TV, 30));
     assert.equal(itens.length, 1);
     assert.equal(itens[0].data.titulo, titulo);
     assert.equal(itens[0].data.preco, '');
@@ -313,6 +327,163 @@ describe('parser da página de busca (CA12)', () => {
     assert.equal(ML.formatarPreco(1234567.05), 'R$ 1.234.567,05');
     assert.equal(ML.formatarPreco(99), 'R$ 99');
     assert.equal(ML.formatarPreco(0.5), 'R$ 0,50');
+  });
+});
+
+// ------------------------------------------------------------------ piso de qualidade e usado (CA8)
+describe('piso de qualidade e recusa de usado (CA8)', () => {
+  /** Card sintético; `alt` é o texto da avaliação ('' = sem o componente), `extra` entra no polycard. */
+  function cardPiso(n, { titulo = `Produto ${n}`, alt = ALT_NO_PISO, extra = {}, meta = {} } = {}) {
+    const components = [{ type: 'title', title: { text: titulo } },
+      { type: 'price', price: { current_price: { value: 100 + n } } }];
+    if (alt) components.push({ type: 'review_compacted', review_compacted: { alt_text: alt } });
+    return { id: 'POLYCARD', polycard: { metadata: { id: 'MLB' + (7000000000 + n), ...meta }, components, ...extra } };
+  }
+  function paginaPiso(cards) {
+    const literal = JSON.stringify(JSON.stringify({ results: cards })).replace(/'/g, "\\'").replace(/</g, '\\x3C');
+    return `<script>_n.ctx.s["x"].q(${literal});</script>`;
+  }
+  const alt = (nota, vendas) => `Classificação ${nota} de 5 estrelas.${vendas === undefined ? '' : ' ' + vendas + '.'}`;
+  /** Itens que passam e a contagem, para uma lista de cards. */
+  function extrair(cards) {
+    const { ML } = carregar();
+    const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
+    const itens = js(ML.extrairItens(paginaPiso(cards), 'Smart TV', ABA_TV, 30, contagem));
+    return { itens, contagem: js(contagem) };
+  }
+
+  const entram = [
+    ['limite: nota 4,5 e "Mais de 50"', alt('4.5', 'Mais de 50 produtos vendidos')],
+    ['nota 5 e muitas vendas', alt('5', 'Mais de 100 produtos vendidos')],
+    ['milhar com ponto', alt('4.7', 'Mais de 1.000 produtos vendidos')],
+    ['"Mais de 1 mil"', alt('4.5', 'Mais de 1 mil produtos vendidos')],
+    ['"Mais de 2 milhões"', alt('4.9', 'Mais de 2 milhões produtos vendidos')],
+    ['rótulo curto "+50 vendidos"', alt('4.6', '+50 vendidos')],
+    ['rótulo "+1 mil vendidos"', alt('4.6', '+1 mil vendidos')],
+    ['nota com vírgula', alt('4,5', 'Mais de 50 produtos vendidos')],
+  ];
+  for (const [nome, a] of entram) {
+    test(`passa: ${nome}`, () => {
+      const { itens, contagem } = extrair([cardPiso(1, { alt: a })]);
+      assert.equal(itens.length, 1, a);
+      assert.deepEqual(contagem, { lidos: 1, foraDoPiso: 0, usados: 0 });
+    });
+  }
+
+  const ficamFora = [
+    ['nota 4,4 com muitas vendas', alt('4.4', 'Mais de 1000 produtos vendidos')],
+    ['nota 4,49', alt('4.49', 'Mais de 1000 produtos vendidos')],
+    ['"Mais de 49" vendidos', alt('4.8', 'Mais de 49 produtos vendidos')],
+    ['"Mais de 25" vendidos (como o TV Box antigo da fixture)', alt('4.2', 'Mais de 25 produtos vendidos')],
+    ['nota boa e sem rótulo de vendas', alt('4.9')],
+    ['sem avaliação nenhuma', ''],
+    ['só vendas, sem nota', 'Mais de 1000 produtos vendidos.'],
+    ['nota fora da escala (45 de 5)', alt('45', 'Mais de 1000 produtos vendidos')],
+    ['nota zero', alt('0', 'Mais de 1000 produtos vendidos')],
+    ['rótulo de vendas ilegível', alt('4.9', 'Mais de muitos produtos vendidos')],
+  ];
+  for (const [nome, a] of ficamFora) {
+    test(`fica fora: ${nome}`, () => {
+      const { itens, contagem } = extrair([cardPiso(1, { alt: a })]);
+      assert.equal(itens.length, 0, a);
+      assert.deepEqual(contagem, { lidos: 1, foraDoPiso: 1, usados: 0 });
+    });
+  }
+
+  const usados = ['iPhone 11 128GB Usado', 'Notebook Dell Recondicionado', 'Celular Seminovo Samsung', 'Aspirador Renovado',
+    'TV 50 pol Vitrine', 'Smartphone Open Box', 'Galaxy S21 Refurbished', 'Bicicleta USADA aro 29', 'Lote de 3 Usados',
+    'Câmera Recondicionádo', 'Console Open-Box'.replace('-', ' '), 'Tablet Seminovos'];
+  for (const titulo of usados) {
+    test(`usado por título: ${titulo}`, () => {
+      const { itens, contagem } = extrair([cardPiso(1, { titulo })]);
+      assert.equal(itens.length, 0);
+      assert.deepEqual(contagem, { lidos: 1, foraDoPiso: 1, usados: 1 });
+    });
+  }
+
+  for (const titulo of ['Smart TV Samsung 50 Novo', 'Desusado kit', 'Usadão de plástico', 'Renovação de ar', 'Vitrines Sheila', 'Caixa de som']) {
+    test(`não é usado: ${titulo}`, () => {
+      const { itens } = extrair([cardPiso(1, { titulo })]);
+      assert.equal(itens.length, 1);
+    });
+  }
+
+  test('condição usada ou recondicionada no polycard recusa o item, mesmo com título limpo', () => {
+    const cards = [
+      cardPiso(1, { meta: { condition: 'used' } }), cardPiso(2, { extra: { condition: 'Recondicionado' } }),
+      cardPiso(3, { meta: { condition: 'new' } }), cardPiso(4, { meta: { condition: 'refurbished' } }), cardPiso(5),
+    ];
+    const { itens, contagem } = extrair(cards);
+    assert.deepEqual(itens.map((i) => i.item_id), ['MLB7000000003', 'MLB7000000005']);
+    assert.deepEqual(contagem, { lidos: 5, foraDoPiso: 3, usados: 3 });
+  });
+
+  test('o máximo por busca vale para os itens que passam: o que ficou fora não ocupa vaga', () => {
+    const ruins = Array.from({ length: 10 }, (_, i) => cardPiso(i + 1, { alt: alt('3.9', 'Mais de 1000 produtos vendidos') }));
+    const bons = Array.from({ length: 5 }, (_, i) => cardPiso(i + 11));
+    const { ML } = carregar();
+    const itens = js(ML.extrairItens(paginaPiso([...ruins, ...bons]), 'Smart TV', ABA_TV, 3));
+    assert.deepEqual(itens.map((i) => i.item_id), ['MLB7000000011', 'MLB7000000012', 'MLB7000000013']);
+  });
+
+  test('a fixture mista dá os 3 que passam; card repetido não é contado duas vezes', () => {
+    const { ML } = carregar();
+    const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
+    const itens = js(ML.extrairItens(FIXTURE, 'Smart TV', ABA_TV, 30, contagem));
+    assert.equal(itens.length, 3);
+    assert.deepEqual(js(contagem), { lidos: 3, foraDoPiso: 0, usados: 0 });
+  });
+
+  test('coletar(): grava só o que passa, soma o que ficou de fora em estado e mostra no resumo', async () => {
+    const cards = [cardPiso(1), cardPiso(2, { alt: alt('4.4', 'Mais de 1000 produtos vendidos') }), cardPiso(3, { alt: '' }),
+      cardPiso(4, { titulo: 'Fone Usado' }), cardPiso(5, { alt: alt('4.5', 'Mais de 50 produtos vendidos') })];
+    const ff = fetchFalso({ pagina: () => paginaPiso(cards) });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(JSON.parse(ff.doServidor()[0].init.body).items.map((i) => i.item_id), ['MLB7000000001', 'MLB7000000005']);
+    assert.equal(estado.foraDoPiso, 3);
+    assert.equal(estado.usados, 1);
+    assert.deepEqual(js(estado.semPiso), []);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    assert.equal(estado.itens.length, 2);
+    const linhas = mensagens.map((m) => m.texto);
+    assert.ok(linhas.some((l) => l.includes('2 itens') && l.includes('3 fora do piso (1 usados)')), linhas.join('\n'));
+    assert.ok(linhas.some((l) => l.includes('fim:') && l.includes('3 itens fora do piso (1 usados)')), linhas.join('\n'));
+  });
+
+  test('com enviar:false o piso vale do mesmo jeito e a contagem aparece', async () => {
+    const ff = fetchFalso({ pagina: () => paginaPiso([cardPiso(1), cardPiso(2, { alt: '' })]) });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'], enviar: false });
+    assert.equal(estado.itens.length, 1);
+    assert.equal(estado.foraDoPiso, 1);
+    assert.equal(ff.doServidor().length, 0);
+  });
+
+  test('termo com todos os itens fora do piso não é erro: não envia, não marca como feito e a coleta segue', async () => {
+    const ruim = [cardPiso(1, { alt: alt('4.0', 'Mais de 1000 produtos vendidos') }), cardPiso(2, { titulo: 'Tablet Usado' })];
+    const ff = fetchFalso({ pagina: (url) => (url === '/smart-tv' ? paginaPiso(ruim) : paginaPiso([cardPiso(30)])) });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semPiso), ['Smart TV']);
+    assert.deepEqual(js(estado.feitos), ['Body splash']);
+    assert.equal(estado.foraDoPiso, 2);
+    assert.equal(ff.doServidor().length, 1, 'só o termo com itens no piso é enviado');
+    assert.deepEqual(localStorage.lista('__coletaML:http://localhost:8765'), ['Body splash']);
+    // rodando de novo, o termo que ficou fora do piso é buscado outra vez
+    const antes = ff.doML().length;
+    await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.equal(ff.doML().length, antes + 1);
+  });
+
+  test('página sem nenhum polycard continua sendo erro (captcha ou mudança da página), diferente de "todos fora do piso"', async () => {
+    const ff = fetchFalso({ pagina: () => '<html><body>nada aqui</body></html>' });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.match(estado.erro, /sem polycard/);
+    assert.equal(ff.doServidor().length, 0);
   });
 });
 
@@ -372,7 +543,7 @@ describe('coletar(): envio, progresso e parar (CA13, CA14, CA17)', () => {
     }
     const posts = ff.doServidor();
     assert.equal(posts.length, 2);
-    const esperado = [['Smart TV', BF], ['Body splash', 'Perfumes e Perfumaria']];
+    const esperado = [['Smart TV', ABA_TV], ['Body splash', 'Perfumes e Perfumaria']];
     posts.forEach((c, i) => {
       assert.equal(c.url, `${SERVIDOR}/api/items`);
       assert.equal(c.init.method, 'POST');
@@ -775,7 +946,7 @@ describe('integração com o servidor.py (CA13, CA15)', () => {
     return (await r.json()).filter((i) => i.loja === 'ml');
   }
 
-  test('o POST da coleta grava cada termo com a cat da sua chave, inclusive "Black Friday | Eletrônicos"', async () => {
+  test('o POST da coleta grava cada termo com a cat da sua chave, inclusive "TV, Alexa e Casa Conectada"', async () => {
     const chamadas = [];
     const { ML } = carregar({ fetch: fetchMisto(chamadas) });
     const estado = await ML.coletar({ servidor, termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
@@ -788,7 +959,7 @@ describe('integração com o servidor.py (CA13, CA15)', () => {
     const tv = gravados.filter((i) => i.item_id.startsWith('MLB41'));
     const perfume = gravados.filter((i) => i.item_id.startsWith('MLB42'));
     assert.equal(tv.length, 3);
-    assert.ok(tv.every((i) => i.cat === BF && i.busca === 'Smart TV'));
+    assert.ok(tv.every((i) => i.cat === ABA_TV && i.busca === 'Smart TV'));
     assert.ok(perfume.every((i) => i.cat === 'Perfumes e Perfumaria' && i.busca === 'Body splash'));
     const box = gravados.find((i) => i.item_id === 'MLB4100000002');
     assert.deepEqual(box.data, ITEM_BOX.data);
@@ -804,7 +975,7 @@ describe('integração com o servidor.py (CA13, CA15)', () => {
       { method: 'PATCH', headers: json, body: JSON.stringify({ url: 'https://meli.la/1AbC234' }) });
     assert.equal(r.status, 200);
     r = await doServidor(`${servidor}/api/items/${box.id}`,
-      { method: 'PATCH', headers: json, body: JSON.stringify({ cat: 'Eletrodomésticos' }) });
+      { method: 'PATCH', headers: json, body: JSON.stringify({ cat: 'Games' }) });
     assert.equal(r.status, 200);
 
     const { ML } = carregar({ fetch: fetchMisto([]) });   // localStorage novo: coleta tudo de novo
@@ -819,8 +990,8 @@ describe('integração com o servidor.py (CA13, CA15)', () => {
     const tv2 = depois.find((i) => i.item_id === 'MLB4100000001');
     const box2 = depois.find((i) => i.item_id === 'MLB4100000002');
     assert.equal(tv2.url, 'https://meli.la/1AbC234');
-    assert.equal(tv2.cat, BF);
-    assert.equal(box2.cat, 'Eletrodomésticos');
+    assert.equal(tv2.cat, ABA_TV);
+    assert.equal(box2.cat, 'Games');
     assert.equal(box2.url, ITEM_BOX.url);
   });
 
@@ -1492,7 +1663,7 @@ describe('afiliar(): integração com o servidor.py (CA14, CA16)', () => {
     assert.equal(porMLB.get('MLB4100000001').url, 'https://meli.la/1AbC234');
     assert.equal(porMLB.get('MLB4200000001').url, 'https://meli.la/2PfM3kQ');
     assert.equal(porMLB.get('MLB4100000003').url, PRODUTO(4100000003));   // o link comum do ML não foi gravado
-    assert.equal(porMLB.get('MLB4100000003').cat, BF);
+    assert.equal(porMLB.get('MLB4100000003').cat, ABA_TV);
     assert.deepEqual(await pendentes(), ['MLB4100000002', 'MLB4100000003', 'MLB4200000002', 'MLB4200000003']);
   });
 });

@@ -56,109 +56,229 @@
   // Cópia literal de buscas.json (termo → aba). O teste compara com o arquivo e imprime o bloco certo.
   // BUSCAS:inicio
   const BUSCAS = {
-    "Black Friday | Eletrônicos": [
+    "Celulares e Informática": [
       "iPhone 17",
       "iPhone 16",
-      "PlayStation 5 Slim",
       "Samsung Galaxy A17",
       "Samsung Galaxy A57",
-      "Echo Dot Alexa",
-      "Samsung Galaxy Fit3",
-      "Smart TV 4K Samsung 50",
-      "Smart TV 4K LG 55",
+      "Celular smartphone",
       "Notebook Dell",
       "Notebook Acer",
       "Notebook ASUS",
-      "Fone Bluetooth JBL",
-      "Fire TV Stick HD",
-      "Kindle",
-      "Kindle Paperwhite",
-      "Tablet Samsung",
-      "iPad Apple",
-      "Caixa de som Bluetooth JBL",
-      "Monitor Samsung",
-      "Monitor AOC",
-      "Nintendo Switch OLED",
-      "Impressora Epson EcoTank L3250",
-      "Controle PS5 DualSense",
-      "Mouse Logitech M170",
-      "Mouse gamer Redragon Predator M612",
-      "Filtro de linha iCLAMPER Energia 5",
-      "Soundbar Samsung HW-B400F",
-      "Celular smartphone",
-      "Smart TV 4K",
       "Notebook",
-      "Console de videogame",
-      "Fone de ouvido Bluetooth",
-      "Smart speaker Alexa",
-      "Tablet",
-      "Relógio inteligente smartwatch",
-      "Caixa de som Bluetooth",
       "Notebook gamer",
       "Computador gamer",
+      "Tablet Samsung",
+      "iPad Apple",
+      "Tablet",
+      "Monitor Samsung",
+      "Monitor AOC",
       "Monitor",
-      "Aparelho de streaming para TV",
-      "Leitor de livros digitais",
+      "Impressora Epson EcoTank L3250",
       "Impressora multifuncional",
-      "Soundbar",
-      "Home theater",
-      "Controle acessório videogame",
-      "Headset gamer",
+      "Mouse Logitech M170",
+      "Teclado e mouse",
+      "Webcam",
       "SSD",
       "HD externo",
       "Placa de vídeo",
-      "Roteador Wi-Fi mesh",
-      "Câmera de segurança Wi-Fi",
-      "Teclado e mouse",
-      "Carregador portátil power bank",
-      "Carregador rápido",
-      "Webcam",
-      "Microfone",
+      "Filtro de linha iCLAMPER Energia 5",
       "Filtro de linha",
       "Nobreak",
-      "Smart TV"
+      "Galaxy S26",
+      "Smartphone 256 GB",
+      "Xiaomi Poco",
+      "Notebook 16 GB RAM",
+      "Notebook Lenovo IdeaPad",
+      "Monitor 27 polegadas",
+      "SSD 1 TB",
+      "Memória RAM DDR5"
     ],
-    "Eletrodomésticos": [
-      "Geladeira",
-      "Máquina de lavar",
-      "Lava e seca",
-      "Fogão",
-      "Cooktop",
+    "Áudio e Acessórios": [
+      "Samsung Galaxy Fit3",
+      "Relógio inteligente smartwatch",
+      "Fone Bluetooth JBL",
+      "Fone de ouvido Bluetooth",
+      "Caixa de som Bluetooth JBL",
+      "Caixa de som Bluetooth",
+      "Carregador portátil power bank",
+      "Carregador rápido",
+      "Microfone",
+      "Fone com cancelamento de ruído",
+      "AirPods",
+      "Caixa de som JBL PartyBox",
+      "Carregador USB-C",
+      "Power bank 20000 mAh",
+      "Cabo USB-C",
+      "Galaxy Watch",
+      "Suporte de celular veicular"
+    ],
+    "TV, Alexa e Casa Conectada": [
+      "Echo Dot Alexa",
+      "Smart speaker Alexa",
+      "Smart TV 4K Samsung 50",
+      "Smart TV 4K LG 55",
+      "Smart TV 4K",
+      "Smart TV",
+      "Fire TV Stick HD",
+      "Aparelho de streaming para TV",
+      "Kindle",
+      "Kindle Paperwhite",
+      "Leitor de livros digitais",
+      "Soundbar",
+      "Soundbar Samsung HW-B400F",
+      "Home theater",
+      "Roteador Wi-Fi mesh",
+      "Câmera de segurança Wi-Fi",
+      "Echo Show",
+      "Echo Pop",
+      "Fire TV Stick 4K",
+      "Smart TV 55 polegadas",
+      "Smart TV 65 polegadas",
+      "Câmera Wi-Fi externa",
+      "Tomada inteligente",
+      "Lâmpada inteligente",
+      "Fechadura digital"
+    ],
+    "Games": [
+      "PlayStation 5 Slim",
+      "Nintendo Switch OLED",
+      "Console de videogame",
+      "Controle PS5 DualSense",
+      "Controle acessório videogame",
+      "Mouse gamer Redragon Predator M612",
+      "Headset gamer",
+      "Nintendo Switch 2",
+      "PS5 Digital",
+      "Jogo de PS5",
+      "Controle Xbox sem fio",
+      "Cadeira gamer",
+      "Teclado mecânico gamer",
+      "Volante gamer"
+    ],
+    "Eletroportáteis": [
       "Air fryer",
-      "Micro-ondas",
-      "Ar-condicionado",
+      "Sanduicheira grill",
       "Aspirador de pó",
       "Robô aspirador",
       "Cafeteira",
       "Liquidificador",
       "Mixer",
-      "Purificador de água",
-      "Ventilador",
-      "Sanduicheira grill",
-      "Lava-louças",
+      "Batedeira planetária",
       "Ferro de passar",
-      "Vaporizador de roupas"
+      "Vaporizador de roupas",
+      "Torradeira elétrica",
+      "Air fryer 5 litros",
+      "Air fryer forno 12 litros",
+      "Cafeteira de cápsulas",
+      "Cafeteira espresso",
+      "Panela elétrica de arroz",
+      "Chaleira elétrica",
+      "Aspirador vertical",
+      "Processador de alimentos"
     ],
-    "Casa e Decoração": [
+    "Eletrodomésticos e Climatização": [
+      "Geladeira",
+      "Fogão",
+      "Cooktop",
+      "Micro-ondas",
+      "Máquina de lavar",
+      "Lava e seca",
+      "Lava-louças",
+      "Ar-condicionado",
+      "Ventilador",
+      "Umidificador de ar",
+      "Climatizador de ar",
+      "Purificador de água",
+      "Geladeira frost free",
+      "Micro-ondas 30 litros",
+      "Ar-condicionado inverter",
+      "Ventilador de coluna",
+      "Freezer vertical"
+    ],
+    "Cozinha": [
       "Jogo de panelas",
+      "Frigideira antiaderente",
+      "Panela de pressão 4,5 litros",
+      "Aparelho de jantar",
+      "Jogo de talheres",
+      "Conjunto de bowls de cerâmica",
+      "Jogo de taças de vinho",
+      "Taças de sobremesa",
+      "Jogo de xícaras de café com pires",
+      "Assadeira antiaderente",
+      "Forma de bolo antiaderente",
+      "Boleira com tampa",
+      "Potes herméticos",
+      "Organizador de cozinha",
+      "Balança de cozinha digital",
+      "Aparelho de fondue",
+      "Jogo de panelas Tramontina",
+      "Garrafa térmica",
+      "Copo térmico",
+      "Jogo de facas",
+      "Tábua de corte",
+      "Potes de vidro com tampa",
+      "Escorredor de louça"
+    ],
+    "Cama, Mesa e Banho": [
+      "Jogo de cama",
+      "Edredom",
+      "Travesseiro",
+      "Jogo de toalhas",
+      "Manta para sofá",
+      "Jogo de lençol casal",
+      "Lençol queen algodão",
+      "Kit toalhas de banho",
+      "Kit travesseiros",
+      "Cobertor casal",
+      "Protetor de colchão",
+      "Toalha de mesa",
+      "Tapete de banheiro"
+    ],
+    "Casa, Móveis e Ferramentas": [
       "Cama box",
       "Colchão",
       "Sofá",
       "Guarda-roupa",
       "Armário de cozinha",
       "Mesa de jantar com cadeiras",
-      "Aparelho de jantar",
-      "Jogo de talheres",
-      "Potes herméticos",
-      "Jogo de cama",
-      "Jogo de toalhas",
-      "Travesseiro",
-      "Edredom",
       "Cortina",
       "Persiana",
       "Tapete",
-      "Organizador de cozinha",
-      "Organizador de guarda-roupa"
+      "Abajur de chão",
+      "Organizador de guarda-roupa",
+      "Lavadora de alta pressão",
+      "Torneira de cozinha",
+      "Cortina blackout",
+      "Tapete de sala",
+      "Papel de parede",
+      "Penteadeira",
+      "Cadeira de escritório",
+      "Organizador de gaveta",
+      "Rack para TV",
+      "Parafusadeira",
+      "Furadeira de impacto",
+      "Jogo de ferramentas",
+      "Escada doméstica"
+    ],
+    "Beleza e Cuidados": [
+      "Elseve Óleo Extraordinário",
+      "Lola Morte Súbita",
+      "Nivea Milk 400 ml",
+      "Cicaplast",
+      "Protetor solar facial",
+      "Sérum vitamina C",
+      "Hidratante facial",
+      "Máscara capilar",
+      "Kit shampoo e condicionador",
+      "Secador de cabelo",
+      "Prancha alisadora",
+      "Escova secadora",
+      "Barbeador elétrico",
+      "Aparador de barba",
+      "Base de maquiagem",
+      "Kit de esmaltes"
     ],
     "Perfumes e Perfumaria": [
       "Perfume feminino importado",
@@ -203,6 +323,91 @@
       "Jean Paul Gaultier Le Male",
       "Azzaro Pour Homme",
       "Lattafa"
+    ],
+    "Mercado e Limpeza": [
+      "OMO líquido 5 litros",
+      "Amaciante Downy 3 litros",
+      "Tabletes para lava-louças",
+      "Papel higiênico folha dupla",
+      "Sabão em pó",
+      "Detergente líquido",
+      "Desinfetante",
+      "Papel toalha",
+      "Café em pacote",
+      "Café em cápsulas",
+      "Azeite extravirgem",
+      "Caixa de bombom",
+      "Leite em pó"
+    ],
+    "Pets": [
+      "Ração para cães 15 kg",
+      "Ração para gatos 10 kg",
+      "Areia para gatos",
+      "Sachê para gatos",
+      "Petisco para cães",
+      "Tapete higiênico para cães",
+      "Arranhador para gatos",
+      "Cama para cachorro",
+      "Peitoral para cachorro",
+      "Fonte de água para gatos"
+    ],
+    "Bebês e Brinquedos": [
+      "Fralda pants",
+      "Fralda Pampers",
+      "Fralda Huggies",
+      "Kit lenços umedecidos",
+      "Sabonete infantil refil",
+      "Kit mamadeiras",
+      "Carrinho de bebê",
+      "Cadeirinha para carro",
+      "Babá eletrônica",
+      "LEGO",
+      "Jogos de tabuleiro",
+      "Boneca",
+      "Carrinho Hot Wheels",
+      "Quebra-cabeça"
+    ],
+    "Suplementos e Fitness": [
+      "Creatina 300 g",
+      "Whey protein 900 g",
+      "Kit barras de proteína",
+      "Bebida proteica",
+      "Pré-treino",
+      "Multivitamínico",
+      "Colágeno",
+      "Ômega 3",
+      "Bicicleta ergométrica",
+      "Kit halteres",
+      "Tapete de yoga",
+      "Elástico de treino",
+      "Esteira elétrica"
+    ],
+    "Moda e Viagem": [
+      "Tênis de corrida",
+      "Tênis Nike",
+      "Tênis Adidas",
+      "Kit camisetas",
+      "Mala de bordo",
+      "Conjunto de malas",
+      "Mochila para notebook",
+      "Relógio masculino",
+      "Relógio feminino",
+      "Bolsa feminina",
+      "Óculos de sol",
+      "Chinelo Havaianas",
+      "Pijama feminino"
+    ],
+    "Natal e Papelaria": [
+      "Pisca-pisca",
+      "Árvore de Natal",
+      "Enfeites de Natal",
+      "Panetone",
+      "Livro para colorir",
+      "Kit material escolar",
+      "Caderno universitário",
+      "Marca-texto",
+      "Agenda 2027",
+      "Mochila escolar"
     ]
   };
   // BUSCAS:fim
@@ -339,6 +544,51 @@
     return null;
   }
 
+  // Rótulo de vendas do polycard: "Mais de 50 produtos vendidos", "Mais de 1 mil produtos vendidos", "+50 vendidos".
+  const RX_VENDAS = /(?:Mais de\s+|\+\s*)[\d.,]+(?:\s+(?:mil|milh(?:[ãa]o|[õo]es)))?\s+(?:produtos?\s+)?vendid[oa]s?/i;
+  // Piso de qualidade (P1 do plano abas-nichadas-e-coleta): nota e volume mínimos de vendas.
+  const NOTA_MINIMA = 4.5;
+  const VENDAS_MINIMAS = 50;
+  // Recusa de usado por título (Decisão 4 do plano): sem acento e com \b.
+  const RX_USADO = /\b(?:usad[oa]s?|recondicionad[oa]s?|renovad[oa]s?|seminov[oa]s?|vitrine|open\s+box|refurbished)\b/;
+  // Campo de condição do polycard, se vier (o formato real só é provado na etapa 14).
+  const RX_CONDICAO_USADA = /\b(?:used|usad[oa]s?|recondicionad[oa]s?|reconditioned|refurbished)\b/;
+
+  const semAcento = (t) => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+  /** true se o título é de produto usado, recondicionado, seminovo, renovado, de vitrine ou open box. */
+  function ehUsado(titulo) {
+    return typeof titulo === 'string' && RX_USADO.test(semAcento(titulo));
+  }
+
+  /** Vendas do rótulo ("Mais de 1 mil produtos vendidos" → 1000), ou 0 se não houver rótulo legível. */
+  function vendasDe(rotulo) {
+    if (typeof rotulo !== 'string') return 0;
+    const m = /([\d.,]+)(?:\s+(milh|mil))?/i.exec(rotulo.replace(/^\s*(?:Mais de|\+)\s*/i, ''));
+    if (!m) return 0;
+    if (m[2]) {
+      const n = parseFloat(m[1].replace(',', '.'));
+      return Number.isFinite(n) ? Math.round(n * (/^milh/i.test(m[2]) ? 1e6 : 1e3)) : 0;
+    }
+    const n = parseInt(m[1].replace(/[.,]/g, ''), 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  /** Piso de qualidade: nota ≥ 4,5 e "Mais de 50 vendidos" ou mais. Sem nota ou sem rótulo de vendas, fica fora. */
+  function passaPiso(data) {
+    if (!ehObjeto(data)) return false;
+    const nota = /^\s*(\d+(?:[.,]\d+)?)/.exec(String(data.avaliacao || ''));
+    if (!nota) return false;
+    const n = parseFloat(nota[1].replace(',', '.'));
+    return n >= NOTA_MINIMA && n <= 5 && vendasDe(data.vendas) >= VENDAS_MINIMAS;
+  }
+
+  /** true se o polycard traz condição usada/recondicionada em metadata.condition ou condition. */
+  function condicaoUsada(pc) {
+    const meta = ehObjeto(pc.metadata) ? pc.metadata : {};
+    return [meta.condition, pc.condition].some((c) => typeof c === 'string' && RX_CONDICAO_USADA.test(semAcento(c)));
+  }
+
   /** Um polycard → {item_id, url, data} no formato do banco, ou null sem MLB ou sem título. */
   function polycardParaItem(pc) {
     if (!ehObjeto(pc)) return null;
@@ -374,7 +624,7 @@
     if (typeof alt === 'string') {
       const nota = /(\d+(?:[.,]\d+)?)\s+de\s+5\s+estrelas/i.exec(alt);
       if (nota) data.avaliacao = nota[1].replace(',', '.') + ' de 5 estrelas';
-      const vendas = /Mais de\s+[\d.]+(?:\s+mil)?\s+produtos?\s+vendidos?/i.exec(alt);
+      const vendas = RX_VENDAS.exec(alt);
       if (vendas) data.vendas = vendas[0].replace(/\s+/g, ' ');
     }
 
@@ -393,8 +643,12 @@
     return { item_id: id, url: `https://produto.mercadolivre.com.br/MLB-${mlb[1]}`, data };
   }
 
-  /** Itens prontos para o POST: sem id repetido nem card sem título, no máximo `max`. */
-  function extrairItens(html, termo, cat, max = MAX_POR_BUSCA) {
+  /**
+   * Itens prontos para o POST: sem id repetido nem card sem título, só os que passam no piso e não são usados,
+   * no máximo `max`. Com `contagem` ({lidos, foraDoPiso, usados}), soma o que leu e o que deixou de fora
+   * (usados também entram em foraDoPiso).
+   */
+  function extrairItens(html, termo, cat, max = MAX_POR_BUSCA, contagem = null) {
     const texto = literalQ(html);
     if (texto === null) return [];
     const vistos = new Set();
@@ -404,6 +658,15 @@
       const it = polycardParaItem(pc);
       if (!it || vistos.has(it.item_id)) continue;
       vistos.add(it.item_id);
+      if (contagem) contagem.lidos++;
+      if (ehUsado(it.data.titulo) || condicaoUsada(pc)) {
+        if (contagem) { contagem.usados++; contagem.foraDoPiso++; }
+        continue;
+      }
+      if (!passaPiso(it.data)) {
+        if (contagem) contagem.foraDoPiso++;
+        continue;
+      }
       itens.push({ loja: 'ml', item_id: it.item_id, cat, busca: termo, url: it.url, data: it.data });
     }
     return itens;
@@ -519,7 +782,9 @@
 
   /**
    * Coleta os termos na própria aba do ML e, com enviar:true, grava cada termo no servidor.
-   * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, parado, erro}.
+   * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, foraDoPiso, usados, semPiso, parado, erro}.
+   * Só entram em itens os polycards com nota ≥ 4,5 e "Mais de 50 vendidos" ou mais, e que não são usados
+   * (foraDoPiso conta todos os de fora; usados, só os de usado). Termo sem nenhum item no piso vai para semPiso e não entra no progresso.
    * Com enviar:false não fala com o servidor nem usa o progresso: só monta os itens em estado.itens.
    */
   async function coletar(opcoes = {}) {
@@ -529,7 +794,7 @@
     }
     const estado = {
       rodando: false, servidor: null, enviar: null, ordem: null, termoAtual: null, feitos: [], pulados: [], itens: [],
-      inserido: 0, atualizado: 0, parado: false, erro: null,
+      inserido: 0, atualizado: 0, foraDoPiso: 0, usados: 0, semPiso: [], parado: false, erro: null,
     };
     ultimoEstado = estado;
     const origem = globalThis.location ? globalThis.location.origin : undefined;
@@ -573,10 +838,20 @@
         if (!pagina.r.ok) {
           return falhar(estado, `o ML respondeu ${pagina.r.status} na busca "${termo}". Nada foi enviado deste termo.`);
         }
-        const itens = extrairItens(pagina.corpo, termo, cat, porBusca);
-        if (!itens.length) {
+        const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
+        const itens = extrairItens(pagina.corpo, termo, cat, porBusca, contagem);
+        estado.foraDoPiso += contagem.foraDoPiso;
+        estado.usados += contagem.usados;
+        if (!contagem.lidos) {
           return falhar(estado, `a busca "${termo}" veio sem polycard: pode ser captcha ou mudança na página do ML. ` +
             'A coleta parou e nada foi enviado deste termo.');
+        }
+        if (!itens.length) {
+          // todos fora do piso: nada a gravar, e o termo não entra no progresso (roda de novo depois)
+          estado.semPiso.push(termo);
+          log(`${n + 1}/${termos.length} "${termo}"${ordem === 'relevancia' ? '' : ' (' + ordem + ')'} → ${cat}: ` +
+            `0 itens no piso (${contagem.foraDoPiso} de fora, ${contagem.usados} usados). Nada enviado; o termo não foi marcado como feito.`);
+          continue;
         }
         estado.itens.push(...itens);
 
@@ -607,13 +882,15 @@
           resumo = ` (inserido ${c.inserido}, atualizado ${c.atualizado})`;
         }
         estado.feitos.push(termo);
-        log(`${n + 1}/${termos.length} "${termo}"${ordem === 'relevancia' ? '' : ' (' + ordem + ')'} → ${cat}: ${itens.length} itens${resumo}`);
+        log(`${n + 1}/${termos.length} "${termo}"${ordem === 'relevancia' ? '' : ' (' + ordem + ')'} → ${cat}: ${itens.length} itens${resumo}` +
+          (contagem.foraDoPiso ? `, ${contagem.foraDoPiso} fora do piso (${contagem.usados} usados)` : ''));
       }
       if (execucao.parar) {
         estado.parado = true;
         log(`parado. ${estado.feitos.length} termos feitos nesta rodada; rode coletar() de novo para continuar.`);
       } else {
-        log(`fim: ${estado.feitos.length} termos coletados, ${estado.pulados.length} pulados (já feitos)` +
+        log(`fim: ${estado.feitos.length} termos coletados, ${estado.pulados.length} pulados (já feitos), ` +
+          `${estado.foraDoPiso} itens fora do piso (${estado.usados} usados), ${estado.semPiso.length} termos sem nenhum item no piso` +
           (enviar ? `; inserido ${estado.inserido}, atualizado ${estado.atualizado}.`
             : '. Nada foi enviado: os itens estão em ColetaML.estado.itens.'));
       }

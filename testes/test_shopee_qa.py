@@ -402,7 +402,7 @@ class DisparoShopee(T.Base):
 
     def test_ca2_ordenacao_pelos_textos_que_o_coletor_grava(self):
         """O que o coletar_shopee escreve em `vendas`, `avaliacao`, `preco` e `desconto` é lido pelo disparo."""
-        nos = [(1, 4.9, 'a'), (12345, 4.6, 'b'), (999, 5.0, 'c'), (1000, 4.5, 'd')]
+        nos = [(50, 4.9, 'a'), (12345, 4.6, 'b'), (999, 5.0, 'c'), (1000, 4.5, 'd')]
         pks = {}
         for i, (vendas, nota, nome) in enumerate(nos, 1):
             it = C.no_para_item({'itemId': i, 'shopId': 7, 'productName': f'Perfume {nome}', 'priceMin': 1000 * i + 0.5,
@@ -415,7 +415,7 @@ class DisparoShopee(T.Base):
         def ordem(**kw):
             r = D.previa(self.con, self.dados_regra(self.nid, lojas=['shopee'], **kw), 20, T.SEGUNDA, T.AFILIADO)
             return [p['titulo'][-1] for p in r]
-        self.assertEqual(ordem(ordem='relevancia'), ['b', 'd', 'c', 'a'])      # vendas 12.345, 1.000, 999, 1
+        self.assertEqual(ordem(ordem='relevancia'), ['b', 'd', 'c', 'a'])      # vendas 12.345, 1.000, 999, 50
         self.assertEqual(ordem(ordem='desconto'), ['d', 'c', 'b', 'a'])        # -40%, -30%, -20%, -10%
         self.assertEqual(ordem(ordem='maior_preco'), ['d', 'c', 'b', 'a'])     # R$ 4.000,50 ... R$ 1.000,50
         self.assertEqual(ordem(ordem='menor_preco'), ['a', 'b', 'c', 'd'])
@@ -658,7 +658,9 @@ class TestAssinaturaEConsulta(ColetaBase):
 
 class TestPisoEMapeamento(ColetaBase):
     def test_ca7_piso_de_qualidade_nas_bordas(self):
-        casos = [((4.5, 1), True), ((4.5, '1'), True), ((5, 1), True), ((4.49, 100), False), ((4.4999, 1), False),
+        # P1 de 2026-11-04 (abas-nichadas-e-coleta.md): nota >= 4,5 e >= 50 vendas
+        casos = [((4.5, 50), True), ((4.5, '50'), True), ((5, 50), True), ((4.49, 100), False), ((4.4999, 50), False),
+                 ((4.5, 49), False), ((4.5, '49'), False), ((5, 49.99), False), ((5, 1), False),
                  ((4.5, 0), False), ((4.5, '0'), False), ((5, -1), False), (('x', 5), False), ((None, 5), False),
                  ((4.8, None), False), ((4.8, 'abc'), False), ((True, 1), False), ((4.8, True), False),
                  ((float('nan'), 1), False), ((4.8, float('inf')), False), ((-4.8, 5), False), (('4,8', 5), False)]
@@ -696,10 +698,10 @@ class TestPisoEMapeamento(ColetaBase):
         S.conferir_tipos(it, ('url', 'item_id', 'cat', 'busca'))
 
     def test_ca7_numeros_e_textos_do_item(self):
-        d = C.no_para_item(no(priceMin=1234567.891, priceDiscountRate=99, ratingStar=4.55, sales=1), 't', CAT)['data']
+        d = C.no_para_item(no(priceMin=1234567.891, priceDiscountRate=99, ratingStar=4.55, sales=50), 't', CAT)['data']
         self.assertEqual(d['preco'], 'R$ 1.234.567,89')
         self.assertEqual(d['desconto'], '-99%')
-        self.assertEqual(d['vendas'], '1 vendido')
+        self.assertEqual(d['vendas'], '50 vendidos')
         self.assertEqual(D.nota(d['avaliacao']), 4.5 if d['avaliacao'].startswith('4.5') else 4.6)
         for preco in (0, -5, 'abc', '1e3', None, 10**12, float('nan'), True):
             self.assertEqual(C.no_para_item(no(priceMin=preco), 't', CAT)['data']['preco'], '', preco)
@@ -744,9 +746,9 @@ class TestPisoEMapeamento(ColetaBase):
 
 class TestColetaDeVerdade(ColetaBase):
     def test_ca7_piso_na_coleta_so_grava_quem_passa(self):
-        nos = [no(itemId=1, ratingStar=4.5, sales=1), no(itemId=2, ratingStar=4.49, sales=50),
-               no(itemId=3, ratingStar=5, sales=0), no(itemId=4, ratingStar=4.9, sales=7, offerLink='https://s.shopee.com.br/x?y=1'),
-               no(itemId=5, ratingStar=4.7, sales=3, offerLink='https://s.shopee.com.br/Cinco5')]
+        nos = [no(itemId=1, ratingStar=4.5, sales=50), no(itemId=2, ratingStar=4.49, sales=500),
+               no(itemId=3, ratingStar=5, sales=49), no(itemId=4, ratingStar=4.9, sales=70, offerLink='https://s.shopee.com.br/x?y=1'),
+               no(itemId=5, ratingStar=4.7, sales=51, offerLink='https://s.shopee.com.br/Cinco5')]
         cod, saida, _ = self.rodar(['buscas', '--cat', CAT], ApiFalsa(resposta(nos), resposta([]), resposta([])))
         self.assertEqual(cod, 0)
         self.assertEqual(sorted(i['item_id'] for i in self.itens()), ['112233.1', '112233.5'])

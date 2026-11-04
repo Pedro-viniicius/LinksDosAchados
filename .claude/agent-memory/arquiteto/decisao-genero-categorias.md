@@ -8,7 +8,7 @@ O plano está em `docs/produto/planos/genero-nas-categorias.md` (2026-11-03). El
 
 **Decisões e por quê:**
 - **O gênero é derivado na leitura, num `genero.py` puro.** Só a correção manual fica gravada, na tabela `generos_manuais` (`user_version` 2, dentro de `disparo.migrar`). Motivo: são 6 caminhos de escrita, e um `ALTER` em `items` quebraria testes que comparam linhas inteiras.
-- **Só "Perfumes e Perfumaria" separa por gênero** (`ABAS_COM_GENERO`). A medição em modo ro mostrou:
+- **Só "Perfumes e Perfumaria" separa por gênero** (`ABAS_COM_GENERO`). Em 2026-11-04, o dono pediu também "Moda e Viagem" e "Beleza e Cuidados". As linhas de perfume passam a valer só na perfumaria (veja [[decisao-abas-nichadas]]). A medição em modo ro mostrou:
   - Eletrônicos tem só ~25 smartwatches, quase todos "M e F";
   - em Casa, os 7 casos são falsos positivos ("Donna" é louça, "Lady" é sofá);
   - Eletrodomésticos tem 0.

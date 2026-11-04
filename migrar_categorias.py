@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Reorganiza as abas (coluna `cat` da tabela `items`) pelo mapa termo -> categoria de buscas.json.
 
-Plano: docs/produto/planos/eletronicos-e-coleta-ml.md (etapa 2).
+Planos: docs/produto/planos/eletronicos-e-coleta-ml.md (etapa 2) e
+docs/produto/planos/abas-nichadas-e-coleta.md (etapa 6: as 3 abas antigas viram as 17 do buscas.json).
+
+Na mesma transação e no mesmo backup, limpa o preço antigo implausível (servidor.preco_antigo_plausivel:
+antigo de 5 vezes o preço ou mais) de qualquer item do banco: ficam vazios `preco_antigo` e `desconto`;
+a `url` (link de afiliado) e o resto do item não mudam.
 
 Uso:
   python3 migrar_categorias.py --dry-run            mostra o que mudaria; não grava nem faz backup
@@ -28,10 +33,22 @@ from datetime import datetime
 import servidor as S
 
 # Abas que deixam de existir. Para a próxima reorganização, basta trocar esta tupla.
-ORIGENS = ('Black Friday', 'Casa Nova')
+# (A de 2026-11-03 tirava "Black Friday" e "Casa Nova"; esta, de 2026-11-04, leva às 17 abas.)
+ORIGENS = ('Black Friday | Eletrônicos', 'Eletrodomésticos', 'Casa e Decoração')
 # Termo usado só no ML -> termo de buscas.json de onde ele herda a categoria. Fica fora do
 # buscas.json para a Amazon não passar a coletar esse termo.
 ALIAS = {'Caixa inteligente assistente virtual': 'Smart speaker Alexa'}
+# Subtemas da Lista WhatsApp (busca gravada pelo classificar_lista.py, de lista_whatsapp.json) -> termo
+# de buscas.json de onde ele herda a aba. Fora do buscas.json (não são termos de coleta) e fora do
+# ALIAS (que é espelhado no coletar_ml.js).
+SUBTEMAS_LISTA = {
+    'Acessórios de informática': 'Teclado e mouse',
+    'Computador e peças': 'Placa de vídeo',
+    'Capas e acessórios': 'Carregador rápido',
+    'Câmeras': 'Microfone',
+}
+# Aba de origem -> aba de destino dos itens sem `busca` (vazia ou nula). Origem fora daqui: sem destino.
+DESTINO_SEM_BUSCA = {'Casa e Decoração': 'Casa, Móveis e Ferramentas'}
 BUSCAS = os.path.join(S.BASE, 'buscas.json')
 PORTA_PADRAO = 8765   # a do servidor.py sem ACHADINHOS_PORTA
 
@@ -74,10 +91,17 @@ def carregar_mapa(caminho=BUSCAS):
     return mapa
 
 
-def destino_de(busca, mapa):
-    """Categoria de destino de um item pela sua `busca` (com o ALIAS do ML), ou None."""
+def destino_de(busca, mapa, cat=None):
+    """Categoria de destino de um item pela sua `busca`, ou None.
+
+    O termo passa antes pelo ALIAS do ML e pelos SUBTEMAS_LISTA. Sem `busca`, vale o
+    DESTINO_SEM_BUSCA da aba de origem `cat`, desde que ele seja uma aba do mapa.
+    """
     termo = nfc(busca or '')
-    return mapa.get(nfc(ALIAS.get(termo, termo)))
+    if not termo:
+        dest = DESTINO_SEM_BUSCA.get(cat)
+        return dest if dest in mapa.values() else None
+    return mapa.get(nfc(ALIAS.get(termo) or SUBTEMAS_LISTA.get(termo) or termo))
 
 
 def planejar(linhas, mapa):
@@ -88,7 +112,7 @@ def planejar(linhas, mapa):
     """
     movidos, sem_destino = [], []
     for r in linhas:
-        dest = destino_de(r['busca'], mapa)
+        dest = destino_de(r['busca'], mapa, r['cat'])
         if dest is None:
             sem_destino.append((r['id'], r['loja'], r['cat'], r['busca']))
         elif dest != r['cat']:
@@ -96,8 +120,35 @@ def planejar(linhas, mapa):
     return movidos, sem_destino
 
 
+def planejar_precos(linhas):
+    """Itens com preço antigo implausível (S.preco_antigo_plausivel dá False).
+
+    Devolve lista de (id, loja, preco, preco_antigo), com os valores como estão no banco.
+    """
+    return [(r['id'], r['loja'], r['preco'], r['preco_antigo']) for r in linhas
+            if not S.preco_antigo_plausivel(r['preco'], r['preco_antigo'])]
+
+
+def projetar(linhas, movidos):
+    """{id: (cat, loja)} de todos os itens como devem ficar depois de mover `movidos`."""
+    destino = {m[0]: m[4] for m in movidos}
+    return {r['id']: (destino.get(r['id'], r['cat']), r['loja']) for r in linhas}
+
+
 def lojas_txt(contagem):
     return ', '.join(f'{loja} {n}' for loja, n in sorted(contagem.items()))
+
+
+def nome_do_termo(busca):
+    """Termo para o terminal, com a origem do destino quando não é um termo do buscas.json."""
+    termo = nfc(busca or '')
+    if not termo:
+        return '(sem busca)'
+    if termo in ALIAS:
+        return f'{seguro(busca)} (alias de "{seguro(ALIAS[termo])}")'
+    if termo in SUBTEMAS_LISTA:
+        return f'{seguro(busca)} (subtema da Lista WhatsApp, herda de "{seguro(SUBTEMAS_LISTA[termo])}")'
+    return seguro(busca)
 
 
 def imprimir_plano(movidos, mapa):
@@ -107,19 +158,51 @@ def imprimir_plano(movidos, mapa):
     por_destino = defaultdict(Counter)
     for _id, loja, cat, busca, dest in movidos:
         por_rota[(cat, dest)][loja] += 1
-        por_termo[(cat, dest)][busca][loja] += 1
+        por_termo[(cat, dest)][busca or ''][loja] += 1   # NULL e '' juntos (e o sorted não compara None)
         por_destino[dest][loja] += 1
     for (cat, dest), lojas in sorted(por_rota.items()):
         print(f'\nDe "{seguro(cat)}" para "{seguro(dest)}": {sum(lojas.values())} itens ({lojas_txt(lojas)})')
         for busca, cont in sorted(por_termo[(cat, dest)].items()):
-            alias = f' (alias de "{seguro(ALIAS[nfc(busca)])}")' if nfc(busca) in ALIAS else ''
-            print(f'    {seguro(busca)}{alias}: {lojas_txt(cont)}')
+            print(f'    {nome_do_termo(busca)}: {lojas_txt(cont)}')
     print('\nResumo por destino:')
     for dest in dict.fromkeys(mapa.values()):
         if dest in por_destino:
             c = por_destino[dest]
             print(f'    "{seguro(dest)}": {sum(c.values())} itens ({lojas_txt(c)})')
     print(f'Total a mover: {len(movidos)}')
+
+
+def imprimir_precos(limpar):
+    """Quantos preços antigos implausíveis serão limpos, por loja, e quais (id, preço e antigo)."""
+    print(f'\nPreços antigos implausíveis (antigo de {S.LIMITE_PRECO_ANTIGO}x o preço ou mais) a limpar: '
+          f'{len(limpar)} itens' + (f' ({lojas_txt(Counter(m[1] for m in limpar))})' if limpar else ''))
+    if limpar:
+        print('    ficam sem preco_antigo e sem desconto; a url e o resto do item não mudam')
+    for _id, loja, preco, antigo in limpar:
+        print(f'    id={_id} loja={seguro(loja)} preço="{seguro(preco)}" antigo="{seguro(antigo)}"')
+
+
+def imprimir_tabela(titulo, por_id, mapa):
+    """Tabela aba × loja de `por_id` ({id: (cat, loja)}, na ordem de posição dos itens).
+
+    As abas do buscas.json vêm primeiro, na ordem dele e mesmo vazias; as outras, depois, marcadas.
+    """
+    contagem = Counter(por_id.values())
+    abas = list(dict.fromkeys(mapa.values()))
+    fora = [c for c in dict.fromkeys(c for c, _ in por_id.values()) if c not in abas]
+    lojas = sorted({loja for _, loja in contagem})
+    largura = max([len('total')] + [len(seguro(a)) for a in abas + fora])
+    print(f'\n{titulo}')
+    print(f'    {"aba":<{largura}}' + ''.join(f'{seguro(l):>8}' for l in lojas) + f'{"total":>8}')
+    for aba in abas + fora:
+        ns = [contagem[(aba, loja)] for loja in lojas]
+        marca = '  (fora do buscas.json)' if aba in fora else ''
+        print(f'    {seguro(aba):<{largura}}' + ''.join(f'{n:>8}' for n in ns) + f'{sum(ns):>8}{marca}')
+    ns = [sum(contagem[(aba, loja)] for aba in abas + fora) for loja in lojas]
+    print(f'    {"total":<{largura}}' + ''.join(f'{n:>8}' for n in ns) + f'{sum(ns):>8}')
+    n_fora = sum(n for (aba, _), n in contagem.items() if aba in fora)
+    if n_fora:
+        print(f'Itens fora das abas do buscas.json: {n_fora}')
 
 
 def imprimir_abas(con):
@@ -243,50 +326,66 @@ def migrar(dry_run, sim):
     try:
         if not dry_run:
             con.execute('BEGIN IMMEDIATE')   # trava a escrita até o COMMIT; o servidor espera (timeout 30 s)
-        linhas = con.execute(f'SELECT id, loja, cat, busca FROM items WHERE cat IN ({marcas}) ORDER BY id',
-                             ORIGENS).fetchall()
-        movidos, sem_destino = planejar(linhas, mapa)
+        todas = con.execute('SELECT id, loja, cat, busca, preco, preco_antigo FROM items '
+                            'ORDER BY posicao, id').fetchall()
+        movidos, sem_destino = planejar(sorted((r for r in todas if r['cat'] in ORIGENS), key=lambda r: r['id']),
+                                        mapa)
         if sem_destino:
             print(f'\nERRO: {len(sem_destino)} itens das origens têm busca sem destino em buscas.json '
-                  '(nem no ALIAS). Nada foi gravado.', file=sys.stderr)
+                  '(nem no ALIAS, nos SUBTEMAS_LISTA ou no DESTINO_SEM_BUSCA). Nada foi gravado.', file=sys.stderr)
             for _id, loja, cat, busca in sem_destino:
                 print(f'    id={_id} loja={seguro(loja)} cat="{seguro(cat)}" busca="{seguro(busca)}"',
                       file=sys.stderr)
             raise Erro('migração abortada: ponha esses termos em buscas.json (ou no ALIAS) ou mova os itens')
-        if not movidos:
-            print('\nNada a migrar: 0 itens movidos. Nenhum backup foi criado.')
-            imprimir_abas(con)
+        limpar = planejar_precos(todas)
+        projecao = projetar(todas, movidos)
+        if not movidos and not limpar:
+            print('\nNada a migrar: 0 itens movidos e 0 preços antigos a limpar. Nenhum backup foi criado.')
+            imprimir_tabela('Abas no banco (aba × loja):', projecao, mapa)
             return
         imprimir_plano(movidos, mapa)
         for r in con.execute(f'SELECT cat, COUNT(*) AS n FROM items WHERE cat NOT IN ({marcas}) '
                              'GROUP BY cat ORDER BY MIN(posicao)', ORIGENS):
             print(f'Não muda: "{seguro(r["cat"])}" ({r["n"]} itens)')
+        imprimir_precos(limpar)
+        imprimir_tabela('Abas depois da migração (aba × loja):', projecao, mapa)
         if dry_run:
             print('\n--dry-run: nada foi gravado e nenhum backup foi criado.')
             return
 
-        total = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
+        total = len(todas)
         backup = fazer_backup(total)
         print(f'\nBackup verificado: {backup}')
 
-        # Um UPDATE por destino, só com parâmetros. Os valores de busca vão crus (como estão no
-        # banco), para casar mesmo se o banco tiver o termo noutra forma Unicode.
-        buscas_por_destino = defaultdict(set)
-        for _id, _loja, _cat, busca, dest in movidos:
-            buscas_por_destino[dest].add(busca)
-        quando, movidos_n = S.agora(), 0
-        for dest, buscas in buscas_por_destino.items():
-            buscas = sorted(buscas)
-            cur = con.execute(
-                f'UPDATE items SET cat=?, atualizado_em=? WHERE cat IN ({marcas}) '
-                f'AND busca IN ({",".join("?" * len(buscas))}) AND cat<>?',
-                (dest, quando, *ORIGENS, *buscas, dest))
-            movidos_n += cur.rowcount
+        # Um UPDATE por item, só com parâmetros. O WHERE repete o que o plano leu (cat e busca crus,
+        # como estão no banco; IS porque a busca pode ser NULL).
+        quando = S.agora()
+        movidos_n = con.executemany(
+            'UPDATE items SET cat=?, atualizado_em=? WHERE id=? AND cat=? AND busca IS ?',
+            [(dest, quando, _id, cat, busca) for _id, _loja, cat, busca, dest in movidos]).rowcount
         if movidos_n != len(movidos):
             raise Erro(f'o UPDATE mudou {movidos_n} itens e o plano previa {len(movidos)}; nada foi gravado')
+        # Preço antigo implausível: só preco_antigo e desconto (a url nunca), e só se o preço e o antigo
+        # ainda são os que o plano leu.
+        limpos_n = con.executemany(
+            "UPDATE items SET preco_antigo='', desconto='', atualizado_em=? "
+            'WHERE id=? AND preco IS ? AND preco_antigo IS ?',
+            [(quando, _id, preco, antigo) for _id, _loja, preco, antigo in limpar]).rowcount
+        if limpos_n != len(limpar):
+            raise Erro(f'a limpeza mudou {limpos_n} preços e o plano previa {len(limpar)}; nada foi gravado')
+
+        # Conferência antes do COMMIT: mesmos ids (logo, o mesmo total), cada item na aba que o plano
+        # previu (os movidos no destino, os outros onde estavam) e nenhum preço antigo implausível sobrando.
+        depois = con.execute('SELECT id, loja, cat, busca, preco, preco_antigo FROM items '
+                             'ORDER BY posicao, id').fetchall()
+        if projetar(depois, []) != projecao:
+            raise Erro(f'depois do UPDATE, o banco ({len(depois)} itens) não bate com o plano ({total} itens); '
+                       'nada foi gravado')
+        if planejar_precos(depois):
+            raise Erro('depois da limpeza, ainda há preço antigo implausível; nada foi gravado')
         con.execute('COMMIT')
-        print(f'Migração concluída: {movidos_n} itens movidos.')
-        imprimir_abas(con)
+        print(f'Migração concluída: {movidos_n} itens movidos e {limpos_n} preços antigos limpos.')
+        imprimir_tabela('Abas no banco (aba × loja):', projetar(depois, []), mapa)
         print(f'\nBackup: {backup}')
         print(f'Para reverter (com o servidor parado): {comando("--restaurar", backup)}')
     finally:

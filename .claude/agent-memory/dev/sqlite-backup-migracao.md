@@ -1,6 +1,6 @@
 ---
 name: sqlite-backup-migracao
-description: Armadilhas do sqlite3 (Python 3.14) em script de migração com backup: backup trava se a conexão de origem segura escrita; curl e o proxy morto; como provar na cópia do banco real
+description: Armadilhas do sqlite3 (Python 3.14) em script de migração com backup (migrar_categorias, classificar_lista): backup trava se a conexão de origem segura escrita; gatilho para provar a conferência antes do COMMIT; como provar na cópia do banco real
 metadata:
   type: project
 ---
@@ -26,3 +26,11 @@ Vistas na etapa 6 do plano disparo-automatico (`classificar_lista.py`, 2026-11-0
 - Lista de mutantes com `\n` dentro: escreva o arquivo direto (heredoc com aspas), não por `re.sub`, que transforma `\n` em quebra de linha e quebra a string.
 
 **How to apply:** ao escrever qualquer script que mexa no `achadinhos.db`. Relacionado: [[servidor-testes]].
+
+Vistas na etapa 6 do plano abas-nichadas-e-coleta (`migrar_categorias.py`, 2026-11-04):
+
+- Conferência "banco depois do UPDATE = plano" (dentro do `BEGIN IMMEDIATE`) só é provada com **gatilho** no banco de teste: `CREATE TRIGGER ... AFTER UPDATE OF cat ... BEGIN UPDATE/DELETE outro item; END`. O `rowcount` não conta o que o gatilho muda, então só a conferência pega. `recursive_triggers` vem desligado: gatilho que reescreve a própria coluna não entra em laço.
+- `executemany(...).rowcount` soma as linhas mudadas; com lista vazia dá 0 (Python 3.14).
+- `sorted()` de um dict com chaves `None` e `''` (busca NULL e vazia) dá TypeError: normalize com `busca or ''` antes de agrupar.
+- Os 33 preços antigos implausíveis (>= 5x) do banco real são TODOS da "Perfumes e Perfumaria" (amazon): a limpeza muda `preco_antigo`/`desconto`/`atualizado_em` desses 33, mas ids e contagem da perfumaria ficam iguais.
+- Abrir a cópia em `mode=ro` cria `-wal`/`-shm` ao lado, mas o sha do `.db` não muda (bom para provar "dry-run não grava").

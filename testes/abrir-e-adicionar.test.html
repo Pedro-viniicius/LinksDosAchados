@@ -239,7 +239,8 @@ teste('S1: caixa só com http: nenhum POST, toast avisa e a caixa não muda', as
 // ================================================================ (d) Shopee como terceira loja (E4 do plano perfumaria-tres-lojas)
 const itemDaLoja = (loja, url, cat = 'QA Shopee') => { const n = ++seq; return { id: 900000000 + n, loja, cat, busca: 'qa', url,
   data: { titulo: 'Perfume ' + loja + ' ' + n, preco: 'R$ 99,90', imagem: '' } }; };
-const trocarItens = lista => { W.__lista = lista; W.eval('items = window.__lista; render()'); };
+// com as 17 abas fixas, os itens falsos (cat 'QA Shopee') não viram a única aba: a ativa passa a ser a deles
+const trocarItens = lista => { W.__lista = lista; W.eval('items = window.__lista; if (items[0]) activeCat = items[0].cat; render()'); };
 
 teste('CA-V1/CA-V2/CA-V12: cartão da Shopee tem o selo "Shopee", "Abrir na loja Shopee" e nenhum "Atualizar preço"', async () => {
   const sh = montarCard(itemDaLoja('shopee', 'https://s.shopee.com.br/7AbCdEf12'));

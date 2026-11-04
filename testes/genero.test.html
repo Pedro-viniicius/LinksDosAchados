@@ -78,6 +78,8 @@ ouvirErros(window, 'página de teste');
 
 // ---------------------------------------------------------------- ambiente
 const PERF = 'Perfumes e Perfumaria';
+const BELEZA = 'Beleza e Cuidados';
+const MODA = 'Moda e Viagem';
 const CASA = 'Casa e Decoração';
 const ELETRO = 'Eletrodomésticos';
 const PAGINA = 24;   // PAGE em render()
@@ -189,10 +191,10 @@ function montar(lista, cat = PERF) {
 // ================================================================ constantes e funções puras
 teste('constantes: ABAS_COM_GENERO e GENEROS são as do servidor (genero.py)', async () => {
   await abrirApp();
-  igual(W.eval('ABAS_COM_GENERO'), [PERF]);
+  igual(W.eval('ABAS_COM_GENERO'), [PERF, BELEZA, MODA]);
   igual(W.eval('GENEROS'), ['feminino', 'masculino', 'unissex', 'sem']);
-  igual(W.eval('abaTemGenero')(PERF), true);
-  for (const c of [CASA, ELETRO, 'Black Friday | Eletrônicos', '', 'perfumes e perfumaria']) igual(W.eval('abaTemGenero')(c), false, c);
+  for (const c of [PERF, BELEZA, MODA]) igual(W.eval('abaTemGenero')(c), true, c);
+  for (const c of [CASA, ELETRO, 'Black Friday | Eletrônicos', 'Pets', '', 'perfumes e perfumaria', 'moda e viagem', 'Beleza e Cuidados ']) igual(W.eval('abaTemGenero')(c), false, c);
 });
 
 teste('casaGenero: lista vazia = todos; público só vale em aba com gênero; valor estranho vale como "sem"', async () => {
@@ -248,6 +250,32 @@ teste('CA-V1: em Perfumes o controle "Público" tem Todos, Feminino, Masculino, 
   igual(q('#publicoBox fieldset'), null);
   aba(PERF).click();
   igual(valoresPublico().length, 5, 'volta ao voltar para Perfumes');
+});
+
+teste('CA5 (abas nichadas): Beleza e Cuidados e Moda e Viagem também têm o controle "Público", filtram e lembram a escolha por aba', async () => {
+  const L = cenario();
+  for (let i = 0; i < 4; i++) L.push(item(BELEZA, 'masculino', { busca: 'Aparador de barba' }));
+  for (let i = 0; i < 6; i++) L.push(item(BELEZA, 'sem', { busca: 'Base de maquiagem' }));
+  for (let i = 0; i < 3; i++) L.push(item(MODA, 'feminino', { busca: 'Bolsa feminina' }));
+  for (let i = 0; i < 2; i++) L.push(item(MODA, 'masculino', { busca: 'Relógio masculino' }));
+  for (let i = 0; i < 5; i++) L.push(item(MODA, 'sem', { busca: 'Kit camisetas' }));
+  montar(L, BELEZA);
+  igual(valoresPublico(), ['todos', 'feminino', 'masculino', 'unissex', 'sem']);
+  igual(contagens(), [10, 0, 4, 0, 6]);
+  escolherPublico('masculino');
+  await esperar(() => cartoes().length === 4, 'beleza masculina: 4 cartões');
+  igual(localStorage.getItem('genero:' + BELEZA), 'masculino');
+  aba(MODA).click();
+  await esperar(() => valoresPublico().length === 5 && contagens().join() === '10,3,2,0,5', 'moda com as próprias contagens');
+  igual(marcado(), 'todos', 'a escolha da beleza não vaza para a moda');
+  escolherPublico('feminino');
+  await esperar(() => cartoes().length === 3, 'moda feminina: 3 cartões');
+  igual(localStorage.getItem('genero:' + MODA), 'feminino');
+  aba(BELEZA).click();
+  await esperar(() => marcado() === 'masculino', 'volta à beleza com a escolha lembrada');
+  igual(cartoes().length, 4);
+  aba(CASA).click();
+  igual(q('#publicoBox fieldset'), null, 'aba sem gênero continua sem controle');
 });
 
 teste('CA-V1/CA-V12: o controle usa Tinta (neutro), nunca o acento Etiqueta; a opção marcada tem "✓" e a contagem é Mono', async () => {
@@ -794,7 +822,7 @@ teste('CA-V11: o formulário da regra tem "Público" em rádio (Todos, Feminino,
     publicoDoForm().find(i => i.value === 'todos').click();
     igual(lerForm().generos, []);
     igual(txt(W.document.querySelector('#rotPublico')), 'Público');
-    igual(txt(W.document.querySelector('#a-publico')), 'Vale só para categorias que separam por público, como Perfumes e Perfumaria. Nas outras, a regra envia tudo.');
+    igual(txt(W.document.querySelector('#a-publico')), 'Vale só para categorias que separam por público: Perfumes e Perfumaria, Beleza e Cuidados e Moda e Viagem. Nas outras, a regra envia tudo.');
     igual(W.document.querySelector('#f-publico').getAttribute('aria-describedby'), 'a-publico');
     // o resto do formulário continua igual
     const v = lerForm();

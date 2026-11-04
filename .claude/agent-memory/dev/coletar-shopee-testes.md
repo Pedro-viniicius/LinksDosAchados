@@ -15,4 +15,15 @@ Vistas na E7 de perfumaria-tres-lojas (2026-11-03):
 - Com outros `dev` editando `servidor.py`/`index.html` ao mesmo tempo, `test_servidor.py` deu 1 erro em 38 s; isolado, passou 2 vezes em 2 s. Rode de novo antes de concluir que quebrou.
 - Mutantes: copie `coletar_shopee.py`, `servidor.py`, `disparo.py` e `testes/test_coletar_shopee.py` para o scratchpad (o teste acha o módulo pelo `RAIZ` do próprio arquivo).
 
-**How to apply:** ao mexer no `coletar_shopee.py` ou no teste dele. Relacionado: [[servidor-testes]], [[escapes-unicode-ferramentas]].
+Vistas na etapa 7 de abas-nichadas-e-coleta (`importar`, 2026-11-04):
+
+- Para provar "não lê o ambiente", troque `os.environ` (no módulo `os`) por uma subclasse de `dict` que anota as chaves lidas em get/pop/[]/in (`AmbienteEspiao` no teste). O `mock.patch.dict(os.environ, ...)` do `rodar()` passa a agir sobre o espião sem problema. Rode também um caso que LÊ (modo `buscas`) para provar que o espião enxerga.
+- Mutante "tirar o `os.path.isfile`" só morre com FIFO (o `open` trava): teste com `os.mkfifo` + thread com `join(5)` e destrave com `os.open(fifo, O_WRONLY|O_NONBLOCK)`. O mutante "ler sem o `MAX+1`" é equivalente (o `len > MAX` ainda recusa).
+- Teto exato do arquivo: JSON válido + espaços no fim até `MAX_RESPOSTA` bytes (entra) e `MAX+1` (recusa).
+- Piso subiu para 50 vendas (P1): o ramo "1 vendido" (singular) ficou morto; os testes usam 50.
+
+Rodada 1 de abas-nichadas (2026-11-04):
+
+- `importar` confere o dono de CADA link distinto (antes só o 1º), com `pausa()` entre eles; `buscas` segue conferindo só o 1º (link gerado pela API com a credencial do dono). `ConferenciaPorLink` no teste dá Location por link e anota a ordem junto com a pausa.
+- `RE_USADO` é cópia local (Amazon, ML, Shopee); `TestUsado.test_mesma_lista_da_amazon_e_do_ml` lê as duas outras regex do fonte por regex: mudar a lista num lugar só reprova.
+ ao mexer no `coletar_shopee.py` ou no teste dele. Relacionado: [[servidor-testes]], [[escapes-unicode-ferramentas]].

@@ -33,3 +33,10 @@ Vista na E1 de perfumaria-tres-lojas (Shopee, 2026-11-03):
 - `urlsplit` baixa a caixa do host e esconde `?`/`#`/`:` vazios: regra estrita de link compara o texto inteiro (`re.fullmatch`), não os campos do `urlsplit`.
 - Rodada 2 da E1: a loja fica amarrada ao host (`URL_DA_LOJA` no lote, `eh_link_afiliado_da_loja` no PATCH, `GLOB` por loja no `CASE`). PATCH em id inexistente TEM de seguir 200 com `null`: o `afiliar()` do `coletar_ml.js` lê isso como "item excluído no meio". Antes de endurecer regra de loja, conte no banco real em `file:achadinhos.db?mode=ro` (em 2026-11-03: só amazon→www.amazon.com.br e ml→meli.la).
 - `testes/test_shopee_qa.py` (do qa) importa o `test_servidor.py` como `TS` e herda `TS.ServidorTeste`: mudar a base `ServidorTeste` afeta o arquivo do qa.
+
+Vista na etapa 2 de abas-nichadas (2026-11-04):
+
+- Preços no banco são texto BR: `R$ 1.299,90`, `R$ 4.285` (milhar sem centavos, ponto = milhar), `R$ 69,90`; nunca ponto decimal. `servidor.ler_preco`/`preco_antigo_plausivel` leem assim; medido em `mode=ro`: 33 itens Amazon e 0 ML com antigo >= 5x, 0 ilegíveis.
+- Teste de `upsert` direto sem subprocesso: na `ServidorEmProcesso`, `mock.patch.object(S, 'DB', <tmp>)` + `S.criar_banco()` + `S.conectar()` (o `conectar` lê o `DB` global na hora). Provar "falha antes": copiar o `HEAD:servidor.py` para o scratchpad e rodar o teste de lá. Cuidado: `pkill -f <caminho>` no mesmo comando derruba o shell (exit 144).
+- O PATCH `{data}` do site ("Buscar dados"/"Atualizar preço") grava `CAMPOS` sem passar pelo `upsert`: desde a rodada 1 (2026-11-04) os dois passam por `sanear_precos`. Regra nova de gravação de dados tem de entrar nos DOIS caminhos.
+- Mutante numa cópia sem `testes/*.test.html`: `TestEstatico`/`TestBordasHttp` falham só por isso (não é o mutante).

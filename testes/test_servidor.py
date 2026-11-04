@@ -1171,6 +1171,39 @@ class TestFetchUnidade(ServidorEmProcesso):
         self.assertEqual((d['asin'], d['titulo']), ('B0ABCDEFGH', 'Produto'))
 
 
+class TestFotoDaPaginaAmazon(ServidorEmProcesso):
+    """A foto do "Atualizar preço" sai da tag <img id="landingImage">, com o src antes ou depois do id."""
+
+    FOTO = 'https://m.media-amazon.com/images/I/51cQE6My6tL._AC_SY300_SX300_QL70_ML2_.jpg'
+
+    def test_src_antes_do_id_como_na_pagina_atual(self):
+        # trecho real (nov/2026), encurtado: a Amazon passou a pôr o src antes do id
+        h = ('<div id="imgTagWrapperId"><img alt="Câmera instax mini 13" src="' + self.FOTO + '" '
+             'data-old-hires="https://m.media-amazon.com/images/I/51cQE6My6tL._AC_SL1000_.jpg" '
+             'onload="if(this.width/this.height &gt; 1.0){}" data-a-image-name="landingImage" '
+             'class="a-dynamic-image" id="landingImage" data-a-dynamic-image="{}"></div>')
+        self.assertEqual(self.S.extrair_produto_amazon(h)['imagem'], self.FOTO)
+
+    def test_id_antes_do_src_continua_valendo(self):
+        h = f'<img id="landingImage" class="x" src="{self.FOTO}">'
+        self.assertEqual(self.S.extrair_produto_amazon(h)['imagem'], self.FOTO)
+
+    def test_nao_pega_data_src_nem_src_de_outra_tag(self):
+        h = (f'<img src="https://m.media-amazon.com/images/I/OUTRA.jpg" alt="logo">'
+             f'<img data-src="https://m.media-amazon.com/images/I/ERRADA.jpg" id="landingImage" src="{self.FOTO}">')
+        self.assertEqual(self.S.extrair_produto_amazon(h)['imagem'], self.FOTO)
+        # data-src depois do src: o [^>]* guloso pegaria o último "src=" sem o \s antes dele
+        h = f'<img id="landingImage" src="{self.FOTO}" data-src="https://m.media-amazon.com/images/I/ERRADA.jpg">'
+        self.assertEqual(self.S.extrair_produto_amazon(h)['imagem'], self.FOTO)
+
+    def test_so_tag_img(self):
+        h = '<div id="landingImage" src="https://m.media-amazon.com/images/I/ERRADA.jpg"></div>'
+        self.assertEqual(self.S.extrair_produto_amazon(h)['imagem'], '')
+
+    def test_sem_landing_image_fica_vazio(self):
+        self.assertEqual(self.S.extrair_produto_amazon('<img src="https://x/y.jpg">')['imagem'], '')
+
+
 class TestShopeeUnidade(ServidorEmProcesso):
     """CA1: regra do link de afiliado da Shopee, direto nas funções."""
 
@@ -1229,6 +1262,207 @@ class TestShopeeUnidade(ServidorEmProcesso):
             self.assertFalse(self.S.eh_link_afiliado('https://shope.ee/abc?x=1'))
             self.assertTrue(self.S.eh_link_afiliado_da_loja('https://shope.ee/abc', 'shopee'))
             self.assertIn("(loja='shopee' AND url GLOB 'https://shope.ee/*')", self.S.sql_link_preservado())
+
+
+# ================================================================ abas-nichadas etapa 2: CA4 (servidor)
+class TestPrecoAntigoPlausivel(ServidorEmProcesso):
+    """CA4: preço antigo de 5x o preço ou mais não é gravado; a função pura e o upsert direto (insert e update)."""
+
+    def test_limite_e_5(self):
+        self.assertEqual(self.S.LIMITE_PRECO_ANTIGO, 5)
+
+    def test_ca4_menos_de_5x_mantem(self):
+        # 4,99x: 100,00 contra 499,00
+        self.assertTrue(self.S.preco_antigo_plausivel('R$ 100,00', 'R$ 499,00'))
+        self.assertTrue(self.S.preco_antigo_plausivel('R$ 69,90', 'R$ 349,49'))
+        self.assertTrue(self.S.preco_antigo_plausivel('R$ 124,20', 'R$ 130,74'))   # desconto comum do banco
+
+    def test_ca4_5x_exato_ou_mais_e_implausivel(self):
+        self.assertFalse(self.S.preco_antigo_plausivel('R$ 69,90', 'R$ 349,50'))   # o caso PHEBO
+        self.assertFalse(self.S.preco_antigo_plausivel('R$ 100,00', 'R$ 500,00'))
+        self.assertFalse(self.S.preco_antigo_plausivel('R$ 100,00', 'R$ 500,01'))
+        self.assertFalse(self.S.preco_antigo_plausivel('R$ 9,99', 'R$ 9.999'))     # o antigo 1000x maior
+
+    def test_ca4_vazio_ou_ilegivel_nao_mexe(self):
+        for preco, antigo in [('R$ 10,00', ''), ('', 'R$ 500,00'), ('', ''), (None, None), ('R$ 10,00', None),
+                              ('R$ 10,00', 'abc'), ('abc', 'R$ 500,00'), ('R$ 0,00', 'R$ 500,00'),
+                              ('R$ 10,00', 'R$ 0,00'), ('R$ 10 - R$ 20', 'R$ 500,00'), ('R$ -10,00', 'R$ 500,00')]:
+            with self.subTest(preco=preco, antigo=antigo):
+                self.assertTrue(self.S.preco_antigo_plausivel(preco, antigo))
+
+    def test_ca4_antigo_menor_ou_igual_ao_preco_nao_mexe(self):
+        self.assertTrue(self.S.preco_antigo_plausivel('R$ 100,00', 'R$ 50,00'))
+        self.assertTrue(self.S.preco_antigo_plausivel('R$ 100,00', 'R$ 100,00'))
+
+    def test_ca4_formatos_com_milhar(self):
+        pl = self.S.preco_antigo_plausivel
+        self.assertTrue(pl('R$ 1.299,90', 'R$ 1.554,45'))
+        self.assertTrue(pl('R$ 4.285', 'R$ 4.511,55'))          # milhar sem centavos
+        self.assertTrue(pl('R$4.199', 'R$ 7.999'))              # sem espaço
+        self.assertTrue(pl('R$\u00a01.000,00', 'R$\u00a04.999,99'))   # espaço sem quebra
+        self.assertFalse(pl('R$ 1.000,00', 'R$ 5.000,00'))
+        self.assertFalse(pl('R$ 1.000', 'R$ 5.000'))
+        self.assertFalse(pl('R$ 999,99', 'R$ 10.000,00'))
+        self.assertFalse(pl('R$ 12.345,67', 'R$ 123.456,70'))
+        self.assertTrue(pl('R$ 1000,00', 'R$ 4.999,00'))        # milhar sem ponto
+        self.assertFalse(pl('R$ 1000,00', 'R$ 5.000,00'))
+
+    def test_ca4_leitura_do_preco(self):
+        D = self.S.ler_preco
+        self.assertEqual(D('R$ 1.299,90'), self.S.Decimal('1299.90'))
+        self.assertEqual(D('R$ 4.285'), 4285)
+        self.assertEqual(D('R$ 69,90'), self.S.Decimal('69.90'))
+        self.assertEqual(D('R$ 99'), 99)
+        self.assertEqual(D('12.5'), self.S.Decimal('12.5'))      # ponto com 1 ou 2 dígitos é decimal
+        self.assertEqual(D(12.5), self.S.Decimal('12.5'))        # número em data (o sqlite aceita)
+        for ruim in ['', None, True, 'R$', 'abc', 'R$ 1.2.3', 'R$ 1,2,3', 'R$ 12.3456', 'R$ 0', 'R$ 0,00', 'R$ -5,00', 'R$ 10 - R$ 20']:
+            with self.subTest(ruim=ruim):
+                self.assertIsNone(D(ruim))
+
+    def _banco(self, nome):
+        db = os.path.join(self.dir, nome)
+        env = mock.patch.object(self.S, 'DB', db)
+        env.start()
+        self.addCleanup(env.stop)
+        self.S.criar_banco()
+        con = self.S.conectar()
+        self.addCleanup(con.close)
+        return con
+
+    def _linha(self, con, item_id):
+        return con.execute('SELECT url, cat, busca, tem_dados, preco, preco_antigo, desconto, avaliacao, num_avaliacoes, '
+                           'vendas, frete, cupom, imagem, titulo FROM items WHERE item_id=?', (item_id,)).fetchone()
+
+    URLS = {'amazon': 'https://www.amazon.com.br/dp/{}?tag=desejodemen01-20', 'ml': 'https://meli.la/{}',
+            'shopee': 'https://s.shopee.com.br/{}'}
+
+    def _item(self, loja, iid, **dados):
+        base = {'titulo': 'Produto', 'preco': 'R$ 69,90', 'preco_antigo': 'R$ 349,50', 'desconto': '-80%',
+                'avaliacao': '4,5', 'num_avaliacoes': '120', 'vendas': '50 mil', 'frete': 'Frete grátis',
+                'cupom': 'Cupom 5%', 'imagem': 'https://m.media-amazon.com/images/I/x.jpg'}
+        base.update(dados)
+        return {'loja': loja, 'item_id': iid, 'cat': 'Perfumes e Perfumaria', 'busca': 'perfume',
+                'url': self.URLS[loja].format(iid), 'data': base}
+
+    def test_ca4_upsert_insert_zera_antigo_e_desconto_nas_tres_lojas(self):
+        con = self._banco('insert.db')
+        for loja in ('amazon', 'ml', 'shopee'):
+            with self.subTest(loja=loja):
+                it = self._item(loja, 'I' + loja)
+                self.assertEqual(self.S.upsert(con, it), 'inserido')
+                r = self._linha(con, 'I' + loja)
+                self.assertEqual((r['preco'], r['preco_antigo'], r['desconto']), ('R$ 69,90', '', ''))
+                self.assertEqual(r['url'], it['url'])                       # a url nunca muda
+                for c in ('titulo', 'avaliacao', 'num_avaliacoes', 'vendas', 'frete', 'cupom', 'imagem'):
+                    self.assertEqual(r[c], it['data'][c], c)                # os demais campos ficam como vieram
+                self.assertEqual((r['cat'], r['busca'], r['tem_dados']), (it['cat'], it['busca'], 1))
+
+    def test_ca4_upsert_insert_com_antigo_plausivel_grava_igual(self):
+        con = self._banco('insert-ok.db')
+        it = self._item('amazon', 'Iok', preco_antigo='R$ 349,49', desconto='-80%')
+        self.S.upsert(con, it)
+        r = self._linha(con, 'Iok')
+        self.assertEqual((r['preco'], r['preco_antigo'], r['desconto']), ('R$ 69,90', 'R$ 349,49', '-80%'))
+
+    def test_ca4_upsert_update_zera_o_que_ja_estava_gravado(self):
+        con = self._banco('update.db')
+        for loja in ('amazon', 'ml', 'shopee'):
+            with self.subTest(loja=loja):
+                iid = 'U' + loja
+                self.S.upsert(con, self._item(loja, iid, preco_antigo='R$ 80,00', desconto='-13%'))
+                self.assertEqual(self._linha(con, iid)['preco_antigo'], 'R$ 80,00')
+                nova = self._item(loja, iid, titulo='Produto novo')           # agora o antigo vem 5x
+                self.assertEqual(self.S.upsert(con, nova), 'atualizado')
+                r = self._linha(con, iid)
+                self.assertEqual((r['titulo'], r['preco'], r['preco_antigo'], r['desconto']), ('Produto novo', 'R$ 69,90', '', ''))
+                self.assertEqual(r['url'], nova['url'])
+                self.assertEqual((r['avaliacao'], r['num_avaliacoes'], r['vendas'], r['frete'], r['cupom'], r['imagem']),
+                                 tuple(nova['data'][c] for c in ('avaliacao', 'num_avaliacoes', 'vendas', 'frete', 'cupom', 'imagem')))
+
+    def test_ca4_upsert_update_nao_troca_link_de_afiliado_ja_gravado(self):
+        con = self._banco('update-url.db')
+        self.S.upsert(con, self._item('ml', 'MLBU1', preco_antigo='R$ 80,00'))
+        nova = self._item('ml', 'MLBU1')
+        nova['url'] = 'https://www.mercadolivre.com.br/p/MLBU1'
+        self.S.upsert(con, nova)
+        r = self._linha(con, 'MLBU1')
+        self.assertEqual(r['url'], 'https://meli.la/MLBU1')
+        self.assertEqual((r['preco_antigo'], r['desconto']), ('', ''))
+
+    def test_ca4_upsert_sem_preco_ou_sem_antigo_nao_mexe(self):
+        con = self._banco('vazios.db')
+        self.S.upsert(con, self._item('amazon', 'V1', preco='', preco_antigo='R$ 500,00', desconto='-50%'))
+        self.S.upsert(con, self._item('amazon', 'V2', preco_antigo='', desconto=''))
+        self.S.upsert(con, self._item('amazon', 'V3', preco='indisponível', preco_antigo='R$ 500,00', desconto='-50%'))
+        r1, r2, r3 = (self._linha(con, i) for i in ('V1', 'V2', 'V3'))
+        self.assertEqual((r1['preco_antigo'], r1['desconto']), ('R$ 500,00', '-50%'))
+        self.assertEqual((r2['preco'], r2['preco_antigo'], r2['desconto']), ('R$ 69,90', '', ''))
+        self.assertEqual((r3['preco_antigo'], r3['desconto']), ('R$ 500,00', '-50%'))
+
+    def test_ca4_upsert_aceita_numero_em_data(self):
+        con = self._banco('numero.db')
+        self.S.upsert(con, self._item('ml', 'N1', preco=10, preco_antigo=500, desconto=''))
+        self.assertEqual(self._linha(con, 'N1')['preco_antigo'], '')
+
+
+class TestPrecoAntigoHttp(ServidorTeste):
+    """CA4 pela porta de verdade (POST /api/items): o servidor aplica a regra ao gravar, sem mexer na url."""
+
+    def item(self, item_id):
+        return next(i for i in self.itens() if i['item_id'] == item_id)
+
+    def test_ca4_post_insert_e_update_pela_api(self):
+        url = 'https://meli.la/pah1'
+        dados = {'titulo': 'Perfume', 'preco': 'R$ 69,90', 'preco_antigo': 'R$ 349,50', 'desconto': '-80%', 'avaliacao': '4,7'}
+        st, _, corpo = self.postar([{'loja': 'ml', 'item_id': 'MLBPAH1', 'cat': 'Perfumes e Perfumaria', 'url': url, 'data': dados}])
+        self.assertEqual(st, 200, corpo)
+        d = self.item('MLBPAH1')['data']
+        self.assertEqual((d['preco'], d['preco_antigo'], d['desconto'], d['avaliacao']), ('R$ 69,90', '', '', '4,7'))
+        self.assertEqual(self.item('MLBPAH1')['url'], url)
+        # update: primeiro um antigo plausível, depois o implausível
+        dados['preco_antigo'], dados['desconto'] = 'R$ 80,00', '-13%'
+        self.postar([{'loja': 'ml', 'item_id': 'MLBPAH1', 'url': url, 'data': dados}])
+        self.assertEqual(self.item('MLBPAH1')['data']['preco_antigo'], 'R$ 80,00')
+        dados['preco_antigo'], dados['desconto'] = 'R$ 349,50', '-80%'
+        st, _, corpo = self.postar([{'loja': 'ml', 'item_id': 'MLBPAH1', 'url': url, 'data': dados}])
+        self.assertEqual(st, 200, corpo)
+        d = self.item('MLBPAH1')['data']
+        self.assertEqual((d['preco'], d['preco_antigo'], d['desconto']), ('R$ 69,90', '', ''))
+        self.assertEqual(self.item('MLBPAH1')['url'], url)
+
+    def test_ca4_post_com_antigo_4_99x_mantem(self):
+        st, _, corpo = self.postar([{'loja': 'amazon', 'item_id': 'B0PAH00001', 'cat': 'T',
+                                     'url': 'https://www.amazon.com.br/dp/B0PAH00001?tag=desejodemen01-20',
+                                     'data': {'titulo': 'T', 'preco': 'R$ 100,00', 'preco_antigo': 'R$ 499,00', 'desconto': '-80%'}}])
+        self.assertEqual(st, 200, corpo)
+        d = self.item('B0PAH00001')['data']
+        self.assertEqual((d['preco_antigo'], d['desconto']), ('R$ 499,00', '-80%'))
+
+    def patch_data(self, item_id, url, preco, antigo, desconto):
+        """Grava o item pelo POST e depois manda o PATCH com data (o "Atualizar preço" do cartão da Amazon). Devolve o item lido."""
+        self.postar([{'loja': 'amazon', 'item_id': item_id, 'cat': 'T', 'url': url,
+                      'data': {'titulo': 'T', 'preco': 'R$ 30,00', 'preco_antigo': 'R$ 40,00', 'desconto': '-25%'}}])
+        iid = self.item(item_id)['id']
+        st, _, corpo = self.pedir('PATCH', f'/api/items/{iid}',
+                                  {'data': {'titulo': 'Novo', 'preco': preco, 'preco_antigo': antigo,
+                                            'desconto': desconto, 'avaliacao': '4,8'}}, self.local())
+        self.assertEqual(st, 200, corpo)
+        return self.item(item_id)
+
+    def test_ca4_patch_data_com_antigo_4_99x_mantem(self):
+        url = 'https://www.amazon.com.br/dp/B0PAH00002?tag=desejodemen01-20'
+        it = self.patch_data('B0PAH00002', url, 'R$ 100,00', 'R$ 499,00', '-80%')
+        d = it['data']
+        self.assertEqual((d['titulo'], d['preco'], d['preco_antigo'], d['desconto']), ('Novo', 'R$ 100,00', 'R$ 499,00', '-80%'))
+        self.assertEqual(it['url'], url)
+
+    def test_ca4_patch_data_com_antigo_5x_limpa_so_antigo_e_desconto(self):
+        url = 'https://www.amazon.com.br/dp/B0PAH00003?tag=desejodemen01-20'
+        it = self.patch_data('B0PAH00003', url, 'R$ 100,00', 'R$ 500,00', '-80%')
+        d = it['data']
+        self.assertEqual((d['titulo'], d['preco'], d['preco_antigo'], d['desconto'], d['avaliacao']),
+                         ('Novo', 'R$ 100,00', '', '', '4,8'))
+        self.assertEqual(it['url'], url)
 
 
 if __name__ == '__main__':

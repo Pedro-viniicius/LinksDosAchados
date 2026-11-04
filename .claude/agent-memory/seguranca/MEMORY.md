@@ -1,3 +1,3 @@
 - [Áreas sensíveis](areas-sensiveis.md) — dado pessoal, guardas do servidor, disparo, scripts que gravam, coletar_ml.js, Shopee, API v1 com token, gênero, front
-- [Problemas recorrentes](problemas-recorrentes.md) — escape innerHTML, guardas de origem, allowlist, sink de url, meli.la, detecção de URL por TLD, ReDoS sem teto, host x loja, redirect com Authorization, segredo exportado, id sem teto de dígitos
+- [Problemas recorrentes](problemas-recorrentes.md) — escape innerHTML, guardas de origem, allowlist, sink de url, meli.la, detecção de URL por TLD, ReDoS sem teto, host x loja, redirect com Authorization, segredo exportado, id sem teto, dono de cada link, regra só num caminho de gravação
 - [Riscos aceitos](riscos-aceitos.md) — R1: sem token local; origens do ML podem POST/PATCH (CA6/CA7); impacto maior com a v1 → Turbo

@@ -18,6 +18,51 @@ Variáveis de ambiente (todas opcionais):
 
 O `coletar_shopee.py` também lê `ACHADINHOS_SHOPEE_APP_ID` e `ACHADINHOS_SHOPEE_SECRET` (veja "Coleta da Shopee"). O servidor não usa essas duas.
 
+## Abas
+
+São 17 abas, na ordem do `buscas.json` (mapa termo → aba; é a mesma ordem da barra do site, e o front a repete em `ORDEM_ABAS`). A página as agrupa em 4 faixas só de apresentação (Tecnologia: 1 a 4; Casa: 5 a 9; Beleza e consumo: 10 a 13; Família e estilo: 14 a 17).
+
+1. Celulares e Informática
+2. Áudio e Acessórios
+3. TV, Alexa e Casa Conectada
+4. Games
+5. Eletroportáteis
+6. Eletrodomésticos e Climatização
+7. Cozinha
+8. Cama, Mesa e Banho
+9. Casa, Móveis e Ferramentas
+10. Beleza e Cuidados
+11. Perfumes e Perfumaria
+12. Mercado e Limpeza
+13. Pets
+14. Bebês e Brinquedos
+15. Suplementos e Fitness
+16. Moda e Viagem
+17. Natal e Papelaria
+
+**Têm público (gênero) 3 abas:** "Perfumes e Perfumaria", "Beleza e Cuidados" e "Moda e Viagem" (`genero.ABAS_COM_GENERO`; veja "Público (gênero)"). Nas outras 14, todo item é "sem gênero".
+
+Termo novo ou mudança de aba: edite o `buscas.json` (nome da aba exato, termos em NFC, sem `|` e sem repetição). O `coletar_ml.js` traz uma cópia entre marcadores, e o `test_front_constantes.py` e os testes do `coletar_ml` reprovam se ela, a constante `ORDEM_ABAS` do `index.html` ou o `buscas.json` ficarem diferentes. Coletar de novo um item que já existe não troca a aba dele.
+
+### Piso de qualidade das coletas
+
+As três coletas só gravam item com **nota 4,5 ou mais e volume de vendas real**, e recusam usado. O que fica de fora não é gravado, e o termo que não trouxe nenhum item no piso não é marcado como feito (roda de novo na próxima vez).
+
+| Loja | Nota | Volume |
+|---|---|---|
+| Amazon (`coletar_amazon.py`, `passa_piso`) | 4,5 ou mais | 100 avaliações ou mais, **ou** "Mais de N compras no mês passado" no card |
+| Mercado Livre (`coletar_ml.js`) | 4,5 ou mais | "Mais de 50 produtos vendidos" ou mais (por exemplo "+50 vendidos") |
+| Shopee (`coletar_shopee.py`, `VENDAS_MINIMAS`) | 4,5 ou mais | 50 vendas ou mais (antes era 1) |
+
+- Sem nota ou sem volume legível, o item fica de fora.
+- **Usado:** título com `usado`, `recondicionado`, `renovado`, `seminovo`, `vitrine`, `open box` ou `refurbished` (sem acento, palavra inteira) é recusado (`eh_usado` na Amazon e na Shopee, `ehUsado` no ML), mesmo com nota e vendas ótimas. No ML, também vale o campo de condição do anúncio, se vier. Na Shopee, a recusa vale para a Open API (`buscas`) e para o `importar`. A lista de palavras também está nos três lugares.
+- Os mesmos limites estão em três lugares (um por coleta): mudar o piso exige mexer nos três e nos testes. A Amazon e a Shopee escrevem no log de cada termo "N achados, X no piso, Y novos"; o ML guarda a contagem em `ColetaML.estado.foraDoPiso` (e os usados em `estado.usados`).
+- O piso vale para o que a coleta traz. Itens que já estavam no banco antes dele (inclusive uns 19 "Seminovo" ou recondicionados) não são apagados; exclua pelo site se quiser.
+
+### Preço antigo implausível
+
+Preço antigo de **5 vezes o preço ou mais** (desconto de 80% ou mais) não é desconto de verdade: costuma ser preço por litro ou por unidade lido no lugar do preço riscado. O `servidor.py` descarta esse par (`sanear_precos`, com `preco_antigo_plausivel` e a constante `LIMITE_PRECO_ANTIGO = 5`) em toda gravação: no `upsert` das três coletas e no `PATCH /api/items/<id>` com `data`, que é o "Atualizar preço" do cartão da Amazon no site: o item fica sem preço antigo e sem desconto, e a `url` nunca muda. Preço ou antigo vazio ou ilegível não é mexido. Na Amazon, o preço antigo agora vem só do preço riscado. A migração (veja "Reorganizar abas") faz a mesma limpeza nos itens que já estão no banco.
+
 ## Testes
 
 Use sempre proxies mortos, para nenhum teste sair para a rede:
@@ -120,17 +165,30 @@ Suba o servidor e confira `curl -s -o /dev/null -w "%{http_code}" localhost:8765
 
 ## Reorganizar abas
 
-`migrar_categorias.py` troca a coluna `cat` dos itens das abas antigas ("Black Friday" e "Casa Nova") pela aba do termo de busca, segundo `buscas.json` (mapa termo → aba). Termos usados só no Mercado Livre herdam a aba de outro termo pelo `ALIAS` do script. Item sem destino aborta a migração sem gravar nada.
+`migrar_categorias.py` troca a coluna `cat` dos itens das abas antigas pela aba do termo de busca, segundo o `buscas.json` (mapa termo → aba). Em 2026-11-04 ele levou o banco às 17 abas (veja "Abas").
+
+**Nota histórica (2026-11-04).** As abas antigas deixaram de existir e os itens foram redistribuídos pelo termo de busca:
+
+| Aba antiga | Foi para |
+|---|---|
+| Black Friday \| Eletrônicos | Celulares e Informática, Áudio e Acessórios, TV, Alexa e Casa Conectada, Games |
+| Eletrodomésticos | Eletroportáteis, Eletrodomésticos e Climatização |
+| Casa e Decoração | Cozinha, Cama, Mesa e Banho, Casa, Móveis e Ferramentas |
+
+"Perfumes e Perfumaria" não mudou (mesmos itens e ids). Termos usados só no Mercado Livre herdam a aba de outro termo pelo `ALIAS` do script; os 4 subtemas da antiga Lista WhatsApp (`SUBTEMAS_LISTA`) herdam a aba de um termo parecido; e o item sem `busca` (sem termo) foi para "Casa, Móveis e Ferramentas".
 
 ```
 python3 migrar_categorias.py --dry-run     # mostra as contagens; não grava nem faz backup
 python3 migrar_categorias.py               # backup verificado + migração numa transação só
 ```
 
+- O `--dry-run` mostra, para cada aba antiga, de onde cada termo vai, a tabela **aba × loja** antes e depois, e quantos preços antigos implausíveis (5× ou mais) seriam limpos. Item sem destino aborta a migração sem gravar nada.
 - No banco real, gravar pede confirmação: digite `sim` quando o script perguntar, ou passe `--sim`.
-- Pode rodar com o `servidor.py` no ar (o servidor espera a transação). Recarregue a página depois.
+- Antes de gravar, o script faz o backup em `backups/` e confere `integrity_check` e a contagem de itens; se falhar, nada é migrado. Depois de gravar, confere que o total de itens é o mesmo.
+- A migração regrava o `atualizado_em` dos itens que mudam de aba (e dos que perdem o preço antigo): eles reaparecem na ordem `atualizacao` da API v1. A `url` (link de afiliado) nunca é tocada.
+- Pode rodar com o `servidor.py` no ar (o servidor espera a transação). Reinicie o servidor depois, para ele passar a usar o código novo, e recarregue a página.
 - É idempotente: rodar de novo dá "0 itens movidos" e não cria backup.
-- Antes de gravar, o script faz o backup em `backups/` e confere `integrity_check` e a contagem de itens; se falhar, nada é migrado.
+- Faça uma coleta só **depois** da migração e do `sim`: restaurar depois de coletar perderia os itens novos.
 
 **Reverter:** pare o `servidor.py` e o `coletar_amazon.py` e rode (no banco real, o `--restaurar` também pede `sim`, ou passe `--sim`)
 
@@ -138,18 +196,9 @@ python3 migrar_categorias.py               # backup verificado + migração numa
 python3 migrar_categorias.py --restaurar backups/<arquivo>.db
 ```
 
-Ele recusa se o servidor estiver no ar e, antes de sobrescrever, guarda o estado atual em `backups/` (dá para desfazer o desfazer). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`. Para um ajuste pontual, use "Mover para" no site.
+Ele recusa se o servidor estiver no ar e, antes de sobrescrever, guarda o estado atual em `backups/` (dá para desfazer o desfazer). O `--restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para um ajuste pontual, use "Mover para" no site.
 
-**Lista WhatsApp.** Os 74 itens da aba "Lista WhatsApp" (vindos do chat) são todos de eletrônicos. `classificar_lista.py` os move para "Black Friday | Eletrônicos" e troca a `busca` pelo subtema de cada um, segundo `lista_whatsapp.json`. Rode **logo depois** do `migrar_categorias.py` (é ele que cria a aba de destino) e **antes de cadastrar qualquer número** no disparo:
-
-```
-python3 classificar_lista.py --dry-run     # mostra o que mudaria; não grava nem faz backup
-python3 classificar_lista.py               # backup verificado + gravação numa transação só (pede "sim" ou --sim)
-```
-
-- Só mudam `cat`, `busca` e `atualizado_em`; o link de afiliado nunca é tocado. Item que não bate com o mapa (id e `item_id`) aborta tudo sem gravar. Rodar de novo imprime "Nada a classificar: 0 itens mudados" e não cria backup. Pode rodar com o servidor no ar.
-- **Reverter só estes itens:** `python3 classificar_lista.py --desfazer` (aceita `--dry-run` e `--sim`) devolve os 74 a "Lista WhatsApp". A alternativa, `migrar_categorias.py --restaurar`, devolve o banco **inteiro** ao backup: números, regras e o histórico de envios criados depois dele somem, e o "não repetir" recomeça do zero (o estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever). Só vale logo depois da migração.
-- Os links novos que entrarem pelo chat voltam a cair em "Lista WhatsApp" e podem ser reclassificados depois (com "Mover para" no site).
+**Lista WhatsApp (histórico).** Os 74 itens da antiga aba "Lista WhatsApp" foram movidos por `classificar_lista.py` (e `lista_whatsapp.json`) e hoje estão nas abas de eletrônicos, pelo subtema. Esse script ficou só como histórico: depois da migração para as 17 abas, rodá-lo de novo aborta por divergência, sem gravar, e o `--desfazer` dele não vale mais. Para voltar ao estado anterior, use o backup (`--restaurar`). Os links novos que entrarem pelo chat caem em "Lista WhatsApp" e podem ser movidos com "Mover para" no site.
 
 ## Coleta da Amazon
 
@@ -157,7 +206,7 @@ python3 classificar_lista.py               # backup verificado + gravação numa
 python3 coletar_amazon.py buscas     # só os termos de buscas.json, sem passar pelo WhatsApp
 ```
 
-Cada termo é gravado e marcado em `coleta_amazon_feitos.txt` quando termina; Ctrl+C e rodar de novo retoma de onde parou. A chave do progresso é o termo (`busca|<termo>`), então só faltam os termos que ainda não foram coletados. Esta coleta acessa a Amazon de verdade: nunca rode em teste.
+Cada termo é gravado e marcado em `coleta_amazon_feitos.txt` quando termina; Ctrl+C e rodar de novo retoma de onde parou. A chave do progresso é o termo (`busca|<termo>`), então só faltam os termos que ainda não foram coletados. Só entra item que passa no piso de qualidade e não é usado (veja "Piso de qualidade das coletas"). Esta coleta acessa a Amazon de verdade: nunca rode em teste.
 
 ## Coleta do Mercado Livre
 
@@ -188,6 +237,8 @@ Cuidados:
 - `zerar()` precisa rodar **nas duas abas**: o progresso da coleta fica na aba `lista.` e o dos inelegíveis na aba `www.`.
 - Captcha ou "sem polycard": a coleta para sem gravar o termo. Resolva na aba e rode de novo.
 - Contrato com o servidor: só JSON, só as origens `https://lista.mercadolivre.com.br` e `https://www.mercadolivre.com.br`, e nenhum DELETE.
+- **Piso:** `coletar()` só envia o card com nota 4,5 ou mais e "Mais de 50 produtos vendidos" (ou mais) e recusa usado (veja "Piso de qualidade das coletas"). O que ficou de fora aparece em `ColetaML.estado.foraDoPiso` (e `usados`); o termo sem nenhum item no piso não entra no progresso.
+- **Plano B:** se o Chrome continuar bloqueando o "Acesso à rede local" (as chamadas ao `localhost` ficam presas mesmo com a permissão dada), **o Mercado Livre fica para depois**: a Amazon e a Shopee seguem sem ele, e a meta de itens do ML vira risco aceito. Não há caminho alternativo recomendado (uma ponte manual também precisaria do mesmo acesso no `afiliar()`).
 
 ## Ordens da coleta
 
@@ -248,10 +299,25 @@ read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 
 
 - `conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono: o destino do link curto precisa trazer `utm_source=an_<ID_AFILIADO_SHOPEE>`. Rode antes da primeira coleta.
 - `buscas --cat ABA` coleta os termos da aba, uma vez por ordem (padrão `relevancia`). Antes de gravar o primeiro termo, faz a mesma conferência do dono; se ela falhar, não grava nada.
-- Só entra item com link `https://s.shopee.com.br/<código>` (host exato, sem query) e acima do piso de qualidade: **nota 4,5 ou mais e pelo menos 1 venda**. O resto é descartado. Link de outro host (por exemplo `shope.ee`) também é recusado.
+- Só entra item com link `https://s.shopee.com.br/<código>` (host exato, sem query) acima do piso de qualidade (**nota 4,5 ou mais e pelo menos 50 vendas**; era 1) e cujo título não é de usado (veja "Piso de qualidade das coletas"). O resto é descartado. Link de outro host (por exemplo `shope.ee`) também é recusado.
 - Progresso em `coleta_shopee_feitos.txt` (chave `<ordem>|<termo>`; `ACHADINHOS_FEITOS_SHOPEE` troca o arquivo). Termo que não trouxe nenhum item no piso não é marcado e fica para a próxima rodada. Ctrl+C e rodar de novo retoma (saída 130).
 - Cada item grava `item_id` = `<shopId>.<itemId>`, `url` = o link de afiliado, e a foto só se for do CDN da Shopee. A API não dá o preço cheio, então não há "preço antigo". A Shopee não tem "Atualizar preço" no site: o preço é o da última coleta.
 - Usa o `ACHADINHOS_DB` como o `servidor.py` e pode rodar com o servidor no ar. Esta coleta acessa a Shopee de verdade: nunca rode em teste.
+
+**Importar do painel (`importar`, sem credencial):**
+
+```
+python3 coletar_shopee.py importar ARQUIVO
+```
+
+Grava os itens capturados no painel de afiliados (`affiliate.shopee.com.br`, "Obter Link em Massa") sem chamar a Open API. **Não pede AppID nem Secret e não lê o ambiente**: rode direto, sem o prefixo `read -rs`. O arquivo é entrada externa e é conferido inteiro antes de qualquer gravação.
+
+- **Formato:** JSON em UTF-8, de até 2 MB, objeto só com as chaves `cat` (aba do `buscas.json`), `busca` (termo dessa aba no `buscas.json`, em NFC) e `nos` (de 1 a 100 nós no formato de um nó do `productOfferV2`).
+- **Campos de cada nó:** `itemId`, `shopId`, `productName`, `offerLink` (`https://s.shopee.com.br/<código>`; qualquer outro link descarta o nó), `ratingStar` e `sales` (o piso) e, opcionais, `priceMin`, `priceDiscountRate` e `imageUrl` (só do CDN `down-br.img.susercontent.com`; de outro host fica sem foto). O resto é ignorado.
+- **O que ele faz:** aplica o piso (nota 4,5 e 50 vendas, sem usado), confere o dono de **cada** link distinto que passou (`utm_source=an_<ID_AFILIADO_SHOPEE>`, com uma pausa de 1 a 3 s entre um e outro) antes de gravar (se um só falhar, nada é gravado), grava pelo mesmo caminho da coleta e marca `vendidos|<termo>` em `coleta_shopee_feitos.txt`, o mesmo progresso da Open API (o painel é percorrido em "Mais vendidos"), então os dois caminhos não repetem o termo.
+- **Saída:** só contagens e motivos fixos; o conteúdo do arquivo nunca vai para a tela nem para o log. Se nenhum nó passa no piso, sai 0 e o termo **não** é marcado.
+- **Códigos de saída:** 0 (ok), 1 (dono errado em algum link, ou arquivo fora do formato ou grande demais) e 2 (aba ou termo fora do `buscas.json`, arquivo inexistente ou ilegível, argumento errado). O 3 (limite da API) não existe aqui, porque não há chamada à API.
+- Apague o arquivo depois de importar. Esta importação não chama a Open API: só faz uma requisição a cada link curto `s.shopee.com.br` para conferir o dono (sem credencial e sem seguir redirect). Já o que a captura no painel faz (por botões do navegador) é com o dono ou com o assistente do plugin, nunca por script contra a API interna do painel.
 
 **Códigos de saída:**
 
@@ -356,13 +422,17 @@ Variáveis de ambiente (todas opcionais):
 - `ACHADINHOS_TRANSPORTE`: `manual` (padrão) ou `falso`. O `falso` é só para teste e exige `ACHADINHOS_TRANSPORTE_ARQUIVO`.
 - `ACHADINHOS_TRANSPORTE_ARQUIVO`: arquivo JSONL onde o transporte falso grava cada envio. Nunca aponte para um arquivo que importa.
 
-**Reverter:** `ACHADINHOS_DISPARO=0` para o agendador sem mexer em nada. As tabelas novas ficam ociosas e o código antigo as ignora, então voltar a versão do código é seguro; para devolver também os dados, use um backup (seção "Backup"). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para desfazer só a Lista WhatsApp, use `classificar_lista.py --desfazer`.
+**Reverter:** `ACHADINHOS_DISPARO=0` para o agendador sem mexer em nada. As tabelas novas ficam ociosas e o código antigo as ignora, então voltar a versão do código é seguro; para devolver também os dados, use um backup (seção "Backup"). O `migrar_categorias.py --restaurar` devolve o banco **inteiro**: números, regras, correções de público e o histórico de envios criados depois do backup somem, e o "não repetir" recomeça do zero. O estado de antes fica em `backups/`, no backup que o `--restaurar` faz antes de sobrescrever. Para um ajuste pontual de aba, use "Mover para" no site.
 
 ## Público (gênero)
 
 Separa as ofertas em **feminino**, **masculino**, **unissex** e **sem gênero**, onde isso faz sentido. Plano: `docs/produto/planos/genero-nas-categorias.md`. A regra mora no `genero.py` (só biblioteca padrão) e vale igual para a página, o disparo e a API.
 
-**Em quais abas vale:** hoje só em "Perfumes e Perfumaria". Nas outras (eletrônicos, casa, eletrodomésticos) o público não existe: todo item é "sem gênero" e nada filtra por público. Em perfumaria, "sem gênero" é o que de fato não tem público (hidratante, sabonete, óleo, infantil).
+**Em quais abas vale:** em 3 das 17 abas, "Perfumes e Perfumaria", "Beleza e Cuidados" e "Moda e Viagem" (`genero.ABAS_COM_GENERO`). Nas outras 14 o público não existe: todo item é "sem gênero" e nada filtra por público. Em perfumaria, "sem gênero" é o que de fato não tem público (hidratante, sabonete, óleo, infantil).
+
+- **Perfumes e Perfumaria:** as regras 1 a 4 abaixo, com as linhas de produto de perfume.
+- **Beleza e Cuidados:** palavra de gênero no título, depois, só para barbear e barba (`barbear`, `barba`, pós-barba, aparador de barba), masculino; itens de depilação e a linha Gillette Venus ficam de fora dessa regra. As linhas de perfume não valem aqui.
+- **Moda e Viagem:** só palavra de gênero (título e depois termo de busca), sem linha de produto.
 
 **Como o produto é classificado.** Não se grava nada no item: o público é calculado a cada leitura, então item novo (de qualquer coleta ou colado no site) já sai classificado, sem passo extra, e uma mudança na regra vale na hora. A ordem é esta, e a primeira que decidir vence:
 
@@ -373,19 +443,19 @@ Separa as ofertas em **feminino**, **masculino**, **unissex** e **sem gênero**,
 
 O termo de busca sozinho erra: "Natura Essencial" tem itens dos dois públicos, então o título manda e a busca só completa. Quando a regra erra, corrija o item à mão.
 
-**Filtrar na página:** numa aba com público (hoje só a Perfumaria) aparece o controle "Público": Todos, Feminino, Masculino, Unissex e, só se houver itens assim, "Sem gênero", cada um com a sua contagem (que respeita os filtros de loja e de título). A escolha fica lembrada por aba no navegador. O selo com o público aparece no cartão só em "Todos". Em abas sem público o controle não aparece.
+**Filtrar na página:** numa aba com público (Perfumaria, Beleza e Cuidados e Moda e Viagem) aparece o controle "Público": Todos, Feminino, Masculino, Unissex e, só se houver itens assim, "Sem gênero", cada um com a sua contagem (que respeita os filtros de loja e de título). A escolha fica lembrada por aba no navegador. O selo com o público aparece no cartão só em "Todos". Em abas sem público o controle não aparece.
 
 **Corrigir à mão:** no cartão, abra "Mais ações" e use o campo "Público" (Feminino, Masculino, Unissex, Sem gênero ou "Automático"). "Automático" apaga a correção e volta à regra (a opção mostra o que a regra daria, por exemplo "Automático (Feminino)"). O cartão corrigido ganha o selo "corrigido". A correção vale na página, no disparo e na API, fica guardada na tabela `generos_manuais` e só é aceita pela página local (a rota é `PUT /api/items/<id>/genero`; o Mercado Livre pelo console não consegue gravar). Se o item sair da aba, o público dele volta a "sem gênero", mas a correção continua guardada. Item de aba sem público recusa a correção.
 
-**No disparo:** o formulário da regra tem o campo "Público" (Todos, Feminino, Masculino ou Unissex). "Todos" não filtra. O filtro vale **só para as categorias que separam por público**: numa regra com Perfumaria e Casa e Decoração, "Feminino" leva só os perfumes femininos e a Casa inteira. Regra gravada antes desta versão continua elegendo exatamente os mesmos itens. A prévia, a contagem e o aviso de "nenhum item casa com os filtros" já levam o público em conta.
+**No disparo:** o formulário da regra tem o campo "Público" (Todos, Feminino, Masculino ou Unissex). "Todos" não filtra. O filtro vale **só para as categorias que separam por público**: numa regra com Perfumaria e Cozinha, "Feminino" leva só os perfumes femininos e a Cozinha inteira. Regra gravada antes desta versão continua elegendo exatamente os mesmos itens. A prévia, a contagem e o aviso de "nenhum item casa com os filtros" já levam o público em conta.
 
 **Na API v1:** cada oferta traz `genero`, `/api/v1/ofertas` aceita o filtro `genero` (repetível) e `/api/v1/categorias` traz a contagem por público. Lá o filtro é exato (`genero=feminino` não traz geladeira). Campos, valores, erros e o caso do `atualizado_em` estão em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
-**Incluir uma aba nova com público:** a lista de abas existe em dois lugares, e os dois precisam ter o nome exato da aba (o mesmo de `buscas.json`):
+**Incluir uma aba nova com público** (hoje são 3, veja acima): a lista de abas existe em dois lugares, e os dois precisam ter o nome exato da aba (o mesmo de `buscas.json`):
 
 1. `ABAS_COM_GENERO` em `genero.py` (servidor, disparo e API);
 2. `ABAS_COM_GENERO` no `index.html` (controle, selo e campo de correção da página).
 
-O `python3 testes/test_front_constantes.py -v` reprova se as duas ficarem diferentes, e o `test_genero.py` confere que cada aba da constante existe em `buscas.json`. Renomear a aba "Perfumes e Perfumaria" tem o mesmo cuidado: o público some até as constantes serem atualizadas.
+O `python3 testes/test_front_constantes.py -v` reprova se as duas ficarem diferentes, e o `test_genero.py` confere que cada aba da constante existe em `buscas.json`. Renomear uma das 3 abas com público tem o mesmo cuidado: o público some até as constantes serem atualizadas.
 
 **Esquema (versão 2):** a migração cria a tabela `generos_manuais` e a coluna `regras.generos` (padrão `[]`, "todos"). Só acrescenta, é idempotente e acontece quando o servidor reinicia ou uma coleta roda. **Faça um backup antes** (seção "Backup"). Voltar a versão do código é seguro: o código antigo ignora a tabela e a coluna novas. O `migrar_categorias.py --restaurar` devolve o banco inteiro e apaga as correções de público feitas depois do backup.

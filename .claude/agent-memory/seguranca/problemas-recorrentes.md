@@ -30,6 +30,10 @@ Padrões a procurar sempre (origem: revisões de 2026-11-03).
 - **Token sem entropia mínima**: `TOKEN_VALIDO` aceita qualquer texto de 32+ caracteres (INFORMATIVA local, docs mandam `token_urlsafe(32)`; vira requisito com VPS).
 - **Valor numérico gigante em campo de item** (`coletar_amazon.py` grava sem teto): `contagem`/`pct` podem levantar `OverflowError`/`ValueError`; caminho novo que converte campo do item deve isolar por linha (feito em `api_ofertas.oferta`).
 - **Id do caminho sem teto de dígitos** (S1 BAIXA, 2026-11-03, corrigido na rodada 2): `int()` de `[0-9]+` com mais de 4300 dígitos dá `ValueError` e acima de 2^63-1 o sqlite dá `OverflowError`; a conexão caía sem resposta. Hoje `ROTA_ITEM`/`ROTA_GENERO` usam `[0-9]{1,19}` + `MAX_ID_SQLITE` → 404. Em rota nova com id no caminho, exija o mesmo.
+- **Conferência do dono só por amostra de 1 link** (S1 BAIXA, 2026-11-04, `coletar_shopee.py importar`, corrigido na rodada 2 conferindo cada link distinto antes de gravar): vale amostra para a Open API (mesma credencial), não para arquivo externo. Em fluxo novo que grava link vindo de arquivo/captura, exija conferência de cada link distinto.
+- **Regra aplicada só num caminho de gravação** (S3, 2026-11-04: `preco_antigo_plausivel` só no `upsert`, corrigido com `sanear_precos` também no PATCH `data`): regra nova de saneamento tem que valer em upsert e PATCH.
+- **Regex de volume `\d[\d.,]*...` com `search`** (INFORMATIVA, 2026-11-04, `coletar_amazon.RE_COMPRAS`): quadrática em sequência longa de dígitos (20 mil dígitos ~7,6 s); `numero_de` com 300+ dígitos e "mil" dá `OverflowError`. Fonte é a Amazon, títulos curtos; confira em parser novo de texto de terceiro.
+- **Doc diz "não acessa a rede" e o código acessa** (README do `importar`, 2026-11-04, corrigido na rodada 2): confira afirmação de rede/credencial na doc contra o código.
 - Runner `testes/rodar.mjs`: CDP em porta efêmera de 127.0.0.1, perfil temporário, `kill` no `finally` e em SIGINT/SIGTERM.
 
 Ver [[areas-sensiveis]], [[riscos-aceitos]].

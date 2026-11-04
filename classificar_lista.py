@@ -3,6 +3,11 @@
 
 Plano: docs/produto/planos/disparo-automatico.md (etapa 6).
 
+Histórico: já rodou no banco real em 2026-11-03. Depois da reorganização em 17 abas
+(docs/produto/planos/abas-nichadas-e-coleta.md, etapa 6), os itens que ele classificou saíram de
+"Black Friday | Eletrônicos", e rodar de novo aborta por divergência sem gravar nada (nem o --desfazer
+serve mais). Para voltar àquele estado, use o backup do migrar_categorias.py.
+
 Uso:
   python3 classificar_lista.py --dry-run              mostra o que mudaria; não grava nem faz backup
   python3 classificar_lista.py                        faz backup verificado e grava numa transação só
@@ -44,6 +49,8 @@ ORIGEM = 'Lista WhatsApp'
 BUSCA_ORIGEM = 'WhatsApp'   # a busca de todos os itens da Lista WhatsApp antes da classificação
 MAPA = os.path.join(S.BASE, 'lista_whatsapp.json')
 CAMPOS_MAPA = ('item_id', 'cat', 'busca')
+# Abas que o migrar_categorias.py de 2026-11-03 tirava; o aviso de ordem olha estas, não as M.ORIGENS de hoje.
+ORIGENS_ANTIGAS = ('Black Friday', 'Casa Nova')
 LEMBRETE = ('Rode logo depois do migrar_categorias.py e ANTES de cadastrar qualquer número no disparo '
             '(o --restaurar do migrar_categorias.py devolve o banco inteiro).')
 
@@ -150,8 +157,8 @@ def imprimir_plano(mudar, ja_feitos, fora_do_mapa, desfazer):
 def avisar_ordem(con):
     """O destino é só um texto, mas no banco real a aba nova nasce do migrar_categorias.py."""
     antigas = [r[0] for r in con.execute(
-        f'SELECT DISTINCT cat FROM items WHERE cat IN ({",".join("?" * len(M.ORIGENS))}) ORDER BY cat',
-        M.ORIGENS)]
+        f'SELECT DISTINCT cat FROM items WHERE cat IN ({",".join("?" * len(ORIGENS_ANTIGAS))}) ORDER BY cat',
+        ORIGENS_ANTIGAS)]
     if antigas:
         abas = ', '.join(f'"{seguro(c)}"' for c in antigas)
         print(f'\nAVISO: o banco ainda tem as abas {abas}. Rode antes o migrar_categorias.py; '

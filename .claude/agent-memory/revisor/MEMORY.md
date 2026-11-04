@@ -6,4 +6,6 @@
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
 - [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
+- [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
 - [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
+- [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante

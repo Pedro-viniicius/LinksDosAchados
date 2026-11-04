@@ -44,6 +44,13 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - `disparo.HOSTS_FOTO` ganhou `down-br.img.susercontent.com` (vale para qualquer loja); a prévia devolve `loja` (front precisa de `esc`).
 - `coletar_shopee.py`: primeiro segredo do projeto (`ACHADINHOS_SHOPEE_SECRET`, só env, objeto `Segredo`); `URL_API` fixo; termo como variável GraphQL; `main` imprime só tipo/código; resposta até 2 MB; conferência do dono pelo `Location` (opener sem redirect) e `utm_source=an_<ID>`; `ID_AFILIADO_SHOPEE = '18328801339'` (não é segredo). API e conferência por openers sem redirect (`OPENER_API`, `OPENER_CONFERENCIA`); `credenciais()` faz `os.environ.pop` do Secret; README manda passar o Secret só no comando, sem `export`. Testes trocam `urlopen` e `OPENER_CONFERENCIA.open`; proxies mortos.
 
+**17 abas por nicho (plano abas-nichadas-e-coleta, etapas 1-10 revisadas em 2026-11-04, rodada 1)**
+- `servidor.sanear_precos` (`preco_antigo_plausivel`/`ler_preco`, Decimal, regex linear, medido 200k chars < 5 ms): o `upsert` e o PATCH com `data` zeram só `preco_antigo`/`desconto` (url intocada; rodada 2, 2026-11-04).
+- `migrar_categorias.py`: ORIGENS = 3 abas antigas; `SUBTEMAS_LISTA`, `DESTINO_SEM_BUSCA`; UPDATE por id com `cat=? AND busca IS ?`; limpeza de preço por id com `preco IS ? AND preco_antigo IS ?`; conferência total/projeção antes do COMMIT; erro sqlite só pelo tipo.
+- `coletar_shopee.py importar ARQUIVO`: sem `credenciais()`/env (teste com espião do `os.environ`); arquivo ≤ 2 MB, chaves exatas, 1-100 nós, cat/busca no `buscas.json`; `no_para_item` (eh_link_shopee, conferir_tipos); `conferir_dono` de cada `offerLink` distinto que passou no piso, com `pausa()` entre eles, antes de `criar_banco`/`gravar` (rodada 2, 2026-11-04; GET em `s.shopee.com.br`, sem redirect, sem credencial; `buscas` segue só no 1º, link da Open API); saída só contagens. `VENDAS_MINIMAS` 50.
+- Piso nas coletas: `coletar_amazon.passa_piso/eh_usado`, `coletar_ml.js passaPiso/ehUsado` (não mudou url/fetch/afiliar).
+- `backups/` inteiro está no `.gitignore` desde 2026-11-04.
+
 **Saídas no front (`index.html`)**
 - `innerHTML` com template string; `esc()` escapa `& < > "`. "Copiar imagem": `HOSTS_FOTO` na URL pedida e no `r.url` final.
 - Botão "Abrir": só `https:` via `new URL`, com `noopener,noreferrer` (S1 corrigido em 2026-11-03). POST `/api/items` exige `eh_url_de_loja` (https, netloc == host, `HOSTS_LOJAS` + `*.mercadolivre.com.br`); PATCH segue com `eh_link_afiliado`. `coletar_amazon.py` grava por `S.upsert()` direto, sem essa validação (ramo do WhatsApp grava `https?://\S+` do chat).

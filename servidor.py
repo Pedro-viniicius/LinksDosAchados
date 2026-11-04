@@ -21,6 +21,7 @@ derivado na leitura) também é importado sob demanda aqui.
 """
 import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
 from datetime import datetime
+from decimal import Decimal
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +39,10 @@ CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avali
 # Teto de caracteres de cada campo de data (S2 do disparo): o maior título real tem 223 e os demais
 # campos não passam de 73. Texto gigante no banco viraria mensagem gigante na análise do disparo.
 MAX_TITULO, MAX_CAMPO = 500, 200
+# Preço antigo de LIMITE_PRECO_ANTIGO vezes o preço ou mais não é desconto: é o seletor pegando outra coisa
+# (preço por litro ou por unidade). O upsert descarta o antigo e o desconto desse item (CA4 de
+# docs/produto/planos/abas-nichadas-e-coleta.md).
+LIMITE_PRECO_ANTIGO = 5
 # Quem pode falar com o servidor (docs/produto/planos/blindar-servidor.md). Comparação exata.
 HOSTS_LOCAIS = (f'localhost:{PORT}', f'127.0.0.1:{PORT}')          # cabeçalho Host (anti DNS rebinding)
 ORIGENS_LOCAIS = tuple('http://' + h for h in HOSTS_LOCAIS)          # o index.html aberto aqui
@@ -272,6 +277,52 @@ def itens_do_lote(body):
     return lista
 
 
+_PRECO_MILHAR = re.compile(r'\d{1,3}(?:\.\d{3})+')
+_PRECO_BR = re.compile(r'\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:,\d+)?|\d+\.\d{1,2}')
+
+
+def ler_preco(texto):
+    """Valor de um preço em texto ("R$ 1.299,90", "R$ 4.285", "R$ 69,90") como Decimal; None se vazio, ilegível ou <= 0.
+
+    Formato brasileiro: ponto separa milhar e vírgula separa os centavos. Um ponto seguido de 1 ou 2 dígitos
+    (sem vírgula) vale como decimal. Faixa ("R$ 10 - R$ 20") e qualquer outra forma dão None.
+    """
+    if texto is None or isinstance(texto, bool):
+        return None
+    t = re.sub(r'R\$|\s', '', str(texto))
+    if not _PRECO_BR.fullmatch(t):
+        return None
+    if ',' in t:
+        t = t.replace('.', '').replace(',', '.')
+    elif _PRECO_MILHAR.fullmatch(t):
+        t = t.replace('.', '')
+    v = Decimal(t)
+    return v if v > 0 else None
+
+
+def preco_antigo_plausivel(preco, antigo):
+    """False só quando os dois preços são legíveis e o antigo é LIMITE_PRECO_ANTIGO vezes o preço ou mais.
+
+    Preço ou antigo vazio ou ilegível, ou antigo menor que o preço: plausível (nada a mexer).
+    Só olha os dois valores; quem chama decide o que zerar (sanear_precos zera preco_antigo e desconto).
+    """
+    p, a = ler_preco(preco), ler_preco(antigo)
+    if p is None or a is None:
+        return True
+    return a < p * LIMITE_PRECO_ANTIGO
+
+
+def sanear_precos(vals):
+    """Zera preco_antigo e desconto de vals (dict com os CAMPOS) quando o antigo é implausível. Devolve o mesmo dict.
+
+    Vale para todo caminho que grava os dados de um item (upsert das coletas e PATCH com data do site).
+    Só mexe nesses dois campos: a url e o resto seguem iguais.
+    """
+    if not preco_antigo_plausivel(vals.get('preco'), vals.get('preco_antigo')):
+        vals['preco_antigo'] = vals['desconto'] = ''
+    return vals
+
+
 def upsert(con, it):
     """Insere ou atualiza um item. Mantém a categoria original se já existir."""
     loja = it.get('loja') or 'amazon'
@@ -281,7 +332,7 @@ def upsert(con, it):
         raise ValueError('url da Shopee precisa ser link de afiliado')
     item_id = it.get('item_id') or it['url']
     d = it.get('data') or {}
-    vals = {c: (d.get(c) or '') for c in CAMPOS}
+    vals = sanear_precos({c: (d.get(c) or '') for c in CAMPOS})
     tem = 1 if vals['titulo'] else 0
     cur = con.execute('SELECT id, tem_dados FROM items WHERE loja=? AND item_id=?', (loja, item_id)).fetchone()
     if not cur:
@@ -365,7 +416,8 @@ def extrair_produto_amazon(h):
         'vendas': _grab(r'id="social-proofing-faceout-title-tk_bought"[^>]*>.*?<span[^>]*>(.*?)</span>', h),
         'cupom': _grab(r'id="couponText[^"]*"[^>]*>(.*?)</(?:span|label)>', h),
         'frete': 'Frete GRÁTIS' if 'Frete GRÁTIS' in h else '',
-        'imagem': _grab(r'id="landingImage"[^>]*src="([^"]*)"', h),
+        # a tag <img> que tem id="landingImage", com o src antes ou depois do id (a Amazon põe antes)
+        'imagem': _grab(r'<img(?=[^>]*\sid="landingImage")[^>]*\ssrc="([^"]*)"', h),
     }
 
 
@@ -755,9 +807,10 @@ class Handler(SimpleHTTPRequestHandler):
                 con.execute(f'UPDATE items SET {campo}=?, atualizado_em=? WHERE id=?', (body[campo], agora(), iid))
         if body.get('data'):
             d = body['data']
+            vals = sanear_precos({c: (d.get(c) or '') for c in CAMPOS})   # mesma regra do preço antigo do upsert
             sets = ', '.join(f'{c}=?' for c in CAMPOS)
             con.execute(f'UPDATE items SET {sets}, tem_dados=1, atualizado_em=? WHERE id=?',
-                        [d.get(c) or '' for c in CAMPOS] + [agora(), iid])
+                        [vals[c] for c in CAMPOS] + [agora(), iid])
         con.commit()
         import genero
         r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()

@@ -8,3 +8,4 @@
 - [API v1 de ofertas (Achadinho Turbo)](testes-api-ofertas-v1.md) — test_api_ofertas_qa.py, cópia do banco real em mode=ro, mutantes, armadilhas de laço/pkill
 - [Front do Público/gênero (genero-qa, genero-integracao)](testes-genero-front.md) — rodar, armadilhas (</script> em string, cssRules), teclado via CDP, bugs baixos abertos, mutantes
 - [Gênero/público (backend)](testes-genero-backend.md) — test_genero_qa.py: migração na cópia real, paridade 3 consumidores, código antigo por commit, mutantes
+- [Abas por nicho (17 abas, etapas 1-10)](testes-abas-nichadas.md) — abas-qa, Q1/Q2 abertos, fatos da cópia migrada, mutantes e lacunas de usado

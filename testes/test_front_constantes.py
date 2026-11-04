@@ -134,6 +134,31 @@ class ConstantesDoFront(unittest.TestCase):
         respostas = js_json('ABAS.map(abaTemGenero)', 'const ABAS = ' + json.dumps(abas + ['', 'perfumes e perfumaria']) + ';', codigo)
         self.assertEqual(respostas, [a in G.ABAS_COM_GENERO for a in abas] + [False, False])
 
+    def test_ordem_das_abas_igual_as_chaves_do_buscas_json(self):
+        """Etapa 8 do plano abas-nichadas-e-coleta (CA6): a ordem das 17 abas do front é a do buscas.json,
+        nome por nome. Aba renomeada ou reordenada num lado só reprova aqui (o servidor não serve o buscas.json)."""
+        with open(os.path.join(RAIZ, 'buscas.json'), encoding='utf-8') as f:
+            chaves = list(json.load(f))
+        ordem = js_json('ORDEM_ABAS', linha('ORDEM_ABAS'))
+        self.assertEqual(len(chaves), 17)
+        self.assertEqual(ordem, chaves)
+        self.assertEqual(len(set(ordem)), len(ordem), 'sem aba repetida')
+
+    def test_grupos_das_abas_cobrem_as_17_em_faixas_contiguas(self):
+        """GRUPOS_ABAS diz quantas abas tem cada grupo, na ordem de TXT_ABAS.grupos (4 faixas da spec: 4, 5, 4 e 4)."""
+        tamanhos = js_json('GRUPOS_ABAS', linha('GRUPOS_ABAS'))
+        ordem = js_json('ORDEM_ABAS', linha('ORDEM_ABAS'))
+        self.assertEqual(tamanhos, [4, 5, 4, 4])
+        self.assertEqual(sum(tamanhos), len(ordem), 'toda aba está em algum grupo')
+        m = re.search(r"^  grupos:\[(.*?)\], outras:'(.*?)',", HTML, re.M)
+        self.assertTrue(m, 'index.html sem a linha "grupos:[...], outras:..." em TXT_ABAS')
+        rotulos = js_json('G', 'const G = [' + m.group(1) + '];')
+        self.assertEqual(len(rotulos), len(tamanhos), 'um rótulo para cada grupo')
+        self.assertEqual(rotulos, ['Tecnologia', 'Casa', 'Beleza e consumo', 'Família e estilo'])
+        self.assertEqual(m.group(2), 'Outras')
+        for a in G.ABAS_COM_GENERO:
+            self.assertIn(a, ordem, 'a aba com público está entre as 17')
+
 
 if __name__ == '__main__':
     unittest.main()

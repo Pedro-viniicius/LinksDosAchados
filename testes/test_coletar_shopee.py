@@ -209,12 +209,12 @@ class TestMapeamento(unittest.TestCase):
                      'vendas': '1.234 vendidos', 'frete': '', 'cupom': '', 'imagem': FOTO}})
 
     def test_numeros_como_texto_ou_numero(self):
-        it = C.no_para_item(no(itemId='9', shopId='8', priceMin=12, ratingStar=5, sales='1', priceDiscountRate=0), 't', CAT)
+        it = C.no_para_item(no(itemId='9', shopId='8', priceMin=12, ratingStar=5, sales='50', priceDiscountRate=0), 't', CAT)
         self.assertEqual(it['item_id'], '8.9')
         self.assertEqual(it['data']['preco'], 'R$ 12,00')
         self.assertEqual(it['data']['desconto'], '')
         self.assertEqual(it['data']['avaliacao'], '5.0 de 5 estrelas')
-        self.assertEqual(it['data']['vendas'], '1 vendido')
+        self.assertEqual(it['data']['vendas'], '50 vendidos')
 
     def test_preco_invalido_fica_vazio(self):
         for p in (None, '', 'abc', -3, 0, float('nan'), True, '1e9'):
@@ -254,7 +254,8 @@ class TestMapeamento(unittest.TestCase):
 
 class TestPiso(unittest.TestCase):
     def test_nota_minima_e_vendas(self):
-        casos = [(4.5, 1, True), ('4.5', '1', True), (4.49, 999, False), (5, 0, False),
+        casos = [(4.5, 50, True), ('4.5', '50', True), (4.5, 49, False), (5, '49', False), (4.5, 49.9, False),
+                 (4.49, 999, False), (5, 0, False), (5, 1, False),
                  (None, 10, False), (4.9, None, False), ('', 10, False), (True, 10, False), (4.9, True, False),
                  (float('nan'), 10, False), ('4,8', 10, False)]
         for nota, vendas, entra in casos:
@@ -263,7 +264,39 @@ class TestPiso(unittest.TestCase):
                 self.assertEqual(it is not None, entra)
 
     def test_valores_do_dono(self):
-        self.assertEqual((C.NOTA_MINIMA, C.VENDAS_MINIMAS), (4.5, 1))
+        """P1 de 2026-11-04 (abas-nichadas-e-coleta.md): o piso de vendas subiu de 1 para 50."""
+        self.assertEqual((C.NOTA_MINIMA, C.VENDAS_MINIMAS), (4.5, 50))
+
+
+USADOS = ('Perfume Usado', 'iPhone 13 128GB Seminovo', 'Dell Latitude Recondicionado', 'Galaxy S21 Renovado',
+          'Fritadeira Vitrine', 'Fone Open Box', 'Echo Dot REFURBISHED', 'Câmeras usadas', 'Kit SEMINOVA',
+          'Notebook (Seminovo)', 'open  box', unicodedata.normalize('NFD', 'Perfume Usáda'))
+
+
+class TestUsado(unittest.TestCase):
+    """Decisão 4 / ADR do plano abas-nichadas-e-coleta: a recusa de usado fica no no_para_item, como na Amazon e no ML."""
+
+    def test_titulo_de_usado_com_nota_e_vendas_otimas_e_descartado(self):
+        for t in USADOS:
+            with self.subTest(t=t):
+                self.assertTrue(C.eh_usado(t))
+                self.assertIsNone(C.no_para_item(no(productName=t, ratingStar=5, sales=99999), 't', CAT))
+
+    def test_titulos_normais_passam(self):
+        for t in ('Perfume Floral 100ml', 'Kit Renovador de Couro', 'Fone abusado resistente', 'Desusado',
+                  'Panela Usadora', 'Perfume Vitrines', 'Body splash renovação'):
+            with self.subTest(t=t):
+                self.assertFalse(C.eh_usado(t))
+                self.assertIsNotNone(C.no_para_item(no(productName=t), 't', CAT))
+
+    def test_mesma_lista_da_amazon_e_do_ml(self):
+        """A regex é cópia local: confere que as três coletas recusam exatamente os mesmos títulos."""
+        with open(os.path.join(RAIZ, 'coletar_amazon.py'), encoding='utf-8') as f:
+            amazon = re.search(r"^RE_USADO = re\.compile\(r'(.+)'\)$", f.read(), re.M).group(1)
+        with open(os.path.join(RAIZ, 'coletar_ml.js'), encoding='utf-8') as f:
+            ml = re.search(r'const RX_USADO = /(.+)/;$', f.read(), re.M).group(1)
+        self.assertEqual(C.RE_USADO.pattern, amazon)
+        self.assertEqual(C.RE_USADO.pattern, ml)
 
 
 class TestLinkForaDoPadrao(unittest.TestCase):
@@ -409,6 +442,20 @@ class TestColeta(Base):
                                    ('Kit perfume', 1), ('Kit perfume', 2), ('Kit perfume', 3)])
         self.assertEqual(len(self.feitos()), 9)
         self.assertEqual(len(set(self.feitos())), 9)
+
+    def test_usado_com_nota_e_vendas_otimas_nao_e_gravado(self):
+        api = ApiFalsa(resposta([no(itemId=1, productName='Perfume Importado Seminovo', ratingStar=5, sales=99999,
+                                    offerLink='https://s.shopee.com.br/Usado1'),
+                                 no(itemId=2, offerLink='https://s.shopee.com.br/Novo2')]),
+                       resposta([no(itemId=3, productName='Kit open box', ratingStar=5, sales=99999)]),
+                       resposta([]))
+        codigo, out, err = self.rodar(['buscas', '--cat', CAT], api=api)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual([i['item_id'] for i in self.itens()], ['112233.2'])
+        self.assertEqual(self.conf.links, ['https://s.shopee.com.br/Novo2'], 'o link do usado nem é conferido')
+        # o termo só com usado não entra no piso: fica para a próxima rodada
+        self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado'])
+        self.assertIn('Body splash (relevancia): 1 achados, nenhum no piso', out)
 
     def test_so_termos_da_aba(self):
         api = ApiFalsa(resposta([no()]))
@@ -716,6 +763,362 @@ class TestSegredo(Base):
                 self.assertNotIn(SECRET, r.stdout + r.stderr)
                 self.assertNotIn('Traceback', r.stderr)
         self.assertFalse(os.path.exists(C.FEITOS))
+
+
+MARCA = 'CONTEUDO-DO-ARQUIVO-4e1b'   # vai no arquivo do importar: nunca pode aparecer na saída
+TERMO = 'Body splash'
+
+
+class AmbienteEspiao(dict):
+    """Troca o os.environ e anota toda chave lida (get, pop, [] e in)."""
+    def __init__(self, base):
+        super().__init__(base)
+        self.lidas = []
+
+    def __getitem__(self, k):
+        self.lidas.append(k)
+        return super().__getitem__(k)
+
+    def get(self, k, padrao=None):
+        self.lidas.append(k)
+        return super().get(k, padrao)
+
+    def pop(self, k, *padrao):
+        self.lidas.append(k)
+        return super().pop(k, *padrao)
+
+    def __contains__(self, k):
+        self.lidas.append(k)
+        return super().__contains__(k)
+
+
+class ConferenciaEspia(ConferenciaFalsa):
+    """Anota se o banco já existia no momento da conferência do dono."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.banco_existia = []
+
+    def __call__(self, req, timeout=None):
+        self.banco_existia.append(os.path.exists(S.DB))
+        return super().__call__(req, timeout)
+
+
+class ConferenciaPorLink(ConferenciaFalsa):
+    """Location por link (o que não está no mapa vai para DESTINO_BOM); anota cada link em `eventos`, se dado."""
+    def __init__(self, destinos, eventos=None):
+        super().__init__()
+        self.destinos, self.eventos = destinos, eventos
+
+    def __call__(self, req, timeout=None):
+        if self.eventos is not None:
+            self.eventos.append(req.full_url)
+        self.location = self.destinos.get(req.full_url, DESTINO_BOM)
+        return super().__call__(req, timeout)
+
+
+class TestImportar(Base):
+    """CA9 (docs/produto/planos/abas-nichadas-e-coleta.md, etapa 7): `importar ARQUIVO` sem credencial."""
+
+    def lote(self, nos=None, cat=CAT, busca=TERMO):
+        return {'cat': cat, 'busca': busca, 'nos': [no()] if nos is None else nos}
+
+    def arquivo(self, dados=None, bruto=None):
+        if bruto is None:
+            bruto = json.dumps(self.lote() if dados is None else dados, ensure_ascii=False).encode('utf-8')
+        pasta = tempfile.mkdtemp(dir=TMP)
+        caminho = os.path.join(pasta, 'lote.json')
+        with open(caminho, 'wb') as f:
+            f.write(bruto)
+        return caminho
+
+    def importar(self, dados=None, bruto=None, conf=None, env=None, caminho=None):
+        """Roda `importar` sem credencial no ambiente; confere que a API não é chamada e que nada do arquivo sai."""
+        caminho = caminho or self.arquivo(dados, bruto)
+        api = ApiFalsa()
+        codigo, out, err = self.rodar(['importar', caminho], api=api, conf=conf, env={} if env is None else env)
+        self.assertEqual(api.pedidos, [], 'o importar nunca chama a Open API')
+        for proibido in (MARCA, LINK, CAT, TERMO, 's.shopee.com.br', FOTO):
+            self.assertNotIn(proibido, out + err)
+        return codigo, out, err
+
+    def nada_gravado(self):
+        self.assertFalse(os.path.exists(S.DB), 'o banco nem é criado')
+        self.assertEqual(self.feitos(), [])
+
+    def test_grava_so_o_piso_confere_o_dono_antes_e_marca_vendidos(self):
+        nos = [no(itemId=1, sales=50, productName=MARCA + ' A', offerLink='https://s.shopee.com.br/Imp1'),
+               no(itemId=2, sales=49, productName=MARCA), no(itemId=3, ratingStar='4.49'),
+               no(itemId=4, offerLink='https://shopee.com.br/product/1/4'), no(itemId=6, offerLink=f'https://s.shopee.com.br/{MARCA}'),
+               no(itemId=5, sales='1234', offerLink='https://s.shopee.com.br/Imp5')]
+        conf = ConferenciaEspia()
+        codigo, out, err = self.importar(self.lote(nos), conf=conf)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual([(i['loja'], i['item_id'], i['cat'], i['busca'], i['url']) for i in self.itens()],
+                         [('shopee', '112233.1', CAT, TERMO, 'https://s.shopee.com.br/Imp1'),
+                          ('shopee', '112233.5', CAT, TERMO, 'https://s.shopee.com.br/Imp5')])
+        self.assertEqual(self.itens()[1]['vendas'], '1.234 vendidos')
+        self.assertEqual(conf.links, ['https://s.shopee.com.br/Imp1', 'https://s.shopee.com.br/Imp5'],
+                         'S1: confere o dono de cada link que passou no piso, na ordem do arquivo')
+        self.assertEqual(conf.banco_existia, [False, False], 'as conferências vêm antes de criar o banco e de gravar')
+        self.assertEqual(self.feitos(), [f'vendidos|{TERMO}'])
+        self.assertIn('importar: 6 no arquivo, 2 no piso, 2 novos, 0 atualizados.', out)
+        self.assertIn('TOTAL da Shopee no banco: 2', out)
+
+    def test_nao_chama_credenciais_nem_le_o_ambiente(self):
+        caminho = self.arquivo()
+        espiao = AmbienteEspiao(dict(os.environ, **ENV))
+        with mock.patch.object(C, 'credenciais', side_effect=AssertionError('credenciais() no importar')), \
+                mock.patch.object(os, 'environ', espiao):
+            codigo, _, err = self.importar(caminho=caminho, env=ENV)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.itens()), 1)
+        self.assertEqual([k for k in espiao.lidas if k.startswith('ACHADINHOS_SHOPEE')], [])
+        # o Secret de um terminal descuidado fica onde estava: o importar não faz o pop do credenciais()
+        with mock.patch.dict(os.environ, ENV), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(C.OPENER_CONFERENCIA, 'open', ConferenciaFalsa()):
+            self.assertEqual(C.main(['importar', caminho]), 0)
+            self.assertEqual(os.environ.get('ACHADINHOS_SHOPEE_SECRET'), SECRET)
+        # o espião enxerga a leitura quando ela existe (o modo buscas lê e tira o Secret)
+        espiao = AmbienteEspiao(dict(os.environ, **ENV))
+        with mock.patch.object(os, 'environ', espiao):
+            self.rodar(['buscas', '--cat', CAT], api=ApiFalsa(resposta([])))
+        self.assertIn('ACHADINHOS_SHOPEE_SECRET', espiao.lidas)
+
+    def test_conferir_e_buscas_continuam_exigindo_credencial(self):
+        self.assertEqual(self.importar()[0], 0)
+        for argv in (['conferir'], ['buscas', '--cat', CAT]):
+            with self.subTest(argv=argv):
+                codigo, _, err = self.rodar(argv, env={})
+                self.assertEqual(codigo, 2)
+                self.assertIn('ACHADINHOS_SHOPEE_SECRET', err)
+                self.assertEqual(self.api.pedidos, [])
+
+    def test_teto_de_bytes(self):
+        """JSON válido e no formato: no teto exato entra; um byte a mais é recusado sem gravar nada."""
+        base = json.dumps(self.lote()).encode()
+        codigo, _, err = self.importar(bruto=base + b' ' * (C.MAX_RESPOSTA - len(base)))
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.itens()), 1)
+        self.setUp()
+        conf = ConferenciaFalsa()
+        codigo, _, err = self.importar(bruto=base + b' ' * (C.MAX_RESPOSTA + 1 - len(base)), conf=conf)
+        self.assertEqual(codigo, 1)
+        self.assertIn('fora do formato', err)
+        self.assertEqual(conf.links, [])
+        self.nada_gravado()
+
+    def test_arquivo_fora_do_formato_sai_com_1_sem_gravar(self):
+        lote = self.lote()
+        brutos = [b'', b'nao e json', b'\xff\xfe{', b'[' * 100000, b'[]', b'null', b'"x"', b'1',
+                  ('{"cat": "%s", "busca": "%s", "nos": [%s]}' % (CAT, TERMO, '9' * 5000)).encode()]
+        dicts = [{}, {'cat': CAT, 'busca': TERMO}, dict(lote, extra=MARCA), dict(lote, cat=5), dict(lote, cat=None),
+                 dict(lote, cat=''), dict(lote, cat=[CAT]), dict(lote, busca=7), dict(lote, busca=''),
+                 dict(lote, busca=MARCA * 10), dict(lote, nos={}), dict(lote, nos=MARCA), dict(lote, nos=[]),
+                 dict(lote, nos=None), dict(lote, nos=[no(), None]), dict(lote, nos=[no(), [no()]]),
+                 dict(lote, nos=[no(), MARCA]), dict(lote, nos=[no()] * (C.MAX_NOS_ARQUIVO + 1))]
+        for caso in brutos + dicts:
+            with self.subTest(caso=repr(caso)[:60]):
+                self.setUp()
+                conf = ConferenciaFalsa()
+                if isinstance(caso, bytes):
+                    codigo, _, err = self.importar(bruto=caso, conf=conf)
+                else:
+                    codigo, _, err = self.importar(caso, conf=conf)
+                self.assertEqual(codigo, 1, err)
+                self.assertIn('fora do formato', err)
+                self.assertEqual(conf.links, [])
+                self.nada_gravado()
+
+    def test_lote_de_100_nos_entra(self):
+        nos = [no(itemId=i, offerLink=f'https://s.shopee.com.br/Cem{i}') for i in range(C.MAX_NOS_ARQUIVO)]
+        codigo, out, err = self.importar(self.lote(nos))
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.itens()), C.MAX_NOS_ARQUIVO)
+        self.assertEqual(C.MAX_NOS_ARQUIVO, 100)
+
+    def test_aba_e_termo_conferidos_no_buscas_json(self):
+        with open(self.buscas, 'w', encoding='utf-8') as f:
+            json.dump({CAT: [TERMO, 'Kit perfume', 'a|b', 'linha\nnova'], 'Outra': ['x']}, f)
+        for cat, busca in ((MARCA, TERMO), ('Outra', TERMO), (CAT, 'x'), (CAT, TERMO.lower()), (CAT.lower(), TERMO),
+                           (CAT, TERMO + ' '), (' ' + CAT, TERMO), (CAT, MARCA), (CAT, 'a|b'), (CAT, 'linha\nnova')):
+            with self.subTest(cat=cat, busca=busca):
+                self.setUp()
+                with open(self.buscas, 'w', encoding='utf-8') as f:
+                    json.dump({CAT: [TERMO, 'Kit perfume', 'a|b', 'linha\nnova'], 'Outra': ['x']}, f)
+                conf = ConferenciaFalsa()
+                codigo, _, err = self.importar(self.lote(cat=cat, busca=busca), conf=conf)
+                self.assertEqual(codigo, 2)
+                self.assertIn('não está no buscas.json', err)
+                self.assertEqual(conf.links, [])
+                self.nada_gravado()
+
+    def test_aba_e_termo_em_nfd_gravam_em_nfc(self):
+        aba, termo = 'Casa e Decoração', 'Luminária'
+        with open(self.buscas, 'w', encoding='utf-8') as f:
+            json.dump({aba: [termo]}, f, ensure_ascii=False)
+        lote = self.lote(cat=unicodedata.normalize('NFD', aba), busca=unicodedata.normalize('NFD', termo))
+        self.assertNotEqual(lote['cat'], aba)
+        codigo, _, err = self.importar(lote)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual([(i['cat'], i['busca']) for i in self.itens()], [(aba, termo)])
+        self.assertEqual(self.feitos(), [f'vendidos|{termo}'])
+
+    def test_arquivo_inexistente_ou_que_nao_e_arquivo_sai_com_2(self):
+        for caminho in (os.path.join(TMP, 'nao-existe.json'), TMP, os.path.join(TMP, MARCA)):
+            with self.subTest(caminho=caminho):
+                codigo, _, err = self.importar(caminho=caminho)
+                self.assertEqual(codigo, 2)
+                self.assertIn('não existe ou não pôde ser lido', err)
+                self.nada_gravado()
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'só em sistema com FIFO')
+    def test_fifo_e_recusado_sem_travar(self):
+        """Um FIFO no lugar do arquivo não é aberto (o open ficaria esperando quem escreve)."""
+        fifo = os.path.join(tempfile.mkdtemp(dir=TMP), 'lote.json')
+        os.mkfifo(fifo)
+        resultado = []
+
+        def ler():
+            try:
+                C.ler_arquivo(fifo)
+            except C.ArquivoAusente:
+                resultado.append('ausente')
+        t = threading.Thread(target=ler, daemon=True)
+        t.start()
+        t.join(5)
+        if t.is_alive():   # destrava a thread presa no open antes de reprovar
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        self.assertEqual(resultado, ['ausente'])
+
+    def test_dono_errado_ou_link_que_nao_redireciona_nao_grava(self):
+        for conf in (ConferenciaFalsa(DESTINO_RUIM), ConferenciaFalsa(location=None), ConferenciaFalsa(codigo=200),
+                     ConferenciaFalsa(codigo=404), ConferenciaFalsa(f'https://evil.com/?utm_source=an_{ID}')):
+            with self.subTest(codigo=conf.codigo, location=conf.location):
+                self.setUp()
+                codigo, _, err = self.importar(conf=conf)
+                self.assertEqual(codigo, 1)
+                self.assertIn('Nada foi gravado', err)
+                self.assertEqual(conf.links, [LINK])
+                self.nada_gravado()
+
+    def test_usado_com_nota_e_vendas_otimas_nao_e_gravado(self):
+        nos = [no(itemId=1, productName='Perfume Usado ' + MARCA, ratingStar=5, sales=99999,
+                  offerLink='https://s.shopee.com.br/Usado1'),
+               no(itemId=2, offerLink='https://s.shopee.com.br/Novo2')]
+        conf = ConferenciaFalsa()
+        codigo, out, err = self.importar(self.lote(nos), conf=conf)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual([i['item_id'] for i in self.itens()], ['112233.2'])
+        self.assertEqual(conf.links, ['https://s.shopee.com.br/Novo2'], 'o link do usado nem é conferido')
+        self.assertIn('importar: 2 no arquivo, 1 no piso, 1 novos', out)
+        # só usado no arquivo: nada no piso, nada gravado e o termo fica para a próxima rodada
+        self.setUp()
+        conf = ConferenciaFalsa()
+        codigo, out, err = self.importar(self.lote([nos[0]]), conf=conf)
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('1 no arquivo, nenhum no piso', out)
+        self.assertEqual(conf.links, [])
+        self.nada_gravado()
+
+    def test_segundo_link_de_outro_afiliado_nao_grava_nada(self):
+        """S1: o dono é conferido em todos os links distintos do arquivo antes do primeiro gravar."""
+        outro = 'https://s.shopee.com.br/Outro2'
+        for ruim in (DESTINO_RUIM, None):
+            with self.subTest(destino=ruim):
+                self.setUp()
+                conf = ConferenciaPorLink({outro: ruim})
+                nos = [no(itemId=1), no(itemId=2, offerLink=outro), no(itemId=3, offerLink='https://s.shopee.com.br/Bom3')]
+                codigo, _, err = self.importar(self.lote(nos), conf=conf)
+                self.assertEqual(codigo, 1)
+                self.assertIn('Nada foi gravado', err)
+                self.assertEqual(conf.links, [LINK, outro], 'para na primeira falha')
+                self.nada_gravado()
+
+    def test_confere_cada_link_distinto_uma_vez_com_pausa_entre_eles(self):
+        eventos = []
+        conf = ConferenciaPorLink({}, eventos)
+        nos = [no(itemId=1), no(itemId=2, offerLink='https://s.shopee.com.br/Dois2'), no(itemId=3), no(itemId=4)]
+        with mock.patch.object(C, 'pausa', lambda *a, **k: eventos.append('pausa')):
+            codigo, out, err = self.importar(self.lote(nos), conf=conf)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(eventos, [LINK, 'pausa', 'https://s.shopee.com.br/Dois2'])
+        self.assertEqual(len(self.itens()), 4)
+        self.assertIn('4 no piso, 4 novos', out)
+
+    def test_nenhum_no_no_piso_nao_marca_nem_confere(self):
+        conf = ConferenciaFalsa()
+        nos = [no(itemId=1, sales=49), no(itemId=2, ratingStar=4.4), no(itemId=3, offerLink='https://meli.la/AbC1')]
+        codigo, out, err = self.importar(self.lote(nos), conf=conf)
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('3 no arquivo, nenhum no piso', out)
+        self.assertEqual(conf.links, [])
+        self.nada_gravado()
+
+    def test_progresso_compartilhado_com_a_open_api_e_sem_linha_repetida(self):
+        self.assertEqual(self.importar()[0], 0)
+        # de novo, com outro link para o mesmo item: atualiza os dados, preserva o link e não repete a marca
+        lote = self.lote([no(offerLink='https://s.shopee.com.br/Outro1', productName='Nome novo')])
+        codigo, out, _ = self.importar(lote)
+        self.assertEqual(codigo, 0)
+        self.assertIn('1 no piso, 0 novos, 1 atualizados', out)
+        self.assertEqual([(i['url'], i['titulo']) for i in self.itens()], [(LINK, 'Nome novo')])
+        self.assertEqual(self.feitos(), [f'vendidos|{TERMO}'])
+        # a Open API na ordem vendidos pula o termo já importado
+        api = ApiFalsa(resposta([]), resposta([]), resposta([]))
+        codigo, _, _ = self.rodar(['buscas', '--cat', CAT, '--ordens', 'vendidos'], api=api)
+        self.assertEqual(codigo, 0)
+        self.assertEqual([v['keyword'] for v in api.variaveis()], ['Perfume feminino importado', 'Kit perfume'])
+
+    def test_excecao_mostra_so_o_tipo(self):
+        def explode(*a, **k):
+            raise OSError(f'{MARCA} {LINK}')
+        codigo, _, err = self.importar(conf=explode)
+        self.assertEqual(codigo, 1)
+        self.assertIn('ERRO: OSError', err)
+        self.nada_gravado()
+        with mock.patch.object(C.S, 'upsert', side_effect=ValueError(f'{MARCA} {LINK}')):
+            codigo, _, err = self.importar()
+        self.assertEqual(codigo, 1)
+        self.assertIn('ERRO: ValueError', err)
+        self.assertEqual(self.feitos(), [])
+
+    def test_id_vazio_sai_com_2_sem_conferir(self):
+        conf = ConferenciaFalsa()
+        with mock.patch.object(C, 'ID_AFILIADO_SHOPEE', ''):
+            codigo, _, err = self.importar(conf=conf)
+        self.assertEqual(codigo, 2)
+        self.assertIn('preencha ID_AFILIADO_SHOPEE', err)
+        self.assertEqual(conf.links, [])
+        self.nada_gravado()
+
+    def test_argumentos(self):
+        for argv in (['importar'], ['importar', 'a.json', 'b.json'], ['importar', '--cat', CAT]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.rodar(argv, env={})[0], 2)
+        self.nada_gravado()
+
+    def test_subprocesso_com_o_secret_no_ambiente(self):
+        """Script de verdade, sem rede: grava, não imprime o arquivo nem o Secret e deixa o Secret no ambiente."""
+        caminho = self.arquivo(self.lote([no(productName=MARCA)]))
+        prologo = ('import os, sys, io, http.client, urllib.error, urllib.request; sys.path.insert(0, %r)\n'
+                   'import coletar_shopee as C\n'
+                   'def morto(*a, **k): raise OSError("rede")\n'
+                   'def conf(req, timeout=None):\n'
+                   '    h = http.client.HTTPMessage(); h["Location"] = %r\n'
+                   '    raise urllib.error.HTTPError(req.full_url, 302, "x", h, io.BytesIO(b""))\n'
+                   'urllib.request.urlopen = morto; C.OPENER_API.open = morto; C.OPENER_CONFERENCIA.open = conf\n'
+                   'C.ID_AFILIADO_SHOPEE = %r; C.BUSCAS = %r\n'
+                   'sys.argv[1:] = ["importar", %r]\n'
+                   'r = C.main()\n'
+                   'assert os.environ.get("ACHADINHOS_SHOPEE_SECRET"), "o Secret sumiu do ambiente"\n'
+                   'sys.exit(r)\n') % (RAIZ, DESTINO_BOM, ID, self.buscas, caminho)
+        r = subprocess.run([sys.executable, '-c', prologo], env=dict(os.environ, **ENV), cwd=TMP,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for proibido in (SECRET, MARCA, LINK, 'Traceback'):
+            self.assertNotIn(proibido, r.stdout + r.stderr)
+        self.assertEqual([i['titulo'] for i in self.itens()], [MARCA])
+        self.assertEqual(self.feitos(), [f'vendidos|{TERMO}'])
 
 
 class TestIdDoDono(unittest.TestCase):

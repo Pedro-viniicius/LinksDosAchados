@@ -516,14 +516,31 @@ teste('M3: excluir o último item da lista mostra "Esta categoria ainda não tem
   igual(cartoes().length, PAGINA);
 });
 
-teste('M3: excluir o único item da aba ativa troca para a aba que sobrou e o controle "Público" some se ela não tem gênero', async () => {
+teste('M3 (CA-D5): excluir o único item da aba ativa NÃO troca de aba (as 17 são fixas): a aba fica ativa, com contagem 0 e a frase de aba vazia, e o item da outra categoria segue acessível', async () => {
   montar([item(PERF, 'feminino'), item(CASA, 'sem')], PERF);
   igual(!!q('#publicoBox fieldset'), true);
   cartoes()[0].querySelector('.del').click();
   await esperar(() => DELETES.length === 1 && W.eval('items.length') === 1);
+  igual(W.eval('activeCat'), PERF, 'a aba ativa continua sendo a da perfumaria');
+  igual(aba(PERF).classList.contains('active'), true);
+  igual(aba(PERF).querySelector('.muted').textContent, '0');
+  igual(cartoes().length, 0);
+  igual(txt(q('#estadoLista .vazio')), 'Esta categoria ainda não tem ofertas. Use Adicionar links para incluir.');
+  // "Casa e Decoração" não é uma das 17: o item dela vai para "Outras" e continua alcançável
+  afirma(aba(CASA), 'a aba legada sumiu junto com o item da perfumaria');
+  igual(qa('#tabs .tabs-grupo').length, 5, '4 grupos + "Outras"');
+});
+
+teste('M3 (CA-D6/CA-D8): excluir o único item de uma aba de "Outras" que estava ativa leva para "Celulares e Informática", o grupo "Outras" some e o controle "Público" não aparece', async () => {
+  montar([item(CASA, 'sem')], CASA);
   igual(W.eval('activeCat'), CASA);
+  igual(qa('#tabs .tabs-grupo').length, 5);
+  cartoes()[0].querySelector('.del').click();
+  await esperar(() => DELETES.length === 1 && W.eval('items.length') === 0);
+  igual(W.eval('activeCat'), 'Celulares e Informática');
+  igual(qa('#tabs .tabs-grupo').length, 4, 'sem órfão, o grupo "Outras" não existe');
+  igual(aba(CASA), undefined);
   igual(q('#publicoBox fieldset'), null);
-  igual(cartoes().length, 1);
   igual(qa('#grid .selo-genero').length, 0);
 });
 
@@ -633,21 +650,29 @@ teste('CA-V13 (M1): em 320 px o cabeçalho rola junto (não é sticky), tem até
   igual(W.getComputedStyle(h).position, 'static', 'até 600 px não é');
 });
 
-teste('CA-V20 (M6): em 320 px as abas formam 2 colunas de 44 px; a partir de 601 px voltam a ser pílulas em linha', async () => {
+teste('CA-V20 (M6, redesenhado em CA-D3): em 320 px as faixas de abas somem e entra o seletor "Categoria" de 44 px com rótulo; a partir de 601 px é o contrário; nunca os dois nem rolagem horizontal', async () => {
   montar(cenario());
-  await largura(320);
-  const t = q('#tabs');
-  igual(W.getComputedStyle(t).display, 'grid');
-  const cols = W.getComputedStyle(t).gridTemplateColumns.split(' ');
-  igual(cols.length, 2, 'colunas: ' + cols);
-  igual(cols[0], cols[1], 'colunas iguais');
-  for (const b of qa('#tabs .tab')) afirma(b.getBoundingClientRect().height >= 44, 'aba com ' + b.getBoundingClientRect().height + ' px de altura');
-  const tops = [...new Set(qa('#tabs .tab').map(b => Math.round(b.getBoundingClientRect().top)))];
-  igual(tops.length, 2, '3 abas em 2 colunas = 2 linhas');
+  const t = q('#tabs'), s = q('#selCat');
   const d = W.document.documentElement;
-  afirma(d.scrollWidth <= d.clientWidth + 1, 'rolagem horizontal: ' + d.scrollWidth);
-  await largura(1100);
-  igual(W.getComputedStyle(t).display, 'flex');
+  for (const px of [320, 360, 375, 600]) {
+    await largura(px);
+    igual(W.getComputedStyle(t).display, 'none', px + ' px: #tabs oculto');
+    afirma(visivel(s), px + ' px: o seletor aparece');
+    afirma(!visivel(t), px + ' px: nenhuma pílula visível');
+    igual(Math.round(s.getBoundingClientRect().height), 44, px + ' px: altura do seletor');
+    afirma(visivel(q('label[for="selCat"]')) && txt(q('label[for="selCat"]')) === 'Categoria', px + ' px: rótulo visível "Categoria"');
+    afirma(d.scrollWidth <= d.clientWidth + 1, px + ' px: rolagem horizontal ' + d.scrollWidth + ' > ' + d.clientWidth);
+  }
+  for (const px of [601, 1100]) {
+    await largura(px);
+    afirma(visivel(t), px + ' px: as faixas aparecem');
+    afirma(!visivel(s), px + ' px: o seletor some');
+    for (const b of qa('#tabs .tab')) afirma(visivel(b), px + ' px: pílula invisível ' + b.dataset.c);
+  }
+  await largura(320);
+  // o seletor traz as 17 abas (mais "Outras" quando houver) em optgroups e o valor é o da aba ativa
+  igual(s.options.length, 17 + 2, '17 abas + as 2 categorias legadas do cenário (Casa e Eletrodomésticos)');
+  igual(s.value, PERF);
 });
 
 teste('CA-V20 (M6): a caixa de mensagem tem 132 px de altura mínima e segue redimensionável; "Copiar imagem" sem foto traz o motivo no title', async () => {

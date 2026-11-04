@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Coleta produtos da Shopee pela Open API de afiliados e grava no achadinhos.db.
+"""Coleta produtos da Shopee pela Open API de afiliados (ou de um arquivo do painel) e grava no achadinhos.db.
 
 Uso:  python3 coletar_shopee.py conferir
       python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens relevancia,vendidos,caros]
+      python3 coletar_shopee.py importar ARQUIVO
 
-Plano: docs/produto/planos/perfumaria-tres-lojas.md, etapa E7 (CA7).
+Planos: docs/produto/planos/perfumaria-tres-lojas.md, etapa E7 (CA7), e
+docs/produto/planos/abas-nichadas-e-coleta.md, etapa 7 (CA9: `importar` e piso de 50 vendas).
 
 Ambiente:
-  ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET  credenciais da Open API (obrigatórias). O Secret
-      só é lido do ambiente: nunca vai para arquivo, argumento, URL, stdout, log ou mensagem de erro.
+  ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET  credenciais da Open API (obrigatórias em `conferir`
+      e `buscas`; o `importar` não as lê). O Secret só é lido do ambiente: nunca vai para arquivo,
+      argumento, URL, stdout, log ou mensagem de erro.
       Num terminal só para isso, sem export (o Secret vale só para este comando):
         read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py ...; unset S
       O script tira o Secret do próprio ambiente assim que o lê.
@@ -18,10 +21,33 @@ Não há variável que troque a URL da API: o Secret assina toda requisição e 
 
 `conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono (utm_source=an_<ID>).
 `buscas` faz a mesma conferência antes de gravar o primeiro termo e aborta sem gravar se ela falhar.
-Só entra item com link curto de afiliado da Shopee (servidor.eh_link_shopee) e acima do piso de qualidade.
+Só entra item com link curto de afiliado da Shopee (servidor.eh_link_shopee), acima do piso de qualidade
+(nota >= 4,5 e >= 50 vendas, P1 de 2026-11-04) e cujo título não é de usado (eh_usado).
 
-Saída: 0 ok; 1 erro (dono errado, API recusou, resposta inválida); 2 configuração (ID de afiliado,
-credenciais, aba ou argumento); 3 limite de requisições da API (o progresso fica salvo, rode de novo depois).
+`importar ARQUIVO` grava os itens capturados no painel de afiliados (affiliate.shopee.com.br), sem credencial:
+não chama credenciais() nem lê o ambiente. O arquivo é entrada externa e é conferido inteiro antes de qualquer
+gravação. Formato (JSON em UTF-8, até MAX_RESPOSTA bytes, objeto só com estas três chaves):
+    {"cat": "<aba do buscas.json>", "busca": "<termo dessa aba no buscas.json>",
+     "nos": [<de 1 a MAX_NOS_ARQUIVO nós no formato de um nó do productOfferV2>, ...]}
+  Mapeamento mínimo de cada nó (o que o no_para_item lê; os demais campos são ignorados):
+    itemId             "Item Id" do CSV do "Obter Link em Massa" (número ou texto só de dígitos)
+    shopId             id da loja (na resposta da lista de ofertas do painel, ou no "Product Link" .../i.<shopId>.<itemId>)
+    productName        nome do produto (texto)
+    offerLink          "Offer Link" do CSV: https://s.shopee.com.br/<código>; qualquer outro link descarta o nó
+    ratingStar, sales  nota de 0 a 5 e vendas (número ou texto como "4.8"); abaixo do piso, o nó é descartado
+    priceMin           preço em reais (ex.: 49.9), opcional
+    priceDiscountRate  desconto em % inteiro (ex.: 20), opcional
+    imageUrl           foto em https://down-br.img.susercontent.com/..., opcional (de outro host, fica sem foto)
+  A aba e o termo têm de existir no buscas.json (NFC). Antes de gravar, confere o dono de cada link distinto
+  que passou no piso (utm_source=an_<ID>; uma requisição ao link curto por link, sem credencial e sem seguir
+  redirect, com pausa entre elas); um só que falhe e nada é gravado. Grava pelo servidor.upsert e marca vendidos|<termo> no mesmo arquivo de
+  progresso da Open API (a ordem "Mais vendidos" do painel), então os dois caminhos não repetem o termo.
+  Nada do conteúdo do arquivo vai para a saída: só contagens e motivos fixos.
+
+Saída: 0 ok (no `importar`, também quando nenhum nó passa no piso: o termo não é marcado); 1 erro (dono errado,
+API recusou, resposta ou arquivo fora do formato, arquivo grande demais); 2 configuração (ID de afiliado,
+credenciais, aba ou termo fora do buscas.json, arquivo inexistente ou ilegível, argumento); 3 limite de
+requisições da API (o progresso fica salvo, rode de novo depois).
 """
 import argparse, hashlib, json, math, os, random, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 import servidor as S
@@ -47,9 +73,15 @@ CONSULTA = '''query Busca($keyword: String, $sortType: Int, $page: Int, $limit: 
   }
 }'''
 
-# Piso de qualidade decidido pelo dono (P6): nota mínima 4,5 e pelo menos 1 venda.
-NOTA_MINIMA, VENDAS_MINIMAS = 4.5, 1
-MAX_RESPOSTA = 2 * 1024 * 1024   # bytes; resposta maior é recusada (dado não confiável)
+# Piso de qualidade decidido pelo dono (P1 de 2026-11-04, no lugar da P6): nota mínima 4,5 e pelo menos 50 vendas.
+NOTA_MINIMA, VENDAS_MINIMAS = 4.5, 50
+# Título de produto usado (Decisão 4 do plano abas-nichadas-e-coleta), sem acento e em minúsculas (ver `eh_usado`).
+# Cópia do RE_USADO do coletar_amazon.py (e do RX_USADO do coletar_ml.js): mudar a lista exige mexer nos três.
+RE_USADO = re.compile(r'\b(?:usad[oa]s?|recondicionad[oa]s?|renovad[oa]s?|seminov[oa]s?|vitrine|open\s+box|refurbished)\b')
+MAX_RESPOSTA = 2 * 1024 * 1024   # bytes; resposta da API ou arquivo do `importar` maior é recusado (dado não confiável)
+MAX_NOS_ARQUIVO = 100            # o "Obter Link em Massa" do painel gera até 100 links por lote
+CHAVES_ARQUIVO = {'cat', 'busca', 'nos'}
+ORDEM_IMPORTAR = 'vendidos'      # o painel é percorrido em "Mais vendidos": a chave de progresso é vendidos|<termo>
 MAX_URL = 200                    # mesmo teto dos campos de texto do servidor (MAX_CAMPO)
 TIMEOUT = 30
 TERMO_CONFERENCIA = 'perfume'    # busca usada pelo `conferir`
@@ -89,6 +121,21 @@ class DonoErrado(ErroColeta):
 
 class RespostaInvalida(ErroColeta):
     pass
+
+
+class ArquivoInvalido(ErroColeta):
+    """Arquivo do `importar` fora do formato. O motivo é texto fixo, nunca conteúdo do arquivo."""
+    def __init__(self, motivo):
+        super().__init__(motivo)
+        self.motivo = motivo
+
+
+class ArquivoAusente(ErroColeta):
+    """Arquivo do `importar` inexistente, que não é arquivo comum ou que não pôde ser lido."""
+
+
+class ForaDoBuscas(ErroColeta):
+    """Aba ou termo do arquivo do `importar` que não está no buscas.json."""
 
 
 class ErroApi(ErroColeta):
@@ -149,6 +196,15 @@ def _milhar(n, casas=0):
     return f'{n:,.{casas}f}'.replace(',', '_').replace('.', ',').replace('_', '.')
 
 
+def sem_acento(texto):
+    return ''.join(c for c in unicodedata.normalize('NFKD', str(texto or '')) if not unicodedata.combining(c)).lower()
+
+
+def eh_usado(titulo):
+    """Título de usado, recondicionado, seminovo, renovado, de vitrine ou open box, sem acento e com `\\b`."""
+    return bool(RE_USADO.search(sem_acento(titulo)))
+
+
 def passa_piso(nota, vendas):
     return nota is not None and vendas is not None and nota >= NOTA_MINIMA and vendas >= VENDAS_MINIMAS
 
@@ -163,7 +219,8 @@ def imagem_da_shopee(url):
 def no_para_item(no, termo, cat):
     """Um nó de productOfferV2 → item do upsert, ou None se não puder entrar.
 
-    Descarta: link que não é o curto de afiliado da Shopee, ids inválidos, sem título e abaixo do piso.
+    Descarta: link que não é o curto de afiliado da Shopee, ids inválidos, sem título, título de usado
+    (eh_usado) e abaixo do piso.
     """
     if not isinstance(no, dict):
         return None
@@ -172,7 +229,7 @@ def no_para_item(no, termo, cat):
         return None
     shop, item = _inteiro(no.get('shopId')), _inteiro(no.get('itemId'))
     titulo = _texto(no.get('productName'), S.MAX_TITULO)
-    if not shop or not item or not titulo:
+    if not shop or not item or not titulo or eh_usado(titulo):
         return None
     nota, vendas = _numero(no.get('ratingStar')), _numero(no.get('sales'))
     if not passa_piso(nota, vendas):
@@ -406,13 +463,80 @@ def coletar_buscas(cred, cat, termos, ordens):
             marcar(k); pausa()
 
 
+def ler_arquivo(caminho):
+    """(cat, busca, nos) do arquivo do `importar`, com cat e busca em NFC. Confere teto de bytes e tipos.
+
+    Levanta ArquivoAusente (saída 2) ou ArquivoInvalido (saída 1). Nada do conteúdo vai para a exceção.
+    """
+    if not isinstance(caminho, str) or not os.path.isfile(caminho):
+        raise ArquivoAusente()
+    try:
+        with open(caminho, 'rb') as f:
+            bruto = f.read(MAX_RESPOSTA + 1)
+    except OSError:
+        raise ArquivoAusente() from None
+    if len(bruto) > MAX_RESPOSTA:
+        raise ArquivoInvalido(f'maior que {MAX_RESPOSTA} bytes')
+    try:
+        dados = json.loads(bruto)
+    except (ValueError, RecursionError):
+        raise ArquivoInvalido('não é JSON em UTF-8') from None
+    if not isinstance(dados, dict) or set(dados) != CHAVES_ARQUIVO:
+        raise ArquivoInvalido('o arquivo tem de ser um objeto só com cat, busca e nos')
+    cat, busca, nos = dados['cat'], dados['busca'], dados['nos']
+    if not all(isinstance(v, str) and 0 < len(v) <= S.MAX_CAMPO for v in (cat, busca)):
+        raise ArquivoInvalido(f'cat e busca têm de ser texto de 1 a {S.MAX_CAMPO} caracteres')
+    if (not isinstance(nos, list) or not 1 <= len(nos) <= MAX_NOS_ARQUIVO
+            or not all(isinstance(n, dict) for n in nos)):
+        raise ArquivoInvalido(f'nos tem de ser uma lista de 1 a {MAX_NOS_ARQUIVO} objetos')
+    return unicodedata.normalize('NFC', cat), unicodedata.normalize('NFC', busca), nos
+
+
+def importar(caminho):
+    """Grava os nós de um arquivo capturado no painel de afiliados. Não usa credencial nem lê o ambiente.
+
+    Ordem: arquivo inteiro conferido → aba e termo no buscas.json → piso (no_para_item) → dono de cada link
+    distinto que passou no piso, com pausa entre um e outro → criar_banco e gravar → marcar vendidos|<termo>.
+    Um link de outro afiliado (ou que não confere) para tudo antes de gravar. A saída traz só contagens.
+    """
+    cat, busca, nos = ler_arquivo(caminho)
+    termos = termos_da_aba(cat)
+    if not termos or busca not in termos or '|' in busca or any(ord(c) < 32 for c in busca):
+        raise ForaDoBuscas()
+    itens = [i for i in (no_para_item(n, busca, cat) for n in nos) if i]
+    if not itens:
+        print(f'importar: {len(nos)} no arquivo, nenhum no piso; o termo fica para a próxima rodada.', flush=True)
+        return 0
+    # antes de gravar: todo link tem que ser do dono (o arquivo vem de fora, cada nó pode ter vindo de outra conta)
+    for n, link in enumerate(dict.fromkeys(i['url'] for i in itens)):
+        if n:
+            pausa()
+        conferir_dono(link)
+    S.criar_banco()
+    c = gravar(itens)
+    k = chave(ORDEM_IMPORTAR, busca)
+    if k not in feitos():
+        marcar(k)
+    print(f'importar: {len(nos)} no arquivo, {len(itens)} no piso, {c["inserido"]} novos, '
+          f'{c["atualizado"]} atualizados.', flush=True)
+    con = S.conectar()
+    try:
+        print('TOTAL da Shopee no banco:', con.execute("SELECT COUNT(*) FROM items WHERE loja='shopee'").fetchone()[0])
+    finally:
+        con.close()
+    return 0
+
+
 def ler_argumentos(argv):
-    p = argparse.ArgumentParser(prog='coletar_shopee.py', description='Coleta da Shopee pela Open API de afiliados.')
+    p = argparse.ArgumentParser(prog='coletar_shopee.py',
+                                description='Coleta da Shopee pela Open API de afiliados ou por arquivo do painel.')
     sub = p.add_subparsers(dest='modo', required=True)
     sub.add_parser('conferir', help='confere que o link gerado pela API é do dono; não grava nada')
     b = sub.add_parser('buscas', help='coleta os termos de uma aba do buscas.json')
     b.add_argument('--cat', required=True, help='aba do buscas.json')
     b.add_argument('--ordens', default='relevancia', help='lista separada por vírgula: ' + ','.join(ORDENS))
+    i = sub.add_parser('importar', help='grava os itens de um arquivo capturado no painel de afiliados; sem credencial')
+    i.add_argument('arquivo', help='JSON {cat, busca, nos} (formato no topo do coletar_shopee.py)')
     args = p.parse_args(argv)
     if args.modo == 'buscas':
         ordens = [o.strip() for o in args.ordens.split(',') if o.strip()]
@@ -425,12 +549,39 @@ def ler_argumentos(argv):
     return args
 
 
+def _rodar_importar(caminho):
+    """importar() com as saídas 0/1/2. As mensagens são fixas: nada do arquivo nem da exceção vai para a tela."""
+    try:
+        return importar(caminho)
+    except ArquivoAusente:
+        print('ERRO: o arquivo do importar não existe ou não pôde ser lido.', file=sys.stderr, flush=True)
+        return 2
+    except ForaDoBuscas:
+        print('ERRO: a aba ou o termo do arquivo não está no buscas.json. Nada foi gravado.', file=sys.stderr, flush=True)
+        return 2
+    except ArquivoInvalido as e:
+        print(f'ERRO: arquivo do importar fora do formato ({e.motivo}). Nada foi gravado.', file=sys.stderr, flush=True)
+        return 1
+    except DonoErrado:
+        print(f'PAROU: um link do arquivo não leva a utm_source=an_{ID_AFILIADO_SHOPEE}. Nada foi gravado. '
+              'Confira a conta logada no painel e o ID_AFILIADO_SHOPEE.', file=sys.stderr, flush=True)
+        return 1
+    except KeyboardInterrupt:
+        print('Interrompido.', file=sys.stderr, flush=True)
+        return 130
+    except Exception as e:   # só o tipo: a mensagem pode trazer o link ou outro dado do arquivo
+        print(f'ERRO: {type(e).__name__}', file=sys.stderr, flush=True)
+        return 1
+
+
 def main(argv=None):
     args = ler_argumentos(argv)
     if not id_afiliado_ok():
         print('ERRO: preencha ID_AFILIADO_SHOPEE no coletar_shopee.py (só números, o <ID> de utm_source=an_<ID>).',
               file=sys.stderr, flush=True)
         return 2
+    if args.modo == 'importar':   # sem credencial: não chama credenciais() nem lê o ambiente
+        return _rodar_importar(args.arquivo)
     cred = credenciais()
     if cred is None:
         print('ERRO: defina ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET só para este comando, sem export, '

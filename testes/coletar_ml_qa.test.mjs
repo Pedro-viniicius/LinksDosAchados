@@ -18,13 +18,20 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
+// 158 termos do estado de 04/11/2026 (fixtures/buscas-2026-11-04.json) + 161 novos das 17 abas (plano abas-nichadas-e-coleta).
+const TOTAL_TERMOS = 319;
+
 const RAIZ = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const FONTE = fs.readFileSync(path.join(RAIZ, 'coletar_ml.js'), 'utf8');
 const BUSCAS_JSON = JSON.parse(fs.readFileSync(path.join(RAIZ, 'buscas.json'), 'utf8'));
 const LISTA = 'https://lista.mercadolivre.com.br';
 const WWW = 'https://www.mercadolivre.com.br';
 const SERVIDOR = 'http://localhost:8765';
-const BF = 'Black Friday | Eletrônicos';
+const ABA_TV = 'TV, Alexa e Casa Conectada';   // aba do termo 'Smart TV' e do alias do ML
+const ABAS_17 = ['Celulares e Informática', 'Áudio e Acessórios', ABA_TV, 'Games', 'Eletroportáteis',
+  'Eletrodomésticos e Climatização', 'Cozinha', 'Cama, Mesa e Banho', 'Casa, Móveis e Ferramentas', 'Beleza e Cuidados',
+  'Perfumes e Perfumaria', 'Mercado e Limpeza', 'Pets', 'Bebês e Brinquedos', 'Suplementos e Fitness', 'Moda e Viagem',
+  'Natal e Papelaria'];
 const TODOS_TERMOS = Object.entries(BUSCAS_JSON).flatMap(([cat, ts]) => ts.map((t) => [t, cat]));
 
 const js = (v) => JSON.parse(JSON.stringify(v));
@@ -82,12 +89,15 @@ function relogio({ estourar = [] } = {}) {
 }
 
 /** Polycard sintético; `n` dá o MLB (6000000000 + n). */
-function polycard(n, { titulo = `Produto ${n}`, valor = 100 + n, anterior } = {}) {
+const ALT_NO_PISO = 'Classificação 4.8 de 5 estrelas. Mais de 100 produtos vendidos.';
+/** Por padrão o card traz nota e vendas acima do piso (nota ≥ 4,5 e "Mais de 50"); `alt: ''` tira o rótulo. */
+function polycard(n, { titulo = `Produto ${n}`, valor = 100 + n, anterior, alt = ALT_NO_PISO } = {}) {
   const preco = { current_price: { value: valor } };
   if (anterior !== undefined) preco.previous_price = { value: anterior, previous: true };
+  const components = [{ type: 'title', title: { text: titulo } }, { type: 'price', price: preco }];
+  if (alt) components.push({ type: 'review_compacted', review_compacted: { alt_text: alt } });
   return { id: 'POLYCARD', polycard: { metadata: { id: 'MLB' + (6000000000 + n) },
-    pictures: { pictures: [{ id: `${900000 + n}-MLB1_0${n}` }] },
-    components: [{ type: 'title', title: { text: titulo } }, { type: 'price', price: preco }] } };
+    pictures: { pictures: [{ id: `${900000 + n}-MLB1_0${n}` }] }, components } };
 }
 
 /** Página de busca com o literal .q("...") escapado como o ML faz (\' e \x3C). */
@@ -431,7 +441,7 @@ describe('QA CA12: parser e limites', () => {
   test('o máximo padrão é 30 itens por termo, na ordem da página', () => {
     const { ML } = carregar();
     const html = pagina(Array.from({ length: 45 }, (_, i) => polycard(i + 1)));
-    const itens = js(ML.extrairItens(html, 'Smart TV', BF));
+    const itens = js(ML.extrairItens(html, 'Smart TV', ABA_TV));
     assert.equal(itens.length, 30);
     assert.equal(itens[0].item_id, 'MLB6000000001');
     assert.equal(itens[29].item_id, 'MLB6000000030');
@@ -451,7 +461,7 @@ describe('QA CA12: parser e limites', () => {
   test('card repetido no meio de uma página cheia não ocupa vaga dos 30', () => {
     const { ML } = carregar();
     const cards = [polycard(1), polycard(1), ...Array.from({ length: 40 }, (_, i) => polycard(i + 2))];
-    const itens = js(ML.extrairItens(pagina(cards), 'Smart TV', BF));
+    const itens = js(ML.extrairItens(pagina(cards), 'Smart TV', ABA_TV));
     assert.equal(itens.length, 30);
     assert.equal(new Set(itens.map((i) => i.item_id)).size, 30);
   });
@@ -469,7 +479,7 @@ describe('QA CA12: parser e limites', () => {
   for (const [nome, atual, antes, preco, antigo, desc] of precos) {
     test(`preço: ${nome}`, () => {
       const { ML } = carregar();
-      const it = js(ML.extrairItens(pagina([polycard(1, { valor: atual, anterior: antes })]), 'Smart TV', BF)[0]);
+      const it = js(ML.extrairItens(pagina([polycard(1, { valor: atual, anterior: antes })]), 'Smart TV', ABA_TV)[0]);
       assert.deepEqual([it.data.preco, it.data.preco_antigo, it.data.desconto], [preco, antigo, desc]);
     });
   }
@@ -482,16 +492,16 @@ describe('QA CA12: parser e limites', () => {
       num_avaliacoes: /^$/, cupom: /^$/, imagem: /^https:\/\/http2\.mlstatic\.com\/D_Q_NP_2X_[A-Za-z0-9_-]+-E\.webp$/,
     };
     const card = (n, valor, anterior, alt, frete) => {
-      const c = polycard(n, { valor, anterior });
-      c.polycard.components.push({ type: 'review_compacted', review_compacted: { alt_text: alt } },
-        { type: 'shipping_v2', shipping_v2: { text: frete } });
+      const c = polycard(n, { valor, anterior, alt });
+      c.polycard.components.push({ type: 'shipping_v2', shipping_v2: { text: frete } });
       return c;
     };
     const cards = [card(1, 5, 9, 'Classificação 4.8 de 5 estrelas. Mais de 1000 produtos vendidos.', 'Frete grátis'),
       card(2, 99.9, 150, 'Classificação 5 de 5 estrelas. Mais de 25 produtos vendidos.', 'Chegará amanhã'),
       card(3, 1234.56, 2000, 'Classificação 3.7 de 5 estrelas.', 'Frete GRÁTIS'),
       card(4, 1234567, undefined, '', ''), card(5, 0.99, 1.5, 'Classificação 4.5 de 5 estrelas. Mais de 1.000 produtos vendidos.', 'Frete grátis')];
-    const itens = js(ML.extrairItens(pagina(cards), 'Smart TV', BF));
+    // polycardParaItem (sem o piso): o que se confere aqui é o formato de cada campo, mesmo nos cards fora do piso
+    const itens = cards.map((c) => js(ML.polycardParaItem(c.polycard)));
     assert.equal(itens.length, 5);
     for (const it of itens) {
       assert.match(it.item_id, /^MLB\d{6,}$/);
@@ -509,7 +519,7 @@ describe('QA CA12: parser e limites', () => {
 
   test('contrabarra seguida de x41 no título não vira "A" (par de contrabarras não é escape \\x)', () => {
     const { ML } = carregar();
-    const it = js(ML.extrairItens(pagina([polycard(1, { titulo: 'C:\\x41 e \\u0041' })]), 'Smart TV', BF)[0]);
+    const it = js(ML.extrairItens(pagina([polycard(1, { titulo: 'C:\\x41 e \\u0041' })]), 'Smart TV', ABA_TV)[0]);
     assert.equal(it.data.titulo, 'C:\\x41 e \\u0041');
   });
 
@@ -526,8 +536,9 @@ describe('QA CA12: parser e limites', () => {
   test('JSON de polycard com __proto__ e constructor não polui Object', () => {
     const { ctx, ML } = carregar();
     const texto = '{"polycard":{"__proto__":{"poluido":1},"constructor":{"prototype":{"p2":1}},"metadata":{"id":"MLB1234567"},'
-      + '"components":[{"type":"__proto__","__proto__":{"x":1}},{"type":"title","title":{"text":"ok"}}]}}';
-    const itens = js(ML.extrairItens(`<script>a.q(${JSON.stringify(texto)})</script>`, 'Smart TV', BF));
+      + '"components":[{"type":"__proto__","__proto__":{"x":1}},{"type":"title","title":{"text":"ok"}},'
+      + `{"type":"review_compacted","review_compacted":{"alt_text":"${ALT_NO_PISO}"}}]}}`;
+    const itens = js(ML.extrairItens(`<script>a.q(${JSON.stringify(texto)})</script>`, 'Smart TV', ABA_TV));
     assert.equal(itens.length, 1);
     assert.equal(vm.runInContext('({}).poluido === undefined && ({}).p2 === undefined', ctx), true);
   });
@@ -536,13 +547,13 @@ describe('QA CA12: parser e limites', () => {
     const { ML } = carregar();
     const fundo = '{"a":'.repeat(30000) + '1' + '}'.repeat(30000);
     const texto = `{"polycard":{"metadata":{"id":"MLB1234567"},"components":[{"type":"title","title":{"text":"d"}},`
-      + `{"type":"price","price":{"current_price":{"value":5},"x":${fundo}}}]}}`;
-    assert.equal(ML.extrairItens(`<script>a.q(${JSON.stringify(texto)})</script>`, 'Smart TV', BF).length, 1);
+      + `{"type":"review_compacted","review_compacted":{"alt_text":"${ALT_NO_PISO}"}},{"type":"price","price":{"current_price":{"value":5},"x":${fundo}}}]}}`;
+    assert.equal(ML.extrairItens(`<script>a.q(${JSON.stringify(texto)})</script>`, 'Smart TV', ABA_TV).length, 1);
     const cards = Array.from({ length: 3000 }, (_, i) => polycard(i + 1, { titulo: 'x'.repeat(500) }));
     const html = pagina(cards);
     assert.ok(html.length > 1.5e6);
     const t0 = Date.now();
-    assert.equal(ML.extrairItens(html, 'Smart TV', BF).length, 30);
+    assert.equal(ML.extrairItens(html, 'Smart TV', ABA_TV).length, 30);
     assert.ok(Date.now() - t0 < 5000, 'parser lento demais numa página grande');
   });
 
@@ -605,9 +616,28 @@ describe('QA CA13: cada termo grava a sua cat; BUSCAS e ALIAS', () => {
     const { ML } = carregar();
     assert.equal(JSON.stringify(ML.BUSCAS), JSON.stringify(BUSCAS_JSON));
     const todos = Object.values(ML.BUSCAS).flat();
-    assert.equal(todos.length, 140);
-    assert.equal(new Set(todos).size, 140);
+    assert.equal(todos.length, TOTAL_TERMOS);
+    assert.equal(new Set(todos).size, TOTAL_TERMOS);
     for (const t of [...todos, ...Object.keys(ML.BUSCAS)]) assert.equal(t, t.normalize('NFC'));
+  });
+
+  test('as 17 abas do mapa do dono, na ordem; os 158 termos de 04/11 seguem com o mesmo texto e os 161 novos vêm no fim (CA1)', () => {
+    assert.deepEqual(Object.keys(BUSCAS_JSON), ABAS_17);
+    const antigo = JSON.parse(fs.readFileSync(path.join(RAIZ, 'testes', 'fixtures', 'buscas-2026-11-04.json'), 'utf8'));
+    const termosAntigos = Object.values(antigo).flat();
+    assert.equal(termosAntigos.length, 158);
+    const vivos = new Set(Object.values(BUSCAS_JSON).flat());
+    for (const t of termosAntigos) assert.ok(vivos.has(t), 'termo antigo sumiu ou mudou de texto: ' + t);
+    assert.equal(vivos.size - termosAntigos.length, 161);
+    // dentro de cada aba, os termos antigos vêm antes dos novos (os novos entram no fim)
+    const antigos = new Set(termosAntigos);
+    for (const [aba, termos] of Object.entries(BUSCAS_JSON)) {
+      const ultimoAntigo = termos.map((t) => antigos.has(t)).lastIndexOf(true);
+      assert.ok(termos.slice(ultimoAntigo + 1).every((t) => !antigos.has(t)), aba);
+      assert.ok(termos.slice(0, ultimoAntigo + 1).every((t) => antigos.has(t)), aba + ': termo novo no meio dos antigos');
+    }
+    assert.deepEqual(BUSCAS_JSON['Perfumes e Perfumaria'], antigo['Perfumes e Perfumaria']);
+    assert.ok(!Object.keys(BUSCAS_JSON).some((aba) => aba.includes('|')), 'nome de aba com barra vertical');
   });
 
   test('o termo do ALIAS não está em buscas.json (a Amazon não coleta) e aponta para um termo que está', () => {
@@ -620,37 +650,39 @@ describe('QA CA13: cada termo grava a sua cat; BUSCAS e ALIAS', () => {
     assert.deepEqual(js(ML.ALIAS), { 'Caixa inteligente assistente virtual': 'Smart speaker Alexa' });
   });
 
-  test('os 140 slugs são diferentes e só têm [a-z0-9-] (nenhuma busca repetida no ML)', () => {
+  test('os 319 slugs são diferentes e só têm [a-z0-9-] (nenhuma busca repetida no ML)', () => {
     const { ML } = carregar();
     const slugs = TODOS_TERMOS.map(([t]) => ML.slug(t));
     assert.equal(new Set(slugs).size, slugs.length);
     for (const s of slugs) assert.match(s, /^[a-z0-9]+(-[a-z0-9]+)*$/);
   });
 
-  test('coletar() sem termos percorre os 140 termos na ordem do arquivo, cada POST com cat e busca certas', async () => {
+  test('coletar() sem termos percorre os 319 termos na ordem do arquivo, cada POST com cat e busca certas', async () => {
     const ff = fetchFalso({ paginaDe: (slug) => pagina([polycard(TODOS_TERMOS.findIndex(([t]) => carregarSlug(t) === slug) + 1)]) });
     const { ML } = carregar({ fetch: ff.f });
     const estado = await ML.coletar({ pausa: [0, 0] });
     assert.equal(estado.erro, null);
-    assert.equal(ff.doML().length, 140);
+    assert.equal(ff.doML().length, TOTAL_TERMOS);
     assert.deepEqual(ff.doML().map((c) => c.url), TODOS_TERMOS.map(([t]) => '/' + carregarSlug(t)));
     const posts = ff.doServidor().map((c) => JSON.parse(c.init.body).items);
-    assert.equal(posts.length, 140);
+    assert.equal(posts.length, TOTAL_TERMOS);
     posts.forEach((itens, i) => {
       assert.equal(itens.length, 1);
       assert.equal(itens[0].cat, TODOS_TERMOS[i][1]);
       assert.equal(itens[0].busca, TODOS_TERMOS[i][0]);
       assert.equal(itens[0].loja, 'ml');
     });
-    assert.equal(posts.filter((p) => p[0].cat === BF).length, 60);
+    for (const aba of ABAS_17) {
+      assert.equal(posts.filter((p) => p[0].cat === aba).length, BUSCAS_JSON[aba].length, aba);
+    }
   });
 
-  test('o termo do ALIAS é buscado com o slug do alias e grava cat de "Black Friday | Eletrônicos" e busca = alias', async () => {
+  test('o termo do ALIAS é buscado com o slug do alias e grava cat de "TV, Alexa e Casa Conectada" e busca = alias', async () => {
     const ff = fetchFalso();
     await carregar({ fetch: ff.f }).ML.coletar({ termos: ['Caixa inteligente assistente virtual'] });
     assert.deepEqual(ff.doML().map((c) => c.url), ['/caixa-inteligente-assistente-virtual']);
     const it = JSON.parse(ff.doServidor()[0].init.body).items[0];
-    assert.deepEqual([it.cat, it.busca], [BF, 'Caixa inteligente assistente virtual']);
+    assert.deepEqual([it.cat, it.busca], [ABA_TV, 'Caixa inteligente assistente virtual']);
   });
 
   test('termo em NFD ou com espaços nas pontas é normalizado para o termo do arquivo; repetido conta uma vez', async () => {
@@ -1170,8 +1202,8 @@ describe('QA integração: coleta e afiliação de ponta a ponta no servidor.py'
     const itens = (await lerItens(WWW)).filter((i) => i.loja === 'ml');
     assert.equal(itens.length, 15);
     const cats = new Map(itens.map((i) => [i.busca, i.cat]));
-    assert.deepEqual([...cats].sort(), [['Body splash', 'Perfumes e Perfumaria'], ['Caixa inteligente assistente virtual', BF],
-      ['Geladeira', 'Eletrodomésticos'], ['Smart TV', BF], ['Sofá', 'Casa e Decoração']]);
+    assert.deepEqual([...cats].sort(), [['Body splash', 'Perfumes e Perfumaria'], ['Caixa inteligente assistente virtual', ABA_TV],
+      ['Geladeira', 'Eletrodomésticos e Climatização'], ['Smart TV', ABA_TV], ['Sofá', 'Casa, Móveis e Ferramentas']]);
     for (const i of itens) {
       assert.match(i.url, /^https:\/\/meli\.la\/MLB\d+$/);
       assert.equal(i.url, `https://meli.la/${i.item_id}`, 'o link ficou no item de outro MLB');
@@ -1780,19 +1812,19 @@ describe('perfumaria (E3 e E6): ordem "caros", 42 termos e compatibilidade do pr
     assert.equal(js(caros.pulados).length, 0);
   });
 
-  test('ordem "caros" sem lista de termos percorre os 140 do arquivo, cada um com o sufixo e a chave caros|termo', async () => {
+  test('ordem "caros" sem lista de termos percorre os 319 do arquivo, cada um com o sufixo e a chave caros|termo', async () => {
     const ff = fetchFalso();
     const arm = memoria();
     const { ML } = carregar({ fetch: ff.f, localStorage: arm });
     const r = await ML.coletar({ ordem: 'caros', pausa: [0, 0] });
     assert.equal(r.erro, null);
-    assert.equal(ff.doML().length, 140);
+    assert.equal(ff.doML().length, TOTAL_TERMOS);
     assert.ok(ff.doML().every((c) => c.url.endsWith(SUFIXO)));
     assert.deepEqual(arm.lista(CHAVE), TODOS_TERMOS.map(([t]) => 'caros|' + t));
     const n = ff.chamadas.length;
     const de_novo = await ML.coletar({ ordem: 'caros', pausa: [0, 0] });
     assert.equal(ff.chamadas.length, n, 'segunda volta não busca nada');
-    assert.equal(js(de_novo.pulados).length, 140);
+    assert.equal(js(de_novo.pulados).length, TOTAL_TERMOS);
   });
 
   test('cada termo de "caros" vai ao servidor com a cat e a busca do termo, loja ml e no máximo 30 itens', async () => {
