@@ -470,8 +470,10 @@ teste('CA-D11: com "Sem gênero" em 50% ou mais da aba aparece a dica com os nú
   await abrirApp();
   const lote = (cat, sem, outros) => [...Array(sem).fill(0).map(() => falso(cat, 'sem')), ...Array(outros).fill(0).map(() => falso(cat, 'feminino'))];
   const dica = () => q('#publicoBox .dica-publico');
+  // a base real cresce com a coleta: sem os itens reais da aba, os totais abaixo são só os do lote
+  const semAba = (...cats) => API.filter(i => !cats.includes(i.cat));
   // o exemplo da spec: 1.812 de 2.900
-  usarItens([...API, ...lote(BELEZA, 1812, 1088)]);
+  usarItens([...semAba(BELEZA), ...lote(BELEZA, 1812, 1088)]);
   clicar(abaPorNome(BELEZA));
   igual(txt(dica()), 'A maior parte desta categoria não separa por público (1.812 de 2.900). Veja em "Sem gênero".');
   igual(dica().hidden, false);
@@ -482,21 +484,21 @@ teste('CA-D11: com "Sem gênero" em 50% ou mais da aba aparece a dica com os nú
   igual(totalFiltrado(), 2900, 'e nada ficou escondido');
   mesmo(q('#publicoBox fieldset'), fs, 'o controle é o mesmo nó (só a dica mudou)');
   // exatamente 50% mostra; 1 a menos, não
-  usarItens([...API, ...lote(MODA, 7, 7)]);
+  usarItens([...semAba(MODA), ...lote(MODA, 7, 7)]);
   clicar(abaPorNome(MODA));
   igual(txt(dica()), 'A maior parte desta categoria não separa por público (7 de 14). Veja em "Sem gênero".');
-  usarItens([...API, ...lote(MODA, 6, 8)]);
+  usarItens([...semAba(MODA), ...lote(MODA, 6, 8)]);
   igual(dica().hidden, true, '6 de 14 está abaixo de 50%');
   igual(txt(dica()), '');
   igual(q('#publicoBox fieldset').getAttribute('aria-describedby'), null);
   // a loja filtra a conta (os mesmos filtros de loja e título)
-  usarItens([...API, ...lote(MODA, 7, 7), ...Array(10).fill(0).map(() => falso(MODA, 'feminino', { loja: 'ml', url: 'https://meli.la/FALSO' }))]);
+  usarItens([...semAba(MODA), ...lote(MODA, 7, 7), ...Array(10).fill(0).map(() => falso(MODA, 'feminino', { loja: 'ml', url: 'https://meli.la/FALSO' }))]);
   igual(dica().hidden, true, '7 de 24 abaixo de 50%');
   escolher(q('#fLoja'), 'amazon');
   igual(txt(dica()), 'A maior parte desta categoria não separa por público (7 de 14). Veja em "Sem gênero".', 'só os itens da loja entram na conta');
   escolher(q('#fLoja'), '');
   // nas abas sem público e sem item "sem" não há dica
-  usarItens([...API, ...lote(BELEZA, 0, 5)]);
+  usarItens([...semAba(BELEZA), ...lote(BELEZA, 0, 5)]);
   clicar(abaPorNome(BELEZA));
   igual(dica().hidden, true);
 });
@@ -542,9 +544,10 @@ teste('CA-D7: Tab chega às 17 pílulas na ordem visual (a do DOM é a das abas)
 teste('CA-D14: com 10.400 itens, trocar de aba e de público leva menos de 200 ms, sem recriar as pílulas e contando as abas uma vez por render()', async () => {
   await abrirApp();
   const extra = [];
-  while (API.length + extra.length < 10400) extra.push(falso(ORDEM[extra.length % 17], ['feminino', 'masculino', 'sem'][extra.length % 3]));
+  const alvo = Math.max(10400, API.length + 17);   // a base real cresce com a coleta
+  while (API.length + extra.length < alvo) extra.push(falso(ORDEM[extra.length % 17], ['feminino', 'masculino', 'sem'][extra.length % 3]));
   usarItens([...API, ...extra]);
-  igual(W.eval('items.length'), 10400);
+  igual(W.eval('items.length'), alvo);
   let chamadas = 0;
   const original = W.contarAbas;
   W.contarAbas = function () { chamadas++; return original.apply(this, arguments); };

@@ -515,16 +515,17 @@ teste('contador "N itens combinam": acompanha loja, desconto mínimo e palavras 
   E.numeros.push(numeroFalso());
   const cat = CAT1();
   // dois itens falsos da Shopee na categoria de teste (o banco real ainda não tem a loja); saem no fim do teste
-  const falsos = [1, 2].map(n => ({ id: 900000100 + n, loja: 'shopee', cat, busca: 'qa', url: 'https://s.shopee.com.br/QA' + n, data: { titulo: 'Perfume Shopee ' + n, preco: 'R$ 10,00', desconto: '' } }));
+  const agoraIso = (() => { const d = new Date(Date.now() - 60000), p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); })();   // preço de 1 min atrás: em dia (D1)
+  const falsos = [1, 2].map(n => ({ id: 900000100 + n, loja: 'shopee', cat, busca: 'qa', preco_em: agoraIso, url: 'https://s.shopee.com.br/QA' + n, data: { titulo: 'Perfume Shopee ' + n, preco: 'R$ 10,00', desconto: '' } }));
   const itens = W.eval('items');
   itens.push(...falsos);
   try {
     await abrir('#disparo/nova'); preencherRegra();
     const pct = d => parseInt(String(d || '').replace(/\D/g, '')) || 0;
     const sa = t => String(t || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-    const esperado = (lojas, min, pal) => itens.filter(i => i.data && i.data.titulo && i.data.preco && i.cat === cat && lojas.includes(i.loja)
+    const esperado = (lojas, min, pal) => itens.filter(i => i.data && i.data.titulo && i.data.preco && i.cat === cat && lojas.includes(i.loja) && !W.itemComPrecoVelho(i)   // D1: o contador deixa de fora o preço velho
       && pct(i.data.desconto) >= min && (!pal.length || pal.some(p => sa(i.data.titulo).includes(sa(p))))).length;
-    const lido = () => { const t = txt(q('#f-contador')); const m = /Cerca de ([\d.]+)/.exec(t); return m ? +m[1].replace(/\./g, '') : (/Nenhum item combina/.test(t) ? 0 : NaN); };
+    const lido = () => { const t = txt(q('#f-contador')); const m = /Cerca de ([\d.]+)/.exec(t); return m ? +m[1].replace(/\./g, '') : (/Nenhum item combina|Sem itens para enviar/.test(t) ? 0 : NaN); };   // D1: só preço velho também é 0 enviável
     const TRES = ['amazon', 'ml', 'shopee'];
     const todos = esperado(TRES, 0, []);
     afirma(todos > 5, 'a categoria de teste precisa ter itens: ' + todos);

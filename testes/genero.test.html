@@ -160,6 +160,8 @@ function item(cat, genero, o = {}) {
     data: o.data === null ? null : { titulo: o.titulo || 'Produto ' + genero + ' ' + id, preco: 'R$ 10,00', desconto: '-10%', ...(o.data || {}) },
     genero, genero_origem: o.origem === undefined ? (cat === PERF && genero !== 'sem' ? 'titulo' : '') : o.origem,
     genero_auto: o.auto || genero,
+    // preço de agora (ISO local): item sem preco_em conta como preço velho e sai do contador
+    preco_em: new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19),
   };
 }
 // Perfumes: F 30 (20 "Busca F" amazon + 10 "Busca Mista" ml), M 20 (15 "Busca M" amazon + 5 "Busca Mista" ml), U 5, sem 7 (3 amazon + 4 ml "Busca S").

@@ -3,6 +3,7 @@
 - Plano: `docs/produto/planos/api-achadinho-turbo.md`. Código: `api_ofertas.py` (regra das ofertas) e `servidor.py` (token, guarda HTTP e log).
 - Estado descrito aqui: o código final da etapa 2, conferido em 2026-11-03, mais o público (`genero`) da etapa 5 do plano `docs/produto/planos/genero-nas-categorias.md` (código do público em `genero.py`). Os campos, parâmetros e erros que já existiam não mudaram e a `versao` continua 1.
 - Atualizado em 2026-11-04 (plano `docs/produto/planos/abas-nichadas-e-coleta.md`): as abas passam a ser 17 e 3 delas têm público. **Só os nomes de `categoria` e as abas com `generos` mudam; nenhum campo, parâmetro ou erro é novo.** Veja "Abas" e a nota de renomeação.
+- Atualizado em 2026-11-04 (plano `docs/produto/planos/atualizar-precos.md`, etapa 3): cada oferta ganha o campo `preco_em` (quando o preço foi confirmado) e há o parâmetro opcional `preco_max_horas`. **Sem o parâmetro, a resposta é a de antes mais o campo novo**: a API não tira oferta de preço velho por conta própria. A `versao` continua 1. Veja "Idade do preço".
 - Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
 
 ## Como usar em 1 minuto
@@ -53,8 +54,9 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 - Toda resposta de sucesso traz `"versao": 1`. Erro é sempre `{"error": "<frase em português>"}`.
 - Mudança incompatível exige `/api/v2/`. **Campo novo pode entrar na v1:** o consumidor deve ignorar campo que não conhece.
 - **Texto cru:** `titulo`, `busca`, `categoria` e `cupom` saem como foram coletados, sem escape. O consumidor precisa escapar antes de pôr esses campos em HTML (ou em qualquer formato com caracteres especiais).
-- Horários (`criado_em`, `atualizado_em`) são texto ISO **local do computador, sem fuso**, com precisão de segundo (`2026-11-03T12:24:23`). Trate como texto.
+- Horários (`criado_em`, `atualizado_em`, `preco_em`) são texto ISO **local do computador, sem fuso**, com precisão de segundo (`2026-11-03T12:24:23`). Trate como texto.
 - Medido em 2026-11-03 com 8.380 itens: cada pedido leva cerca de meio segundo e uma página de 200 ofertas tem cerca de 120 KB. A v1 lê o banco inteiro a cada pedido, então **numa varredura completa use `limite=200`** (o máximo: menos pedidos) e **não faça pedidos em paralelo**.
+- **No Node 22, leia o corpo de cada `fetch` logo que ele responder (`await r.json()` antes do próximo pedido) e não dispare pedidos em paralelo.** Com respostas acima de cerca de 64 KB (uma página de 200 ofertas passa disso), o undici do Node 22 pode derrubar o processo com `uncaughtException` (`assert(!this.paused)`) quando um corpo fica parado sem leitura enquanto outro pedido corre. Um pedido por vez, com o corpo lido inteiro, evita o problema.
 
 ## Abas
 
@@ -104,8 +106,9 @@ Parâmetros (todos opcionais). **A validação é estrita:** parâmetro desconhe
 | `limite` | Inteiro de 1 a 200. Padrão 50. |
 | `cursor` | O valor de `proximo` da página anterior, na **mesma ordem**. Opaco: não monte nem altere. Cursor adulterado ou de outra ordem dá 400. |
 | `genero` | Público: `feminino`, `masculino`, `unissex` ou `sem`, exatamente assim (minúsculas, sem acento). Repetível, até os 4; o mesmo valor duas vezes dá 400. Sem `genero`: todos. Vários: qualquer um deles. O filtro é **exato** e vale para todas as abas: `genero=feminino` só traz ofertas com `"genero": "feminino"`, e as abas que não separam por público (todas fora das 3 de "Abas") são sempre `sem`. Para "perfumes femininos e toda a Cozinha", faça dois pedidos (um com `cat` e `genero`, outro só com `cat`). |
+| `preco_max_horas` | Inteiro de 1 a 168 (uma semana), só dígitos. Só traz ofertas com o preço confirmado há **no máximo** essas horas, pelo relógio do Etiqueta (`preco_em` maior ou igual a agora menos as horas e no máximo 5 minutos à frente de agora). Oferta com `preco_em` `null`, fora do formato `AAAA-MM-DDTHH:MM:SS` (hora de 00 a 23, minuto e segundo de 00 a 59, data que existe) ou mais de 5 minutos no futuro nunca passa. **Sem o parâmetro, não filtra** (é o padrão). Repetido dá 400. Veja "Idade do preço". |
 
-Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
+Mais de 33 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
 
 ### Resposta
 
@@ -144,6 +147,7 @@ Mais de 32 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `criado_em` | texto | Quando o item entrou no banco. |
 | `atualizado_em` | texto | Última gravação do item (nova coleta, reclassificação, correção do público pelo site). |
 | `genero` | texto | Público da oferta: `feminino`, `masculino`, `unissex` ou `sem`. Só as 3 abas com público (`Perfumes e Perfumaria`, `Beleza e Cuidados` e `Moda e Viagem`) separam por público; nas outras 14 é sempre `sem`. Vem da correção que o dono fez no site ou, sem ela, do título e do termo de busca (`genero.py`). Nas abas com público, `sem` é item sem público definido (hidratante, sabonete, infantil...). Vem depois dos outros campos; consumidor antigo pode ignorá-lo. |
+| `preco_em` | texto ou `null` | Quando o preço foi confirmado pela última vez (coleta, atualização em lote ou "Atualizar preço" do site), no mesmo formato de `atualizado_em`. `null` quando não há data confiável: a última gravação não trouxe preço legível, o item foi gravado por uma versão do Etiqueta anterior a esse campo, ou o valor guardado está fora do formato `AAAA-MM-DDTHH:MM:SS`. Trate `null` como preço velho. É o último campo; consumidor antigo pode ignorá-lo. Veja "Idade do preço". |
 
 ### Quando uma oferta NÃO sai
 
@@ -154,7 +158,18 @@ Item que falhar em **qualquer** condição fica fora da lista e do `total`:
 - `link` que não seja de afiliado **e** da própria loja (ML sem `meli.la`, Amazon com tag de terceiro, link de outra loja).
 - Título, cupom, categoria, busca (ou `item_id`, quando não for o próprio link) com algo que se pareça com um endereço de site. A detecção é a mesma e conservadora do disparo: títulos como `i.Phone` ou `55UN85CBPSA.BWZ` ficam de fora de propósito (algumas dezenas de itens no banco de hoje; 27 na contagem de 03/11/2026).
 
+O `preco_em` **não** está nessa lista: preço velho ou sem data continua saindo, a não ser que o pedido traga `preco_max_horas`.
+
 Não entram na v1: a mensagem pronta (o consumidor monta com o template dele), números de telefone, grupos, regras e histórico de envios do disparo.
+
+## Idade do preço
+
+- **`preco_em` não é `atualizado_em`.** O `atualizado_em` muda também quando o item troca de aba ou tem o público corrigido, sem que ninguém tenha olhado o preço. Para saber se o preço está fresco, use só o `preco_em`.
+- **Quem grava:** a coleta, a atualização de preços em lote (`atualizar_precos.py` e `ColetaML.atualizar`, etapas 4 e 5 do plano) e o "Atualizar preço" do cartão no site, sempre que trazem um preço legível. Reclassificação de aba, correção de público e troca de link não mexem nele.
+- **Itens de antes de 2026-11-04:** a migração do banco (v3) preencheu `preco_em` com o `criado_em`, um limite inferior seguro (o preço pode ser mais novo, nunca mais velho do que diz). Por isso, com `preco_max_horas=24`, um item coletado há mais de um dia só volta a passar depois de uma nova coleta ou atualização do preço.
+- **`preco_max_horas`:** a conta é feita no Etiqueta, com o relógio dele; o consumidor não precisa interpretar a data. A regra de idade é a mesma da trava do disparo do Etiqueta (`config.preco_validade_horas`, padrão 24 h, de 1 a 168): com `preco_max_horas=24`, passa a mesma idade de preço que o disparo aceita com a validade padrão. Um `preco_em` mais de 5 minutos à frente do relógio do Etiqueta conta como velho (relógio adiantado ou gravação errada não deixam um preço "fresco para sempre"). A API **não** lê a validade configurada no Etiqueta: o número vem do pedido.
+- **Com o cursor:** o filtro vale no instante de cada pedido. Uma oferta cujo preço envelhece entre duas páginas some do filtro sem aviso; quando o preço é atualizado, o `atualizado_em` também muda e ela volta a aparecer depois do cursor (deduplique pela `chave`). O `total` também é o do instante.
+- **Sem preço legível na atualização** (item que sumiu da loja, ficou indisponível ou caiu do piso): o item não é regravado, o preço antigo fica e o `preco_em` envelhece. É por isso que a API não apaga nada: quem filtra por `preco_max_horas` deixa de receber o item.
 
 ## Paginação
 
@@ -205,11 +220,11 @@ Exemplo (valores ilustrativos; mostra uma aba sem público e as três com públi
 
 ## Erros
 
-Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32 e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
+Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32, e com `preco_max_horas` para 33, e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
 
 | Código | Quando | Exemplo de frase |
 |---|---|---|
-| 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `genero deve ser feminino, masculino, unissex, sem, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
+| 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero, preco_max_horas)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `genero deve ser feminino, masculino, unissex, sem, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `preco_max_horas deve ser um número inteiro de 1 a 168`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
 | 401 | Token ausente ou errado (`WWW-Authenticate: Bearer`) | `token ausente ou inválido: envie Authorization: Bearer <token>` |
 | 403 | `Host` não local; pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | `host não permitido`; `a API v1 não aceita pedidos de navegador` |
 | 404 | Rota v1 desconhecida (só depois da autenticação) | `rota não encontrada` |
@@ -240,6 +255,10 @@ curl -s -G -H @api_cabecalho.txt \
 curl -s -G -H @api_cabecalho.txt \
   --data-urlencode "cat=Perfumes e Perfumaria" -d genero=feminino -d genero=unissex -d limite=2 \
   "http://localhost:8765/api/v1/ofertas"
+
+curl -s -G -H @api_cabecalho.txt \
+  -d preco_max_horas=24 -d ordem=desconto -d limite=10 \
+  "http://localhost:8765/api/v1/ofertas"
 ```
 
 Node 22 (`fetch` nativo; sem dependência):
@@ -268,7 +287,8 @@ Sugestão, sem código, para a sessão que cuida do Turbo. **Este repositório n
 **Nome:** no Turbo, "etiqueta" quer dizer a etiqueta de afiliado do Mercado Livre. Chame a fonte nova de **`catalogo`** ("Catálogo do Etiqueta"), para não colidir.
 
 **Fonte e conexão**
-- Novo tipo de fonte `catalogo` em `candidatesFor` (`src/ml.js`, hoje `:298`) e na validação de tipos da regra (`src/server.js`, `tipo()`), ao lado de `afiliados`, `search` e `list`. A fonte chama `GET /api/v1/ofertas` com os filtros da regra (`cat`, `loja`, `q`, `desconto_min`, `ordem`, `limite`).
+- Novo tipo de fonte `catalogo` em `candidatesFor` (`src/ml.js`, hoje `:298`) e na validação de tipos da regra (`src/server.js`, `tipo()`), ao lado de `afiliados`, `search` e `list`. A fonte chama `GET /api/v1/ofertas` com os filtros da regra (`cat`, `loja`, `q`, `desconto_min`, `ordem`, `limite`) e o `preco_max_horas` (veja o item seguinte).
+- **Preço velho:** mande `preco_max_horas` em toda chamada da fonte que vai virar envio (sugestão: `24`, a validade padrão do disparo do Etiqueta; o valor pode ser um campo da regra, de 1 a 168). Sem ele, a v1 entrega também ofertas com preço de dias atrás ou sem data (`preco_em` `null`), e o Turbo mandaria esse preço ao grupo. Não há campo equivalente no `renderTemplate`: o `preco_em` serve só para filtrar ou para mostrar na tela do Turbo, se quiser. Se a fonte "secar" com o filtro, é sinal de que os preços do Etiqueta precisam ser atualizados (no Etiqueta, não no Turbo).
 - Conexão nova com o endereço `http://127.0.0.1:8765` e o token como **segredo** (campo `segredo` em `PLATAFORMAS`, `src/lojas.js`, e `conexoes.segredos`, que o Turbo nunca devolve ao navegador). Trocar o token: troque o arquivo, reinicie o Etiqueta e atualize em Conexões.
 - Só `fetch` em `127.0.0.1` com `Authorization`: sem `Origin`, passa na guarda.
 

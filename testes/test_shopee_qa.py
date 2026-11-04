@@ -410,6 +410,9 @@ class DisparoShopee(T.Base):
                                  'offerLink': f'https://s.shopee.com.br/Ord{i}'}, 'Perfume', 'Eletrônicos')
             self.assertEqual(S.upsert(self.con, it), 'inserido')
             pks[nome] = self.con.execute("SELECT id FROM items WHERE item_id=?", (f'7.{i}',)).fetchone()[0]
+        # o upsert carimba preco_em com o relógio real; a prévia usa o relógio injetado (T.SEGUNDA), e preço à frente do
+        # relógio conta como velho (S2): o preço é confirmado no instante da prévia
+        self.con.execute('UPDATE items SET preco_em=?', (T.SEGUNDA.isoformat(timespec='seconds'),))
         self.con.commit()
 
         def ordem(**kw):
@@ -957,6 +960,7 @@ class TestIntegracaoColetorDisparo(ColetaBase):
         try:
             D.migrar(con)
             with con:
+                con.execute('UPDATE items SET preco_em=?', (T.SEGUNDA.isoformat(timespec='seconds'),))   # ver S2: relógio injetado
                 con.execute("INSERT OR REPLACE INTO config VALUES ('templates', ?)",
                             (json.dumps({'T': '{LOJA}: {TITULO_PRODUTO} {PRECO_PRODUTO} {DESCONTO_PRODUTO} ({NUMERO_VENDAS})\n{LINK}'}),))
             nid = D.criar_numero(con, {'nome': 'N', 'telefone': T.TELEFONE, 'grupo_nome': 'G', 'grupo_id': T.GRUPO_ID})['id']

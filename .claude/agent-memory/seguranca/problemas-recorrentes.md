@@ -34,6 +34,8 @@ Padrões a procurar sempre (origem: revisões de 2026-11-03).
 - **Regra aplicada só num caminho de gravação** (S3, 2026-11-04: `preco_antigo_plausivel` só no `upsert`, corrigido com `sanear_precos` também no PATCH `data`): regra nova de saneamento tem que valer em upsert e PATCH.
 - **Regex de volume `\d[\d.,]*...` com `search`** (INFORMATIVA, 2026-11-04, `coletar_amazon.RE_COMPRAS`): quadrática em sequência longa de dígitos (20 mil dígitos ~7,6 s); `numero_de` com 300+ dígitos e "mil" dá `OverflowError`. Fonte é a Amazon, títulos curtos; confira em parser novo de texto de terceiro.
 - **Doc diz "não acessa a rede" e o código acessa** (README do `importar`, 2026-11-04, corrigido na rodada 2): confira afirmação de rede/credencial na doc contra o código.
+- **Texto do banco em comando para colar no terminal** (S1 BAIXA, 2026-11-04, quadro de preços do `index.html`): `cat` (gravável pela origem do ML, R1) vira `--cat "..."` copiado; aspas de shell não bastam contra caracteres de controle (edição do readline, fim de bracketed paste). Corrigido na rodada 2 (allowlist `ORDEM_ABAS` + recusa de Cc/Cf). Exija o mesmo em todo comando copiável novo.
+- **Validade por data sem teto no futuro**: `preco_recente` aceita `preco_em` à frente do relógio (relógio adiantado e depois corrigido = "fresco" por dias). Corrigido em 2026-11-04 (`FOLGA_FUTURO_PRECO` 5 min, também no front e na v1); confira em trava nova por data.
 - Runner `testes/rodar.mjs`: CDP em porta efêmera de 127.0.0.1, perfil temporário, `kill` no `finally` e em SIGINT/SIGTERM.
 
 Ver [[areas-sensiveis]], [[riscos-aceitos]].

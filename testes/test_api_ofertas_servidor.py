@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
@@ -45,6 +46,7 @@ import api_ofertas as A  # noqa: E402
 VAR_TOKEN = 'ACHADINHOS_API_TOKEN_ARQUIVO'
 TOKEN_REAL = os.path.join(TS.RAIZ, 'api_token.txt')
 ANTIGO = '2026-11-03T12:24:23'   # bem antes da folga de 60 s da ordem "atualizacao"
+PRECO_EM_VELHO = '2020-01-01T00:00:00'   # mais velho que o teto de 168 h do preco_max_horas
 PERFUMES = 'Perfumes e Perfumaria'
 CASA = 'Casa e Decoração'
 LINK_AMAZON = 'https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20'
@@ -118,9 +120,12 @@ class ServidorApi(TS.ServidorTeste):
         if cls.proc.poll() is not None:
             raise RuntimeError('o servidor de teste saiu: ' + cls.primeira_linha)
         con = sqlite3.connect(cls.db)
-        inserir(con)
+        # preço da Amazon confirmado agora (relógio do servidor), o do ML há anos (atualizar-precos, CA8)
+        cls.preco_em_amazon = datetime.now().isoformat(timespec='seconds')
+        inserir(con, preco_em=cls.preco_em_amazon)
         inserir(con, loja='ml', item_id='MLB4100000001', cat=CASA, url=LINK_ML, titulo='Luminária de mesa',
-                preco='R$ 59,90', preco_antigo='', imagem='https://http2.mlstatic.com/D_teste.jpg', posicao=2)
+                preco='R$ 59,90', preco_antigo='', imagem='https://http2.mlstatic.com/D_teste.jpg', posicao=2,
+                preco_em=PRECO_EM_VELHO)
         # fora da API: ML sem link de afiliado e título com cara de link
         inserir(con, loja='ml', item_id='MLB4100000002', cat=CASA,
                 url='https://produto.mercadolivre.com.br/MLB-4100000002',
@@ -200,7 +205,29 @@ class TestApiLigada(ServidorApi):
         self.assertEqual(list(amazon), ['id', 'chave', 'loja', 'item_id', 'categoria', 'busca', 'titulo', 'link',
                                         'imagem', 'preco', 'preco_antigo', 'desconto_pct', 'vendas', 'avaliacao',
                                         'num_avaliacoes', 'frete_gratis', 'cupom', 'criado_em', 'atualizado_em',
-                                        'genero'])
+                                        'genero', 'preco_em'])
+
+    def test_ca8_preco_em_e_preco_max_horas_pelo_http(self):
+        st, _, j = self.v1('/api/v1/ofertas', self.auth())   # sem o filtro: as duas, cada uma com a sua data
+        self.assertEqual((st, j['total']), (200, 2), j)
+        self.assertEqual({o['chave']: o['preco_em'] for o in j['ofertas']},
+                         {'amazon:B0TESTE001': self.preco_em_amazon, 'ml:MLB4100000001': PRECO_EM_VELHO})
+        for query in ('preco_max_horas=1', 'preco_max_horas=168&ordem=menor_preco', 'preco_max_horas=24&loja=amazon'):
+            with self.subTest(query=query):
+                st, _, j = self.v1('/api/v1/ofertas?' + query, self.auth())
+                self.assertEqual((st, j['total'], [o['chave'] for o in j['ofertas']]),
+                                 (200, 1, ['amazon:B0TESTE001']), j)
+        st, _, j = self.v1('/api/v1/ofertas?preco_max_horas=24&loja=ml', self.auth())
+        self.assertEqual((st, j['total'], j['ofertas'], j['proximo']), (200, 0, [], None), j)
+        for query in ('preco_max_horas=0', 'preco_max_horas=169', 'preco_max_horas=', f'preco_max_horas={SEGREDO}',
+                      'preco_max_horas=1&preco_max_horas=1'):
+            with self.subTest(query=query):
+                st, _, j = self.v1('/api/v1/ofertas?' + query, self.auth())
+                self.assertEqual((st, list(j)), (400, ['error']), j)
+                self.assertIn('preco_max_horas', j['error'])
+                self.assertNotIn(SEGREDO, j['error'])
+        st, _, j = self.v1('/api/v1/categorias?preco_max_horas=24', self.auth())
+        self.assertEqual(st, 400, j)
 
     def test_ca1_paginacao_e_filtros_pelo_http(self):
         st, _, j = self.v1('/api/v1/ofertas?limite=1', self.auth())

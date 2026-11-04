@@ -7,7 +7,9 @@ Uso:  python3 testes/test_genero_qa.py -v          (leva 1 a 2 minutos: usa uma 
 Complementa test_genero.py, test_genero_servidor.py, test_disparo.py e test_api_ofertas*.py, sem repetir:
   - CA7: migração v1 -> v2 numa CÓPIA do achadinhos.db real (contagens, integrity_check, linhas de
     `items` idênticas), migração repetida, 6 processos migrando ao mesmo tempo e o código antigo
-    (commit 1571135) rodando sobre o banco migrado e rodando enquanto a migração acontece;
+    (commit 1571135) rodando sobre o banco migrado e rodando enquanto a migração acontece. Desde a v3
+    (docs/produto/planos/atualizar-precos.md) a mesma migração vai até a versão 3, que só acrescenta
+    `items.preco_em` (as demais colunas de `items` seguem idênticas);
   - CA1: distribuição real da Perfumaria (com folga: a base cresce) e um oráculo independente;
   - CA4, CA5, CA6: o mesmo item tem o mesmo gênero em /api/items, na API v1 e no `elegiveis` do disparo,
     antes e depois de uma correção manual; a correção entra no cursor da v1;
@@ -57,7 +59,8 @@ import api_ofertas as A  # noqa: E402
 import genero as G       # noqa: E402
 
 PERF = 'Perfumes e Perfumaria'
-CASA = 'Casa e Decoração'
+# uma aba SEM gênero e com itens no banco real (a antiga 'Casa e Decoração' virou 'Casa, Móveis e Ferramentas')
+CASA = 'Casa, Móveis e Ferramentas'
 BF = 'Black Friday | Eletrônicos'
 LOJAS = ('amazon', 'ml', 'shopee')
 GENEROS = G.GENEROS
@@ -98,13 +101,16 @@ def copiar_banco_real(destino):
 
 
 def rebaixar_para_v1(caminho):
-    """Deixa a cópia como o banco real está hoje: user_version 1, sem generos_manuais nem regras.generos."""
+    """Deixa a cópia como o banco real estava antes da v2: user_version 1, sem generos_manuais, regras.generos
+    nem items.preco_em (v3)."""
     con = sqlite3.connect(caminho)
     try:
         if con.execute('PRAGMA user_version').fetchone()[0] >= 2:
             con.execute('DROP TABLE IF EXISTS generos_manuais')
             if 'generos' in [c[1] for c in con.execute('PRAGMA table_info(regras)')]:
                 con.execute('ALTER TABLE regras DROP COLUMN generos')
+            if 'preco_em' in [c[1] for c in con.execute('PRAGMA table_info(items)')]:
+                con.execute('ALTER TABLE items DROP COLUMN preco_em')
             con.execute('PRAGMA user_version = 1')
             con.commit()
     finally:
@@ -128,7 +134,10 @@ def estado(caminho):
              'fk': con.execute('PRAGMA foreign_key_check').fetchall()}
         e['contagens'] = {t: con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                           for t in ('items', 'numeros', 'regras', 'envios', 'config')}
-        linhas = con.execute('SELECT * FROM items ORDER BY id').fetchall()
+        e['colunas_items'] = [(c[1], c[2], c[3], c[4]) for c in con.execute('PRAGMA table_info(items)')]
+        # hash das colunas de antes da v3: a v3 só acrescenta preco_em, conferido à parte
+        antigas = ','.join(c[0] for c in e['colunas_items'] if c[0] != 'preco_em')
+        linhas = con.execute(f'SELECT {antigas} FROM items ORDER BY id').fetchall()
         e['hash_items'] = hashlib.sha256(repr(linhas).encode()).hexdigest()
         e['esquema'] = dict(con.execute("SELECT name, sql FROM sqlite_master WHERE type IN ('table','index')").fetchall())
         e['colunas_regras'] = [(c[1], c[2], c[3], c[4]) for c in con.execute('PRAGMA table_info(regras)')]
@@ -164,6 +173,27 @@ def migrar(codigo, caminho):
     out, err = p.communicate(timeout=120)
     if p.returncode != 0:
         raise AssertionError(f'a migração saiu com {p.returncode}: {err.decode(errors="replace")[-400:]}')
+
+
+def relogio_dos_dados(con):
+    """O instante em que todo preço do banco é "recente" (disparo.preco_recente): o maior preco_em. A trava de idade
+    (atualizar-precos, CA6/S2) deixa fora preço velho e preço à frente do relógio; estes testes comparam gênero e
+    elegibilidade, não a idade, então o relógio acompanha os dados (e o prazo é largo: ver prazo_largo)."""
+    try:
+        maior = con.execute('SELECT MAX(preco_em) FROM items').fetchone()[0]
+    except sqlite3.OperationalError:   # banco de antes da v3
+        maior = None
+    return datetime.fromisoformat(maior) if maior else AGORA
+
+
+def prazo_largo(caminho):
+    """config.preco_validade_horas = 168 no banco (a cópia real passa de 24 h entre o primeiro e o último preço)."""
+    con = sqlite3.connect(caminho, timeout=30)
+    try:
+        con.execute("INSERT OR REPLACE INTO config VALUES ('preco_validade_horas', '168')")
+        con.commit()
+    finally:
+        con.close()
 
 
 _CODIGO_ANTIGO = {}
@@ -412,7 +442,7 @@ class DistribuicaoReal(unittest.TestCase):
         self.assertEqual(sum(cont.values()), total)
 
     def test_outras_abas_sao_todas_sem(self):
-        fora = [(i, c) for i, c, _, _ in self.linhas if c != PERF]
+        fora = [(i, c) for i, c, _, _ in self.linhas if c not in G.ABAS_COM_GENERO]
         self.assertGreater(len(fora), 1000)
         for i, c in fora:
             self.assertEqual(self.res[i], ('sem', ''), c)
@@ -463,7 +493,7 @@ class MigracaoNaCopiaReal(unittest.TestCase):
         self.assertNotIn('generos', [c[0] for c in self.antes['colunas_regras']])
 
     def test_vai_para_a_versao_2_e_continua_integro(self):
-        self.assertEqual(self.depois['versao'], 2)
+        self.assertEqual(self.depois['versao'], 3)   # v2 e, desde o plano atualizar-precos, a v3
         self.assertEqual(self.depois['integridade'], [('ok',)])
         self.assertEqual(self.depois['fk'], [])
 
@@ -474,11 +504,29 @@ class MigracaoNaCopiaReal(unittest.TestCase):
     def test_so_aditiva_uma_tabela_nova_e_uma_coluna_no_fim_de_regras(self):
         self.assertEqual(self.depois['tabelas'] - self.antes['tabelas'], {'generos_manuais'})
         for nome, sql in self.antes['esquema'].items():
-            if nome != 'regras':
+            if nome not in ('regras', 'items'):
                 self.assertEqual(self.depois['esquema'][nome], sql, nome)
         antes, depois = self.antes['colunas_regras'], self.depois['colunas_regras']
         self.assertEqual(depois[:len(antes)], antes)
         self.assertEqual(depois[len(antes):], [('generos', 'TEXT', 1, "'[]'")])
+        # v3: uma coluna no fim de items, TEXT, aceitando NULL e sem padrão
+        antes, depois = self.antes['colunas_items'], self.depois['colunas_items']
+        self.assertEqual(depois[:len(antes)], antes)
+        self.assertEqual(depois[len(antes):], [('preco_em', 'TEXT', 0, None)])
+
+    def test_v3_preenche_preco_em_so_com_criado_em(self):
+        con = sqlite3.connect(self.caminho)
+        try:
+            com, sem, iguais = con.execute(
+                "SELECT COUNT(preco_em), COUNT(*) - COUNT(preco_em), SUM(preco_em = criado_em) FROM items").fetchone()
+            esperado = con.execute(
+                "SELECT COUNT(*) FROM items WHERE tem_dados = 1 AND preco != '' AND criado_em GLOB "
+                "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'").fetchone()[0]
+        finally:
+            con.close()
+        self.assertGreater(com, 1000)
+        self.assertEqual((com, iguais), (esperado, esperado))
+        self.assertEqual(com + sem, self.antes['contagens']['items'])
 
     def test_tabela_nova_nasce_vazia_e_regra_antiga_nao_existe_no_real(self):
         con = sqlite3.connect(self.caminho)
@@ -490,7 +538,7 @@ class MigracaoNaCopiaReal(unittest.TestCase):
 
     def test_segunda_migracao_nao_muda_nada(self):
         self.assertEqual(self.dump2, self.dump1)
-        self.assertEqual(self.depois2['versao'], 2)
+        self.assertEqual(self.depois2['versao'], 3)
 
     def test_check_da_tabela_nova_recusa_valor_fora_da_lista(self):
         con = sqlite3.connect(self.caminho)
@@ -513,10 +561,11 @@ class MigracaoConcorrente(unittest.TestCase):
             self.assertEqual(codigo, 0, err.decode(errors='replace')[-300:])
             self.assertEqual(err.decode(), '')
         depois = estado(caminho)
-        self.assertEqual(depois['versao'], 2)
+        self.assertEqual(depois['versao'], 3)
         self.assertEqual(depois['integridade'], [('ok',)])
         self.assertEqual(depois['hash_items'], antes['hash_items'])
         self.assertEqual([c[0] for c in depois['colunas_regras']].count('generos'), 1)
+        self.assertEqual([c[0] for c in depois['colunas_items']].count('preco_em'), 1)
 
 
 class CodigoAntigoDuranteAMigracao(ServidorQa):
@@ -534,13 +583,13 @@ class CodigoAntigoDuranteAMigracao(ServidorQa):
         self.assertEqual(st, 200)
         self.assertNotIn('genero', antes[0])
         migrar(TS.RAIZ, self.db)
-        self.assertEqual(estado(self.db)['versao'], 2)
+        self.assertEqual(estado(self.db)['versao'], 3)
         st, depois = self.pedir('GET', '/api/items', escrita=False)
         self.assertEqual((st, len(depois)), (200, len(antes)))
         st, r = self.pedir('POST', '/api/items', {'items': [amazon('QAANT00001', 'Perfume Feminino Teste Antigo')]})
         self.assertEqual(st, 200, r)
         self.assertEqual(len(self.itens()), len(antes) + 1)
-        self.assertEqual(estado(self.db)['versao'], 2)
+        self.assertEqual(estado(self.db)['versao'], 3)
         self.assertEqual(estado(self.db)['integridade'], [('ok',)])
         self.assertNotIn('Traceback', self.saida())
 
@@ -570,7 +619,7 @@ class CodigoAntigoSobreBancoMigrado(ServidorQa):
         self.assertTrue(all('genero' not in i for i in itens))
 
     def test_versao_do_esquema_nao_baixa_nem_sobe(self):
-        self.assertEqual(estado(self.db)['versao'], 2)
+        self.assertEqual(estado(self.db)['versao'], 3)
 
     def test_escritas_do_codigo_antigo_funcionam_e_o_banco_segue_integro(self):
         st, r = self.pedir('POST', '/api/items', {'items': [amazon('QAANT00002', 'Perfume Masculino Antigo')]})
@@ -581,7 +630,7 @@ class CodigoAntigoSobreBancoMigrado(ServidorQa):
         st, _ = self.pedir('DELETE', f'/api/items/{novo["id"]}')
         self.assertEqual(st, 200)
         self.assertEqual(estado(self.db)['integridade'], [('ok',)])
-        self.assertEqual(estado(self.db)['versao'], 2)
+        self.assertEqual(estado(self.db)['versao'], 3)
 
     def test_regra_criada_pelo_codigo_antigo_fica_com_generos_vazio_e_o_novo_le(self):
         st, n = self.pedir('POST', '/api/disparo/numeros', {'nome': 'Loja', 'telefone': '5500000000009',
@@ -623,7 +672,12 @@ con.row_factory = sqlite3.Row
 saida = {}
 for r in D.listar_regras(con):
     info = {}
-    ids = sorted(i['id'] for i in D.elegiveis(con, r, datetime(2026, 11, 3, 12, 0), S.eh_link_afiliado, info))
+    try:   # banco migrado: o relógio acompanha os dados (a trava de idade); o código antigo ignora isto
+        maior = con.execute('SELECT MAX(preco_em) FROM items').fetchone()[0]
+    except sqlite3.OperationalError:
+        maior = None
+    agora = datetime.fromisoformat(maior) if maior else datetime(2026, 11, 3, 12, 0)
+    ids = sorted(i['id'] for i in D.elegiveis(con, r, agora, S.eh_link_afiliado, info))
     saida[r['nome']] = {'ids': ids, 'casam': info['casam'], 'generos': r.get('generos')}
 print(json.dumps(saida))
 '''
@@ -663,6 +717,7 @@ class RegraAntigaElegeOMesmoConjunto(unittest.TestCase):
                         json.dumps(REGRAS_ANTIGAS)], env=env, check=True, capture_output=True, timeout=120)
         cls.antes = cls.elegiveis(antigo)
         migrar(TS.RAIZ, cls.caminho)
+        prazo_largo(cls.caminho)
         cls.depois = cls.elegiveis(TS.RAIZ)
 
     @classmethod
@@ -698,7 +753,8 @@ class ParidadeTresConsumidores(ServidorQa):
 
     @classmethod
     def preparar_banco(cls):
-        copiar_banco_real(cls.db)   # o servidor novo migra para a v2 ao subir
+        copiar_banco_real(cls.db)   # o servidor novo migra para a v3 ao subir
+        prazo_largo(cls.db)
 
     # ------------------------------------------------------------ apoio
     def mundo(self):
@@ -710,7 +766,7 @@ class ParidadeTresConsumidores(ServidorQa):
         try:
             regra = {'numero_id': 0, 'cats': list(cats), 'lojas': list(LOJAS), 'palavras': [], 'desconto_min': 0,
                      'repetir_apos_dias': None, 'generos': list(generos)}
-            return {i['id'] for i in D.elegiveis(con, regra, AGORA, S.eh_link_afiliado)}
+            return {i['id'] for i in D.elegiveis(con, regra, relogio_dos_dados(con), S.eh_link_afiliado)}
         finally:
             con.close()
 
@@ -742,9 +798,9 @@ class ParidadeTresConsumidores(ServidorQa):
             prop = esperado / sum(DISTRIBUICAO_2026_11_03.values())
             self.assertAlmostEqual(cont[g] / total, prop, delta=prop * FOLGA, msg=f'{g}: {cont[g]} de {total}')
         for g, o, a, c in mundo.values():
-            if c != PERF:
+            if c not in G.ABAS_COM_GENERO:
                 self.assertEqual((g, o, a), ('sem', '', 'sem'))
-        self.assertEqual(self.ids_do_banco('PRAGMA user_version'), [(2,)])
+        self.assertEqual(self.ids_do_banco('PRAGMA user_version'), [(3,)])
 
     # ------------------------------------------------------------ paridade inicial
     def test_paridade_inicial_nos_tres_consumidores(self):
@@ -974,7 +1030,7 @@ class BelezaEModaNosTresConsumidores(ServidorQa):
         try:
             regra = {'numero_id': 0, 'cats': list(cats), 'lojas': list(LOJAS), 'palavras': [], 'desconto_min': 0,
                      'repetir_apos_dias': None, 'generos': list(generos)}
-            return {i['id'] for i in D.elegiveis(con, regra, AGORA, S.eh_link_afiliado)}
+            return {i['id'] for i in D.elegiveis(con, regra, relogio_dos_dados(con), S.eh_link_afiliado)}
         finally:
             con.close()
 
@@ -1057,6 +1113,7 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
         r = json.loads(json.dumps(resposta))
         for o in r.get('ofertas', []):
             o.pop('genero', None)
+            o.pop('preco_em', None)   # campo da feature atualizar-precos (testes próprios)
         for c in r.get('categorias', []):
             c.pop('generos', None)
         return r
@@ -1079,7 +1136,7 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
     def test_oferta_ganha_so_a_chave_genero(self):
         antigas = self.antigo['']['ofertas'][0]
         novas = self.atual['']['ofertas'][0]
-        self.assertEqual(set(novas) - set(antigas), {'genero'})
+        self.assertEqual(set(novas) - set(antigas), {'genero', 'preco_em'})
         self.assertEqual(set(antigas) - set(novas), set())
 
 

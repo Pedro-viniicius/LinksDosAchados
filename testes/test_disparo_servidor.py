@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_servidor as TS  # noqa: E402  (ambiente, porta_livre, ServidorTeste, RAIZ, DB_REAL)
@@ -30,6 +30,9 @@ with open(os.path.join(TS.RAIZ, 'index.html'), encoding='utf-8') as _f:
     HTML = _f.read()
 DEFAULT_TEMPLATES = json.loads(re.search(r'^const DEFAULT_TEMPLATES = (\{.*\});$', HTML, re.M).group(1))
 ML = ('https://lista.mercadolivre.com.br', 'https://www.mercadolivre.com.br')
+# AVISO_PRECO_VELHO com o prazo padrão (docs/produto/specs/atualizar-precos.md, "Disparo: aviso")
+AVISO_24H = ('Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de 24 h. '
+             'Atualize os preços.')
 VARS_DISPARO = ('ACHADINHOS_DISPARO', 'ACHADINHOS_TICK_SEG', 'ACHADINHOS_TRANSPORTE', 'ACHADINHOS_TRANSPORTE_ARQUIVO')
 
 
@@ -148,6 +151,26 @@ class ServidorDisparo(TS.ServidorTeste):
         for v in (TELEFONE, GRUPO_ID, TELEFONE[-8:], GRUPO_ID.split('@')[0]):
             self.assertNotIn(v, texto)
 
+    def envelhecer(self, horas, onde="loja='amazon'"):
+        """Data o preço dos itens `onde` de `horas` horas atrás, direto no banco de teste (o lote não rodou)."""
+        quando = (datetime.now() - timedelta(hours=horas)).isoformat(timespec='seconds')
+        with sqlite3.connect(self.db) as con:
+            n = con.execute(f'UPDATE items SET preco_em=? WHERE {onde}', (quando,)).rowcount
+        con.close()
+        return n
+
+    def validade(self, valor):
+        """Grava config.preco_validade_horas pela rota do site e devolve ao padrão no fim do teste."""
+        st, _, d = self.pedir('PUT', '/api/config/preco_validade_horas', json.dumps(valor).encode(),
+                              {**self.local(), 'Content-Type': 'application/json'})
+        self.assertEqual(st, 200, d)
+        self.addCleanup(self.limpar_validade)
+
+    def limpar_validade(self):
+        with sqlite3.connect(self.db) as con:
+            con.execute("DELETE FROM config WHERE chave='preco_validade_horas'")
+        con.close()
+
 
 # ================================================================ rotas (agendador desligado)
 class TestRotas(ServidorDisparo):
@@ -247,6 +270,42 @@ class TestRotas(ServidorDisparo):
         self.assertEqual(self.ok('GET', 'envios?desde=2999-01-01'), [])
         self.assertEqual(self.api('GET', 'envios?desde=ontem')[0], 400)
         self.assertEqual(self.api('GET', 'envios?status=qualquer')[0], 400)
+
+    def test_preco_velho_fora_da_previa_e_do_agora(self):
+        """CA6 e CA7 de docs/produto/planos/atualizar-precos.md pelo HTTP: trava, aviso, preco_velho e prazo."""
+        itens = json.loads(self.pedir('GET', '/api/items')[2])
+        self.assertTrue(all(i['preco_em'] for i in itens), 'o POST do site grava preco_em')
+        n = self.numero()
+        r = self.regra(n['id'], por_disparo=3)
+        corpo = {'nome': 'P', 'numero_id': n['id'], 'cats': ['Eletrônicos'], 'template': 'Template 2',
+                 'horarios': ['09:00'], 'n': 5, 'com_info': True}
+        self.envelhecer(30, "item_id='B0SRV00000'")
+        p = self.ok('POST', 'previa', corpo)
+        self.assertEqual((len(p['itens']), p['recusados'], p['preco_velho']), (2, 0, 1))
+
+        self.assertEqual(self.envelhecer(30), 3)
+        p = self.ok('POST', 'previa', corpo)
+        self.assertEqual((p['itens'], p['preco_velho']), ([], 3))
+        self.assertEqual(self.ok('POST', 'previa', {**corpo, 'com_info': False}), [], 'sem com_info: lista')
+        self.assertEqual(self.ok('POST', f'regras/{r["id"]}/agora', {})['criados'], 0)
+        self.assertEqual(self.ok('GET', 'regras')[0]['aviso'], AVISO_24H)
+        self.assertEqual((self.ok('GET', 'envios'), self.linhas_jsonl()), ([], []))
+
+        self.validade(48)   # 30 h passam a valer
+        p = self.ok('POST', 'previa', corpo)
+        self.assertEqual((len(p['itens']), p['preco_velho']), (3, 0))
+        self.assertEqual(self.ok('POST', f'regras/{r["id"]}/agora', {})['criados'], 3)
+        self.assertEqual(self.ok('GET', 'regras')[0]['aviso'], '')
+
+    def test_preco_velho_com_validade_invalida_vale_24(self):
+        self.envelhecer(25)
+        n = self.numero()
+        for valor in (0, 169, '48', True, 48.5, None, [48]):
+            with self.subTest(valor=valor):
+                self.validade(valor)
+                p = self.ok('POST', 'previa', {'nome': 'P', 'numero_id': n['id'], 'cats': ['Eletrônicos'],
+                                               'template': 'Template 2', 'horarios': ['09:00'], 'com_info': True})
+                self.assertEqual((p['itens'], p['preco_velho']), ([], 3))
 
     def test_status_e_disparo_0_nao_inicia_a_thread(self):
         n = self.numero()
@@ -393,6 +452,25 @@ class TestAgendador(ServidorDisparo):
         self.assertIn('1 envio(s) criado(s)', saida)
         self.assertIn('marcado(s) como incerto', saida)
         self.assertSemDadoPessoal(saida)
+
+
+class TestAgendadorPrecoVelho(ServidorDisparo):
+    """O agendador (thread do servidor) não manda item de preço velho e grava o aviso (CA6 e CA7)."""
+
+    def test_horario_com_tudo_velho_nao_envia_e_avisa(self):
+        agora = datetime.now()
+        if (agora.hour, agora.minute) == (23, 59) and agora.second > 45:
+            time.sleep(20)   # o slot tem que ser "de hoje" quando o tick rodar
+            agora = datetime.now()
+        self.preparar()
+        self.assertEqual(self.envelhecer(25), 3)
+        n = self.numero()
+        r = self.regra(n['id'], horarios=[agora.strftime('%H:%M')])
+        aviso = esperar(lambda: self.ok('GET', 'regras')[0]['aviso'], desc='o aviso do agendador')
+        self.assertEqual(aviso, AVISO_24H)
+        self.assertEqual((self.ok('GET', 'envios'), self.linhas_jsonl()), ([], []))
+        self.assertEqual(r['aviso'], '')
+        self.assertSemDadoPessoal(self.saida())
 
 
 class TestTransportePorAmbiente(unittest.TestCase):

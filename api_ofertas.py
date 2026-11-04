@@ -9,6 +9,8 @@ Só biblioteca padrão. Não importa `servidor` (mesmo padrão do disparo.py): q
 conexão e o `eh_afiliado` (o eh_link_afiliado do servidor). Nada é gravado e não há migração.
 O público (`genero`) vem do genero.py (docs/produto/planos/genero-nas-categorias.md, etapa 5): a
 correção manual é só lida (tabela `generos_manuais`; banco sem ela dá tudo automático).
+A idade do preço (`preco_em` e o filtro `preco_max_horas`) é da etapa 3 de
+docs/produto/planos/atualizar-precos.md: a coluna items.preco_em vem da migração v3 do disparo.py.
 """
 import math
 import re
@@ -26,9 +28,9 @@ LIMITE_PADRAO, LIMITE_MAX = 50, 200
 MAX_CATS, MAX_CAT = 20, 200
 MAX_Q, MAX_TERMOS = 200, 10
 ORDENS = ('atualizacao', 'relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes')
-PARAMETROS = ('cat', 'loja', 'q', 'desconto_min', 'ordem', 'limite', 'cursor', 'genero')
+PARAMETROS = ('cat', 'loja', 'q', 'desconto_min', 'ordem', 'limite', 'cursor', 'genero', 'preco_max_horas')
 REPETIVEIS = ('cat', 'loja', 'genero')
-# Pedido válido tem no máximo 20 cat + 3 loja + 4 genero + 5 parâmetros; acima disso nem vale olhar.
+# Pedido válido tem no máximo 20 cat + 3 loja + 4 genero + 6 parâmetros; acima disso nem vale olhar.
 MAX_PARES = MAX_CATS + len(D.LOJAS) + len(G.GENEROS) + len(PARAMETROS) - len(REPETIVEIS)
 # Horário como o servidor grava (datetime.isoformat(timespec='seconds')): ISO local, sem fuso.
 _HORA = '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
@@ -58,13 +60,29 @@ def _numero_ok(v):
     return math.isfinite(v) and v > 0
 
 
+def _preco_em(v):
+    """items.preco_em como sai na oferta: o texto, se o disparo.ler_preco_em o aceita (a mesma regra da
+    trava: formato AAAA-MM-DDTHH:MM:SS estrito, hora de 00 a 23, data que existe); senão None (nulo, BLOB,
+    "03/11/2026", 2026-02-30, T24:00:00). Data no futuro sai como texto: o campo só mostra a data, quem
+    decide se o preço é velho é o filtro preco_max_horas. Nunca tira a oferta da lista: sem o filtro, a
+    resposta é a de antes mais este campo (P2 do plano atualizar-precos)."""
+    return v if D.ler_preco_em(v) is not None else None
+
+
+def _tem_preco_em(con):
+    """True se items já tem a coluna preco_em (migração v3). O servidor migra na subida, mas um banco
+    anterior lido direto (um retrato de antes da v3) não tem: lá nenhuma oferta tem data de preço."""
+    return any(r[1] == 'preco_em' for r in con.execute('PRAGMA table_info(items)'))
+
+
 def oferta(row, eh_afiliado, manuais=None):
     """A linha de `items` no formato da oferta v1, ou None se ela não pode sair (CA2).
 
     Sai só com: tem_dados=1, loja conhecida, título, preço numérico finito > 0, horários no
     formato do servidor, link de afiliado da própria loja (disparo.link_da_loja_ok) e nenhuma
     candidata a link (disparo.urls_da_mensagem) no título, no cupom, na categoria, na busca ou no
-    item_id (que pode ser o próprio link). A imagem fora do CDN da loja vira None.
+    item_id (que pode ser o próprio link). A imagem fora do CDN da loja vira None. `preco_em` (_preco_em)
+    não entra nessas condições: fora do formato, vira None.
 
     `genero` (genero.do_item) só é calculado depois de todas essas condições: o filtro por público
     nunca traz uma linha que não sairia sem ele. `manuais` é o genero.manuais(con), lido uma vez por
@@ -108,6 +126,10 @@ def oferta(row, eh_afiliado, manuais=None):
     except (ValueError, OverflowError):
         return None
     publico, _origem = G.do_item(row['id'], t['cat'], t['busca'], t['titulo'], manuais)
+    try:
+        preco_em = _preco_em(row['preco_em'])
+    except IndexError:   # banco de antes da v3 (_tem_preco_em)
+        preco_em = None
     return {
         'id': row['id'], 'chave': f"{t['loja']}:{t['item_id']}", 'loja': t['loja'], 'item_id': t['item_id'],
         'categoria': t['cat'], 'busca': t['busca'], 'titulo': t['titulo'], 'link': t['url'],
@@ -118,7 +140,7 @@ def oferta(row, eh_afiliado, manuais=None):
         'num_avaliacoes': num_avaliacoes,
         'frete_gratis': 'gratis' in D._sem_acento(t['frete']),
         'cupom': t['cupom'], 'criado_em': t['criado_em'], 'atualizado_em': t['atualizado_em'],
-        'genero': publico,
+        'genero': publico, 'preco_em': preco_em,
     }
 
 
@@ -131,8 +153,9 @@ def _inteiro(valor, nome, minimo, maximo):
 def filtros(pares):
     """Confere os parâmetros da query (a lista do parse_qsl, para enxergar repetição). ErroApi 400.
 
-    Devolve {'cats', 'lojas', 'generos', 'termos', 'desconto_min', 'ordem', 'limite', 'cursor'};
-    `termos` já vem sem acento e sem caixa; `cursor` é None, (atualizado_em, id) ou o deslocamento (int).
+    Devolve {'cats', 'lojas', 'generos', 'termos', 'desconto_min', 'ordem', 'limite', 'cursor',
+    'preco_max_horas'}; `termos` já vem sem acento e sem caixa; `cursor` é None, (atualizado_em, id) ou
+    o deslocamento (int); `preco_max_horas` é None (sem filtro, o padrão) ou o int de 1 a 168.
     """
     pares = list(pares or ())
     if len(pares) > MAX_PARES:
@@ -178,6 +201,9 @@ def filtros(pares):
 
     desconto_min = _inteiro(vistos['desconto_min'][0], 'desconto_min', 0, 99) if 'desconto_min' in vistos else 0
     limite = _inteiro(vistos['limite'][0], 'limite', 1, LIMITE_MAX) if 'limite' in vistos else LIMITE_PADRAO
+    # mesma faixa da validade do disparo (config.preco_validade_horas), mas aqui só vale se pedirem
+    preco_max_horas = (_inteiro(vistos['preco_max_horas'][0], 'preco_max_horas', D.VALIDADE_MIN_HORAS,
+                                D.VALIDADE_MAX_HORAS) if 'preco_max_horas' in vistos else None)
 
     ordem = vistos.get('ordem', ['atualizacao'])[0]
     if ordem == 'aleatoria':
@@ -197,13 +223,16 @@ def filtros(pares):
             raise _invalido('cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem')
 
     return {'cats': cats, 'lojas': lojas, 'generos': generos, 'termos': termos, 'desconto_min': desconto_min,
-            'ordem': ordem, 'limite': limite, 'cursor': cursor}
+            'ordem': ordem, 'limite': limite, 'cursor': cursor, 'preco_max_horas': preco_max_horas}
 
 
-def _casa(o, f):
-    """Filtros que dependem da oferta pronta: genero (exato: qualquer um dos pedidos), q (basta um
-    termo no título) e desconto_min."""
+def _casa(o, f, agora):
+    """Filtros que dependem da oferta pronta: genero (exato: qualquer um dos pedidos), preco_max_horas
+    (disparo.preco_recente, a mesma regra da trava do disparo: preco_em nulo ou malformado não passa),
+    q (basta um termo no título) e desconto_min."""
     if f['generos'] and o['genero'] not in f['generos']:
+        return False
+    if f['preco_max_horas'] is not None and not D.preco_recente(o['preco_em'], agora, f['preco_max_horas']):
         return False
     if o['desconto_pct'] < f['desconto_min']:
         return False
@@ -221,12 +250,19 @@ def listar(con, f, eh_afiliado, agora):
     cursor da última oferta da página e vem null só quando a página sai vazia, para quem guarda o
     último `proximo` e volta depois buscar só as novidades. Demais ordens: disparo.ordenar e
     deslocamento; `proximo` vem null quando não há mais ofertas.
+
+    Com `preco_max_horas`, só ofertas com preço confirmado há no máximo essas horas, contadas de `agora`.
+    O SQL só estreita a leitura (comparação de texto, que deixaria passar BLOB ou texto fora do
+    formato); quem decide é o _casa. Num banco de antes da v3 o SQL fica sem a coluna e nada passa.
     """
     sql, args = _SQL_BASE, []
     for coluna, valores in (('cat', f['cats']), ('loja', f['lojas'])):
         if valores:
             sql += f" AND {coluna} IN ({','.join('?' * len(valores))})"
             args += valores
+    if f['preco_max_horas'] is not None and _tem_preco_em(con):
+        sql += ' AND preco_em >= ?'
+        args.append((agora - timedelta(hours=f['preco_max_horas'])).isoformat(timespec='seconds'))
     por_atualizacao = f['ordem'] == 'atualizacao'
     if por_atualizacao:
         sql += ' AND atualizado_em <= ? ORDER BY atualizado_em, id'
@@ -238,7 +274,7 @@ def listar(con, f, eh_afiliado, agora):
     validas = []
     for r in con.execute(sql, args):
         o = oferta(r, eh_afiliado, manuais)
-        if o is not None and _casa(o, f):
+        if o is not None and _casa(o, f, agora):
             validas.append((r, o))
 
     limite = f['limite']

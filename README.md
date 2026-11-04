@@ -14,9 +14,10 @@ Variáveis de ambiente (todas opcionais):
 - `ACHADINHOS_PORTA`: porta do servidor (padrão `8765`).
 - `ACHADINHOS_FEITOS`: arquivo de progresso do `coletar_amazon.py` (padrão `coleta_amazon_feitos.txt`).
 - `ACHADINHOS_FEITOS_SHOPEE`: arquivo de progresso do `coletar_shopee.py` (padrão `coleta_shopee_feitos.txt`).
+- `ACHADINHOS_FEITOS_ATUALIZAR`: arquivo de progresso do `atualizar_precos.py` (padrão `atualizar_precos_feitos.txt`; veja "Atualizar os preços").
 - `ACHADINHOS_API_TOKEN_ARQUIVO`: arquivo do token da API para o Achadinho Turbo (padrão `api_token.txt` ao lado do `servidor.py`; veja "API para o Achadinho Turbo").
 
-O `coletar_shopee.py` também lê `ACHADINHOS_SHOPEE_APP_ID` e `ACHADINHOS_SHOPEE_SECRET` (veja "Coleta da Shopee"). O servidor não usa essas duas.
+O `coletar_shopee.py` e o `atualizar_precos.py shopee` também leem `ACHADINHOS_SHOPEE_APP_ID` e `ACHADINHOS_SHOPEE_SECRET` (veja "Coleta da Shopee"). O servidor não usa essas duas.
 
 ## Abas
 
@@ -69,11 +70,12 @@ Use sempre proxies mortos, para nenhum teste sair para a rede:
 
 ```
 export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 ftp_proxy=http://127.0.0.1:9
-python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py
+python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py atualizar_precos.py
 python3 testes/test_servidor.py -v
 python3 testes/test_migrar_categorias.py -v
 python3 testes/test_coletar_amazon.py -v
 python3 testes/test_coletar_shopee.py -v
+python3 testes/test_atualizar_precos.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
 python3 testes/test_genero.py -v
@@ -341,6 +343,92 @@ Os nomes dos campos e das ordens da API vêm de fontes de terceiros e ainda prec
 - Voltar o código pelo git é seguro: não há migração de esquema, e o código antigo não envia item da Shopee no disparo.
 - Para esquecer o progresso e recoletar um termo, apague a linha dele em `coleta_shopee_feitos.txt`.
 
+## Atualizar os preços
+
+Preço velho vai para os grupos como se fosse novo. Por isso cada item guarda `preco_em`, o momento em que o preço foi confirmado pela última vez, e o disparo recusa o item cujo preço passou da validade. Plano: `docs/produto/planos/atualizar-precos.md`; spec da tela: `docs/produto/specs/atualizar-precos.md`.
+
+**Quem grava `preco_em`:** a coleta, a atualização em lote (esta seção), o `importar` da Shopee, o "Atualizar preço" do cartão da Amazon e o POST do site, sempre que a escrita traz um preço legível. Reclassificar, corrigir o público, trocar a `url` e a migração de abas **não** mexem nele.
+
+**Validade:** `config/preco_validade_horas`, um número só para o disparo, os cartões, o filtro do site e a API. Padrão 24 h, de 1 a 168; valor ausente ou inválido vale 24. Ajuste no site, no quadro "Como atualizar os preços" (botão na lista, ou o atalho `#precos`), que grava por `PUT /api/config/preco_validade_horas`.
+
+### Antes da primeira vez
+
+1. **Faça um backup** (seção "Backup"). Reiniciar o `servidor.py` com o código novo, ou rodar qualquer comando novo (`atualizar_precos.py`, `coletar_amazon.py`, `coletar_shopee.py`), migra o banco para a **versão 3 do esquema**: acrescenta a coluna `items.preco_em` e a preenche com o `criado_em` de cada item que tem preço (um limite inferior seguro; o `atualizado_em` não muda). A migração só acrescenta. O código antigo funciona sobre o banco v3 (ignora a coluna).
+2. **Reinicie o `servidor.py`.** O `ColetaML.atualizar()` confere se o servidor entende `so_existentes` e, se não entender, recusa antes de enviar qualquer item (um servidor antigo inseriria os itens do lote).
+3. **No primeiro dia, tudo parece velho.** Como o `preco_em` inicial é o `criado_em` (a data da coleta do item), com a validade de 24 h todos os preços passam dela até o primeiro lote. Se houver regra ativa, ela fica sem mensagem (o aviso diz "Atualize os preços") até você atualizar, ou até você subir a validade.
+4. Para ver o comando funcionar sem mexer no banco real, rode antes na cópia (servidor de teste na 8766, seção "Testes"): prefixe o comando com `ACHADINHOS_DB=/caminho/copia.db ACHADINHOS_FEITOS_ATUALIZAR=/caminho/atualizar-teste.txt` e interrompa com Ctrl+C depois de uma ou duas páginas.
+
+### Amazon (terminal)
+
+```
+python3 atualizar_precos.py amazon                              # todas as abas
+python3 atualizar_precos.py amazon --cat "Perfumes e Perfumaria"  # uma aba
+python3 atualizar_precos.py amazon --cat "Pets" --produtos 50     # e, depois da busca, a página de até 50 itens que a busca não achou
+```
+
+- **Só atualiza o que já existe.** Nunca insere item e nunca troca o link de afiliado (a mesma guarda do `upsert` da coleta). O que é gravado vem das páginas de busca, com o mesmo piso e a mesma recusa de usado da coleta (veja "Piso de qualidade das coletas"), e grava também título e foto novos, como a coleta faz.
+- **Como lê:** para cada termo do `buscas.json` com item pendente, lê a página 1 da busca nas ordens que já constam em `coleta_amazon_feitos.txt` (relevância, se nenhuma), e pula para o próximo termo quando não sobra item daquele termo para ver. Item cujo preço já foi confirmado hoje fica de fora. Não precisa de nenhuma credencial.
+- **`--produtos N`** (0 a 500, padrão 0): depois da busca, abre a página do produto dos itens que ela não viu e que já passaram da validade (os mais velhos primeiro), com pausa entre um e outro. Comece sem ele e olhe os "não vistos" do resumo; aumente aos poucos. A url vem do código do produto (ASIN), nunca do banco.
+- **Tempo (estimativa pelas pausas do código, não medida):** cada página leva de 4 a 8 s de pausa mais a rede, cerca de 9 s. Uma atualização completa lê até 282 páginas (cada par termo e ordem já coletado): cerca de **40 min**; "Perfumes e Perfumaria" sozinha, cerca de **25 min**. Cada página do `--produtos` soma cerca de 9 s.
+- **Progresso:** `atualizar_precos_feitos.txt` (já no `.gitignore`; `ACHADINHOS_FEITOS_ATUALIZAR` troca o arquivo), uma linha `<loja>|<AAAA-MM-DD>|<ordem>|<termo>` por página gravada (`produto|<ASIN>` no `--produtos`). **Vale só no dia:** Ctrl+C e rodar de novo no mesmo dia retoma de onde parou; no dia seguinte começa de novo. O banco é gravado a cada página, então o que já foi lido fica.
+- **Captcha ou bloqueio** (captcha, HTTP 503 ou 429): o comando **sai com 3**, guarda o que já fez e imprime "PAROU". Espere de 15 a 30 min e rode o **mesmo comando** de novo: ele retoma pelo progresso do dia. Para dividir o trabalho, use `--cat`. Se o captcha repetir, pare por hoje e não aumente o `--produtos`.
+- **Resumo no fim** (só contagens e até 20 códigos de produto; nunca título nem link): selecionados, já confirmados hoje, atualizados, sem preço legível (os dados antigos ficam), fora do piso, usados, indisponíveis, sumidos e **não vistos**.
+
+### Mercado Livre (console do Chrome)
+
+Mesmo cuidado de "Coleta do Mercado Livre": cole só o `coletar_ml.js` deste projeto numa aba de `https://lista.mercadolivre.com.br` (com o "Acesso à rede local" liberado) e rode:
+
+```
+await ColetaML.atualizar({cat: 'Perfumes e Perfumaria'})                    // os termos da aba, na relevância
+await ColetaML.atualizar({cat: 'Perfumes e Perfumaria', ordem: 'caros'})    // a mesma aba, na ordem "maior preço"
+await ColetaML.atualizar({termos: ['Body splash'], enviar: false})          // só monta o lote, não grava nada
+```
+
+- **Exige `cat` ou `termos`** (sem nenhum dos dois, recusa sem fazer nada). Com `cat`, lê os termos da aba (e os do `ALIAS` que apontam para ela); `termos` precisa estar no `buscas.json` e, se vier junto com `cat`, ser dessa aba. Só roda em `https://lista.mercadolivre.com.br`. Aceita as mesmas opções `servidor`, `enviar` e `pausa` do `coletar()`, e `ordem` (`'relevancia'` ou `'caros'`).
+- **Só atualiza o que já existe:** manda `POST /api/items` com `"so_existentes": true`. O servidor não insere e preserva o `meli.la`. Lê a página inteira de cada termo (sem o corte de 30 da coleta), com o piso e a recusa de usado da coleta; o card usado, fora do piso ou sem preço legível não vai no lote.
+- **Progresso por dia**, no `localStorage` da aba, por servidor (`__atualizarML:<servidor>`, com `<AAAA-MM-DD>|<ordem>|<termo>`), separado do progresso da coleta. Rodar de novo no mesmo dia pula os termos já feitos; no dia seguinte começa de novo. `ColetaML.parar()` para depois do termo atual; `ColetaML.zerar()` também esquece o progresso do atualizar.
+- **Resultado:** o log do console traz uma linha por termo e um fim com os totais. Em `ColetaML.estado` ficam `atualizado`, `ausente` (item da página que não está no banco: nada é inserido), `foraDoPiso`, `usados` e `semPreco`.
+- **Tempo (não medido):** o plano contou 99 termos do ML com itens no banco (todas as abas), com pausa de 2,5 a 5 s entre um e outro mais o carregamento de cada página: pelo menos uns 6 min de pausa para tudo, e provavelmente bem mais. Por aba é proporcional aos termos dela.
+- **Captcha ou bloqueio:** se a busca de um termo vier **sem polycard** (captcha ou mudança na página do ML), a atualização **para** e não envia nada daquele termo. Resolva o captcha na aba e chame `ColetaML.atualizar(...)` de novo com as mesmas opções: ela retoma pelo progresso do dia. Se o servidor recusar ou não responder, também para, com o motivo no console.
+
+### Shopee
+
+O dono **ainda não tem a credencial da Open API da Shopee**. Até ter, a Shopee se atualiza pelo `importar` do painel, um termo por vez:
+
+```
+python3 coletar_shopee.py importar ARQUIVO
+```
+
+Veja "Coleta da Shopee" (importar do painel) para o formato do arquivo e os cuidados. O `importar` grava `preco_em` pelo mesmo caminho da coleta, então conta como atualização; ao contrário do `atualizar_precos.py`, ele também insere item novo. Estimativa de uns 1 a 2 min por termo (não verificada).
+
+Quando a credencial chegar, o comando de lote da Shopee já está pronto (testado só com resposta falsa). Use **um terminal só para isso** e passe as credenciais só ao comando, sem `export`, como em "Coleta da Shopee":
+
+```
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria"; unset S
+```
+
+- **`--cat` é obrigatório:** a Shopee atualiza uma aba por vez. Lê os termos da aba nas ordens que já constam em `coleta_shopee_feitos.txt` (relevância, se nenhuma).
+- **Antes de gravar o primeiro item**, confere que o link gerado é do dono (`utm_source=an_<ID_AFILIADO_SHOPEE>`); se falhar, não grava nada e sai com 1. O Secret só é lido do ambiente do comando, nunca vai para argumento, arquivo, saída ou erro. **Nunca escreva o AppID nem o Secret em arquivo, no git, na conversa ou neste README**, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`.
+- **Tempo (estimativa, não medida):** 42 termos na "Perfumes e Perfumaria", com pausa de 1 a 3 s entre as chamadas: poucos minutos por aba.
+- **Saídas:** 0 ok; 1 erro (link que não é do dono, API recusou ou resposta fora do formato); 2 configuração (credenciais ausentes, `ID_AFILIADO_SHOPEE` inválido, aba fora do `buscas.json`); **3 limite da API**: o progresso está salvo, espere de 15 a 30 min e rode o mesmo comando de novo. O progresso é o mesmo `atualizar_precos_feitos.txt` da Amazon, por loja e por dia.
+- O formato da resposta da API ainda está "a confirmar" (veja "Coleta da Shopee"): se o comando terminar com "recusou" ou "fora do formato esperado", comece por aí.
+
+### O que acontece com o item que sumiu ou mudou
+
+Item que sumiu da busca, ficou indisponível, caiu do piso ou virou usado **não é atualizado nem apagado**: entra no resumo e o preço dele **envelhece**. Passado o prazo, a trava do disparo o tira da fila (e o site o marca "Desatualizado"). Quem decide apagá-lo é você, pelo site. Nada marca nem exclui item em massa nesta entrega.
+
+### Onde a idade do preço aparece
+
+- **No site:** o cartão mostra a idade ("Preço de hoje, 14:20", "Preço de 03/11 (há 2 dias)") e o selo "Desatualizado" quando passou da validade. A lista tem uma faixa com a contagem da aba, o filtro de preço (Todos, Desatualizados, Em dia) e a ordem "Preço mais antigo primeiro". O "Atualizar preço" do cartão da Amazon também renova a idade. O site **não busca preços sozinho**: o quadro "Como atualizar os preços" só mostra o comando de cada loja, as contagens e o campo da validade.
+- **No disparo:** a regra não cria mensagem (nem mostra na prévia) para item com `preco_em` nulo, ilegível ou mais velho que a validade. Quando um horário fica sem mensagem só por isso, a regra grava o aviso "Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de N h. Atualize os preços." A prévia com informações traz a contagem `preco_velho`.
+- **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). O filtro opcional `preco_max_horas` (1 a 168) só devolve ofertas com preço dessa idade ou mais novo; sem ele a resposta é a de sempre, mais o campo. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+
+### Reverter
+
+- **Um lote ruim:** pare o `servidor.py` e use o backup de antes dele (`python3 migrar_categorias.py --restaurar backups/<arquivo>.db`; ele devolve o banco **inteiro**, então números, regras, envios e correções feitos depois do backup somem; o estado de antes fica em `backups/`).
+- **A migração v3:** voltar o código é seguro; a coluna `preco_em` fica sem efeito.
+- **O progresso do dia:** para repetir uma página, apague a linha dela em `atualizar_precos_feitos.txt` (Amazon e Shopee) ou use `ColetaML.zerar()` (ML).
+
 ## Plugin do Chrome
 
 O Mercado Livre é coletado no Chrome (captcha e linkbuilder logado). Um assistente com o plugin do Chrome pode operar essas abas, mas o que cada lado faz é fixo.
@@ -385,7 +473,7 @@ Gerar links de verdade também os adiciona a "Minhas recomendações" da conta d
 
 Regras do dono que montam uma **fila de ofertas** nos horários combinados. Nesta entrega o transporte é **manual**: o servidor cria as mensagens e você as copia da fila (mensagem e imagem) para o WhatsApp e clica em "Marcar como enviado" ou "Pular". O envio automático para o grupo fica para uma entrega 2. Plano: `docs/produto/planos/disparo-automatico.md`.
 
-**Primeira vez:** faça um backup (seção "Backup") e reinicie o `servidor.py`. Ele cria as tabelas `numeros`, `regras` e `envios` (versão 1 do esquema) e, na versão 2, a tabela `generos_manuais` e a coluna `regras.generos` (veja "Público (gênero)"), e grava `PRAGMA user_version = 2`; a migração só acrescenta, não mexe em nada existente. Ela acontece quando o servidor reinicia ou quando uma coleta roda (`coletar_amazon.py` e `coletar_shopee.py` também abrem o banco). O botão "Disparo automático" fica no topo da página principal.
+**Primeira vez:** faça um backup (seção "Backup") e reinicie o `servidor.py`. Ele cria as tabelas `numeros`, `regras` e `envios` (versão 1 do esquema) e, na versão 2, a tabela `generos_manuais` e a coluna `regras.generos` (veja "Público (gênero)"), e, na versão 3, a coluna `items.preco_em` (veja "Atualizar os preços"), e grava `PRAGMA user_version = 3`; a migração só acrescenta, não mexe em nada existente. Ela acontece quando o servidor reinicia ou quando uma coleta roda (`coletar_amazon.py` e `coletar_shopee.py` também abrem o banco). O botão "Disparo automático" fica no topo da página principal.
 
 1. **Número e grupo** (`#numeros`, "Números de WhatsApp"): rótulo, telefone com DDI e DDD, só números (ex.: 55 + DDD + número; opcional no envio manual), grupo de destino, código do grupo (opcional) e limite por dia (1 a 200, somando todas as regras do número). O telefone e o código do grupo ficam só no banco local, vão só no corpo JSON (nunca em URL nem em log) e aparecem mascarados na tela.
 2. **Regra** (`#disparo/nova`; editar: `#disparo/regra/<id>`): nome, número, categorias (as abas que existem), lojas (chips "Lojas": Amazon, Mercado Livre e/ou Shopee; ao menos uma), ordem, público ("Todos", "Feminino", "Masculino" ou "Unissex"; veja "Público (gênero)"), filtros opcionais (palavras no título, desconto mínimo em %), dias e horários, mensagens por horário (1 a 10), máximo por dia, prazo para não repetir (N dias ou nunca), template (os de "Editar templates", que agora fica só no formulário da regra; precisa ter `{LINK}`) e foto (item sem imagem sai só com texto). **A regra nasce pausada:** confira a prévia (a lista de mensagens que ela mandaria agora, sem gravar nada, no fim do formulário) e use "Ativar" quando quiser começar.
@@ -411,7 +499,7 @@ Regras do dono que montam uma **fila de ofertas** nos horários combinados. Nest
 - Horário perdido por **mais de 10 minutos** (computador desligado) é pulado, sem rajada. Reiniciar o servidor **não repete** horário já processado.
 - Valem ao mesmo tempo "mensagens por horário", "máximo por dia" (por regra) e o "limite por dia" do número. O horário é o do computador.
 - **Lojas da regra:** a regra nova já nasce com as três lojas marcadas. As regras antigas continuam como foram gravadas (Amazon e Mercado Livre) e só passam a incluir a Shopee se você marcar o chip "Lojas" ao editar. A loja do item aparece na prévia, na fila e no histórico (o item excluído fica sem o rótulo), e `{LOJA}` no template vira "Shopee" para esses itens.
-- Os preços são os da última coleta; o disparo não recoleta nada. O template com aviso de preço ajuda.
+- Os preços são os da última coleta ou atualização; o disparo não recoleta nada. Item com preço mais velho que a validade (24 h por padrão) não sai (veja "Atualizar os preços"). O template com aviso de preço ajuda.
 - Quando um horário não gera nenhuma mensagem, a regra mostra um aviso com o motivo: nenhum item casa com os filtros, incluindo o público (acontece quando uma aba é renomeada), todos os elegíveis já foram enviados no prazo de repetição, ou o template tem um link que não é o do item. O aviso some no próximo horário que mandar.
 - Título com algo parecido com um endereço de site (ex.: `i.Phone`, `55UN85CBPSA.BWZ`) é recusado por segurança e esse item nunca sai; são poucos (14 no banco de hoje) e ficam só no log do servidor.
 

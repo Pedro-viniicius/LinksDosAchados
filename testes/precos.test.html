@@ -1,0 +1,1425 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: Preço sempre atualizado</title>
+<!--
+  Testes do front do plano docs/produto/planos/atualizar-precos.md (etapa 6, CA9) e da spec docs/produto/specs/atualizar-precos.md
+  (CA-P1 a CA-P10): idade do preço no cartão, selo "Desatualizado", prazo (config/preco_validade_horas), faixa, quadro
+  "Como atualizar os preços", filtro, ordem, avisos ao copiar, "Atualizar preço", atalho #precos e o cabeçalho do disparo. Sem dependência.
+  Sobe sobre uma cópia do banco (nunca a 8765 com coleta gravando):
+
+    ACHADINHOS_DB=<copia> ACHADINHOS_PORTA=8766 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe ACHADINHOS_DISPARO=0 python3 servidor.py
+    PORTA=8766 node testes/rodar.mjs precos
+
+  Regras de segurança desta página:
+  - o iframe carrega o /index.html real; só GET sai para a API real. Toda escrita em /api/ (PUT do prazo, PATCH do "Atualizar preço"),
+    /api/fetch (a rede da Amazon) e /api/disparo/* é atendida por um servidor FALSO em memória (`FALSO`), registrada e nunca enviada;
+  - itens FALSOS (ids 9xxxxxxxx) só existem na memória do iframe; nada disso chega ao banco;
+  - sem navegação por hash, exceto o atalho #precos (1 mudança de hash): o disparo.test.html está perto do limite do Chrome no runner.
+
+  Obs.: as palavras de resultado ficam montadas por concatenação no script, e fora deste comentário,
+  para um grep no texto da página não casar com o código-fonte.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: Preço sempre atualizado</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+let W, FETCH_ORIG, API_ANTES = null;
+const VIOL = [];       // escrita na API real (deve ficar vazia)
+const REG = [];        // tudo que o iframe chamou: { url, metodo, corpo }
+const FALSO = {};      // 'METODO /caminho' -> (corpo, url) => Response | objeto | Promise; atende no lugar do servidor real
+const COPIADOS = [];   // texto que o app mandou para a área de transferência (falsa)
+
+const q = s => W.document.querySelector(s);
+// Identidade de nó do DOM: o igual() compara por JSON e veria qualquer nó como {}
+const mesmoNo = (a, b, msg) => { if (a !== b) throw new Falha(msg || 'não é o mesmo nó do DOM'); };
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => el.textContent.replace(/\s+/g, ' ').trim();
+const visivel = el => !!el && el.checkVisibility() && W.getComputedStyle(el).visibility !== 'hidden' && el.getClientRects().length > 0;   // checkVisibility pega o <details> fechado (content-visibility)
+const semRolagemHorizontal = () => { const d = W.document.documentElement; return d.scrollWidth <= d.clientWidth + 1; };
+const ev = expr => W.eval(expr);
+const json = o => new W.Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
+
+async function largura(px) { document.getElementById('app').style.width = px + 'px'; await dormir(150); }
+
+async function abrirApp(sufixo = '') {
+  document.getElementById('app').style.width = '1100px';
+  localStorage.removeItem('activeCat');
+  for (const k of Object.keys(FALSO)) delete FALSO[k];
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now() + sufixo; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  REG.length = 0; COPIADOS.length = 0;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    const corpo = opcoes && opcoes.body !== undefined ? opcoes.body : undefined;
+    const caminho = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+    REG.push({ url, metodo, corpo, caminho });
+    const f = FALSO[metodo + ' ' + caminho];
+    if (f) return Promise.resolve().then(() => f(corpo === undefined ? undefined : JSON.parse(corpo), url));
+    if (metodo !== 'GET' && /\/api\//.test(url)) { VIOL.push(metodo + ' ' + url); return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real')); }
+    if (/\/api\/fetch\b/.test(url)) { VIOL.push(metodo + ' ' + url); return Promise.reject(new W.TypeError('bloqueado pelo teste')); }   // a rede da Amazon nunca sai; GET de /api/disparo/* (leitura) vai ao servidor real
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  Object.defineProperty(W.navigator, 'clipboard', { configurable: true, value: { writeText: async t => { COPIADOS.push(t); }, write: async () => {} } });
+  await esperar(() => ev('ofertasProntas === true') && ev('items.length') > 0, 'o index.html carregar os itens (PORTA=... aponta para o servidor da cópia?)');
+  await dormir(30);
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+// ---- itens falsos: ids 9xxxxxxxx, só na memória do iframe
+let SEQ = 900000000;
+const URLS = { amazon: n => 'https://www.amazon.com.br/dp/B0FALSO' + n + '?tag=desejodemen01-20', ml: n => 'https://meli.la/F' + n, shopee: n => 'https://s.shopee.com.br/F' + n };
+const CAT = 'Pets';
+const iso = d => { const p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
+const haHoras = h => iso(new Date(Date.now() - h * 36e5 - 1500));   // 1,5 s a mais: não encosta no limite durante o teste
+const falso = (loja, preco_em, extra = {}, data = {}) => {
+  const n = ++SEQ;
+  return { id: n, loja, item_id: 'F' + n, cat: CAT, busca: 'termo falso', url: URLS[loja](n), preco_em,
+    data: { titulo: 'Produto falso ' + n, preco: 'R$ 10,00', ...data }, genero: 'sem', genero_origem: '', genero_auto: 'sem', ...extra };
+};
+function usarItens(lista, validade = 24) {
+  ev('precoValidade = ' + validade + '; validadeAviso = false; activeCat = ' + JSON.stringify(CAT) + '; items = ' + JSON.stringify(lista) + '; page = 1;'
+    + " for (const s of ['#fLoja','#fBusca','#fPreco','#fOrdem','#fTexto']) $(s).value = ''; render();");
+}
+const cartoes = () => qa('#grid .card');
+const cartao = i => cartoes()[i];
+function escolher(sel, valor) { sel.value = valor; sel.dispatchEvent(new W.Event('change', { bubbles: true })); }
+const toastTexto = () => q('#toast').textContent;
+// Clica e espera o toast novo (o #toast nasce com "Copiado!" fixo no HTML: limpa antes para não ler o resto de um aviso anterior)
+async function clicarEEsperarToast(botao) {
+  const t = q('#toast'); t.textContent = ''; t.classList.remove('show');
+  botao.click();
+  await esperar(() => t.classList.contains('show') && t.textContent !== '', 'o toast depois do clique');
+  return t.textContent;
+}
+
+// 4 itens para as tabelas de contagem (a aba é CAT): 2 velhos com data, 1 sem data, 1 em dia, mais um sem preço
+function lote() {
+  return [
+    falso('amazon', haHoras(1)),
+    falso('amazon', haHoras(30)),
+    falso('amazon', null),
+    falso('ml', haHoras(50)),
+    falso('ml', haHoras(2)),
+    falso('shopee', haHoras(100)),
+    falso('shopee', null, {}, { preco: '' }),   // sem preço: fora das contagens, sem linha de idade
+  ];
+}
+
+// ================================================================ funções puras
+teste('textoIdadePreco: os seis textos da spec, com o relógio injetado', async () => {
+  await abrirApp();
+  const t = (preco_em, agora) => W.textoIdadePreco(preco_em, agora);
+  const agora = new W.Date(2026, 10, 4, 15, 0, 0);
+  igual(t('2026-11-04T14:30:00', agora), 'Preço de agora há pouco', '30 min');
+  igual(t('2026-11-04T14:00:01', agora), 'Preço de agora há pouco', '59 min 59 s');
+  igual(t('2026-11-04T14:00:00', agora), 'Preço de hoje, 14:00', 'exatamente 1 h já é "hoje"');
+  igual(t('2026-11-04T08:05:09', agora), 'Preço de hoje, 08:05', 'mesmo dia: hora e minuto, com zero à esquerda');
+  igual(t('2026-11-03T18:05:00', agora), 'Preço de ontem, 18:05');
+  igual(t('2026-11-03T00:00:00', agora), 'Preço de ontem, 00:00', 'ontem à meia-noite ainda é ontem');
+  igual(t('2026-11-02T23:59:59', agora), 'Preço de 02/11 (há 2 dias)', 'dia de calendário, não 48 h');
+  igual(t('2026-10-06T10:00:00', agora), 'Preço de 06/10 (há 29 dias)');
+  igual(t('2026-10-05T10:00:00', agora), 'Preço de 05/10 (há mais de 1 mês)', '30 dias');
+  igual(t('2025-01-02T10:00:00', agora), 'Preço de 02/01 (há mais de 1 mês)');
+  // virada do dia e do ano
+  const cedo = new W.Date(2026, 10, 4, 0, 30, 0);
+  igual(t('2026-11-03T23:50:00', cedo), 'Preço de agora há pouco', 'menos de 1 h vale mesmo na virada do dia');
+  igual(t('2026-11-03T22:00:00', cedo), 'Preço de ontem, 22:00');
+  igual(t('2026-12-31T09:00:00', new W.Date(2027, 0, 2, 10, 0, 0)), 'Preço de 31/12 (há 2 dias)', 'virada do ano');
+  // relógio do navegador um pouco atrás do servidor: até 5 min no futuro ainda é "agora há pouco";
+  // além disso o precoVelho marca velho (S2), e o texto não pode dizer o contrário (D6)
+  igual(t('2026-11-04T15:05:00', agora), 'Preço de agora há pouco', '+5 min exatos ainda vale');
+  igual(t('2026-11-04T15:05:01', agora), 'Idade do preço desconhecida', '+5 min 1 s: futuro demais');
+  igual(t('2026-11-04T15:20:00', agora), 'Idade do preço desconhecida', '+20 min');
+  igual(t('2026-11-05T09:00:00', agora), 'Idade do preço desconhecida', 'dia seguinte (relógio muito atrás): sem inventar "há -1 dias"');
+});
+
+teste('textoIdadePreco: nulo, ausente e malformado dão "Idade do preço desconhecida"', async () => {
+  await abrirApp();
+  const agora = new W.Date(2026, 10, 4, 15, 0, 0);
+  const ruins = [null, undefined, '', 'ontem', '2026-11-04 14:20:00', '2026-11-04T14:20', '2026-11-04T14:20:00Z', '2026-11-04T14:20:00-03:00', '2026-13-01T10:00:00',
+    '2026-02-30T10:00:00', '2026-11-04T25:00:00', '2026-11-04T14:20:60', ' 2026-11-04T14:20:00', '2026-11-04T14:20:00 ', '2026-11-04T14:20:00\n',
+    '２０２６-11-04T14:20:00', 20261104142000, true, [], {}, '0000-01-01T00:00:00'];
+  for (const r of ruins) igual(W.textoIdadePreco(r, agora), 'Idade do preço desconhecida', JSON.stringify(r));
+});
+
+// A mesma tabela que o disparo.preco_recente (servidor) responde para estes casos: recente = !velho. Gerada de lá (agora = 2026-11-04 15:00).
+// Inclui a folga de 5 min no futuro (15:05:00 vale, 15:05:01 é velho) e a hora 24, que o datetime.fromisoformat aceitaria.
+const PARIDADE = [["2026-11-04T15:00:00", 24, true], ["2026-11-04T14:59:59", 1, true], ["2026-11-04T14:00:00", 1, true], ["2026-11-04T13:59:59", 1, false], ["2026-11-03T15:00:00", 24, true], ["2026-11-03T14:59:59", 24, false], ["2026-11-03T15:00:01", 24, true], ["2026-10-28T15:00:00", 168, true], ["2026-10-28T14:59:59", 168, false], ["2026-11-04T15:05:00", 24, true], ["2026-11-04T15:05:01", 24, false], ["2026-11-04T16:00:00", 1, false], ["2027-01-01T00:00:00", 24, false], ["2026-11-04T24:00:00", 24, false], ["2026-11-03T24:00:00", 24, false], ["2026-11-04T23:60:00", 24, false], ["2026-11-04T15:00:00Z", 24, false], ["2026-11-04 15:00:00", 24, false], ["2026-11-04T15:00", 24, false], ["2026-02-30T10:00:00", 24, false], ["2026-13-01T10:00:00", 24, false], ["2026-11-04T25:00:00", 24, false], ["2026-11-04T15:00:00\n", 24, false], [" 2026-11-04T15:00:00", 24, false], ["2026-11-04T15:00:00 ", 24, false], ["", 24, false], ["ontem", 24, false], ["２０２６-11-04T15:00:00", 24, false], ["2026-11-04T15:00:60", 24, false], ["0001-01-01T00:00:00", 24, false], ["0000-01-01T00:00:00", 24, false], ["0099-01-01T00:00:00", 24, false], [null, 24, false], [20261104150000, 24, false], [true, 24, false], [[], 24, false], [{}, 24, false]];
+teste('precoVelho espelha disparo.preco_recente: limites do prazo, nulo, malformado e mais de 5 min no futuro contam como velho', async () => {
+  await abrirApp();
+  const agora = new W.Date(2026, 10, 4, 15, 0, 0);
+  for (const [s, h, recente] of PARIDADE) igual(W.precoVelho(s, h, agora), !recente, JSON.stringify(s) + ' com ' + h + ' h');
+  // a data é conferida nos números: ano 1 a 99 não vira 1900 e a hora que o horário de verão pulou (válida no servidor) é lida
+  igual(W.lerPrecoEm('0099-03-01T10:00:00').getFullYear(), 99);
+  igual(W.lerPrecoEm('2024-02-29T23:59:59').getDate(), 29, 'ano bissexto');
+  igual(W.lerPrecoEm('2026-02-29T00:00:00'), null, 'ano comum');
+  igual(W.lerPrecoEm('1900-02-29T00:00:00'), null, '1900 não é bissexto');
+  afirma(W.lerPrecoEm('2018-11-04T00:30:00') !== null, 'hora pulada pelo horário de verão de 2018');
+  // sem o 3º argumento vale o relógio do navegador; sem o 2º, o prazo em vigor
+  ev('precoValidade = 24');
+  afirma(W.precoVelho(haHoras(23)) === false && W.precoVelho(haHoras(25)) === true, 'padrão: prazo em vigor e agora');
+  ev('precoValidade = 48');
+  afirma(W.precoVelho(haHoras(25)) === false && W.precoVelho(haHoras(49)) === true, 'o prazo em vigor muda o resultado');
+  ev('precoValidade = 24');
+  // Date e número (ms) valem como `agora`
+  igual(W.precoVelho('2026-11-03T14:59:59', 24, agora.getTime()), true);
+  igual(W.precoVelho('2026-11-03T15:00:00', 24, agora.getTime()), false);
+});
+
+teste('textoAbsolutoPreco: "03/11/2026 às 14:20" para data válida, vazio para o resto', async () => {
+  await abrirApp();
+  igual(W.textoAbsolutoPreco('2026-11-03T14:20:59'), '03/11/2026 às 14:20');
+  igual(W.textoAbsolutoPreco('2026-01-05T08:05:00'), '05/01/2026 às 08:05');
+  for (const r of [null, undefined, '', 'x', '2026-02-30T10:00:00']) igual(W.textoAbsolutoPreco(r), '', JSON.stringify(r));
+});
+
+// ================================================================ CA-P1: o cartão
+teste('CA-P1: cartão em dia mostra só a idade, num <time> com datetime e title absoluto, sem selo e sem botão na linha', async () => {
+  await abrirApp();
+  const pe = haHoras(3);
+  usarItens([falso('amazon', pe)]);
+  const c = cartao(0), linha = c.querySelector('.idade-preco');
+  afirma(linha, 'sem .idade-preco');
+  afirma(c.querySelector('.price').nextElementSibling === linha, 'a linha vem logo abaixo de .price');
+  igual(c.querySelector('.idade-preco ~ .idade-msg') !== null, true, '.idade-msg depois da linha');
+  const t = linha.querySelector('time');
+  igual(t.getAttribute('datetime'), pe);
+  igual(t.title, ev('textoAbsolutoPreco(' + JSON.stringify(pe) + ')'));
+  afirma(/^Preço de (hoje, \d\d:\d\d|ontem, \d\d:\d\d)$/.test(txt(t)), 'texto: ' + txt(t));
+  igual(linha.querySelector('.velho'), null, 'em dia: sem selo');
+  igual(linha.querySelector('button'), null, 'em dia: sem botão na linha');
+  afirma(c.querySelector('.rare .fetch'), 'Amazon em dia: "Atualizar preço" continua em "Mais ações"');
+  const antesMeta = c.querySelector('.meta');
+  if (antesMeta) afirma(linha.compareDocumentPosition(antesMeta) & W.Node.DOCUMENT_POSITION_FOLLOWING, '.meta vem depois da linha');
+});
+
+teste('CA-P1: passou do prazo, nulo ou malformado: selo "Desatualizado" em palavra e borda, sem cor nova', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(30)), falso('amazon', null), falso('amazon', '2026-13-45T99:99:99'), falso('ml', haHoras(30)), falso('shopee', haHoras(200))]);
+  const cs = cartoes();
+  igual(cs.length, 5);
+  const textos = cs.map(c => txt(c.querySelector('.idade-preco')));
+  afirma(/^Desatualizado Preço de (ontem, \d\d:\d\d|\d\d\/\d\d \(há 2 dias\))( Atualizar preço)?$/.test(textos[0]), 'amazon 30 h: ' + textos[0]);
+  igual(textos[1].startsWith('Desatualizado Idade do preço desconhecida'), true, 'nulo: ' + textos[1]);
+  igual(textos[2].startsWith('Desatualizado Idade do preço desconhecida'), true, 'malformado: ' + textos[2]);
+  afirma(textos[3].startsWith('Desatualizado '), 'ml: ' + textos[3]);
+  afirma(/Desatualizado Preço de \d\d\/\d\d \(há [89] dias\)/.test(textos[4]), 'shopee 200 h: ' + textos[4]);
+  for (const c of cs) {
+    const sel = c.querySelector('.idade-preco .velho'), cs1 = W.getComputedStyle(sel);
+    igual(txt(sel), 'Desatualizado');
+    igual(cs1.borderTopWidth, '1px', 'borda de 1 px');
+    igual(cs1.borderTopStyle, 'solid');
+    igual(cs1.color, W.getComputedStyle(W.document.body).color, 'a cor do texto é a Tinta, sem cor nova');
+    afirma(parseFloat(cs1.borderTopLeftRadius) >= 100, 'pílula (--r-pill)');
+    afirma(cs1.backgroundColor === 'rgba(0, 0, 0, 0)', 'sem fundo colorido: ' + cs1.backgroundColor);
+    igual(sel.querySelector('svg, img'), null, 'sem ícone');
+  }
+  // sem <time> quando a data não existe
+  igual(cs[1].querySelector('time'), null);
+  igual(cs[2].querySelector('time'), null);
+  afirma(cs[0].querySelector('time'), 'com data, há <time>');
+});
+
+teste('CA-P1: "Atualizar preço" na linha só para a Amazon velha (e sai de "Mais ações" nesse estado); ML e Shopee não têm botão; nome acessível começa pelo texto visível', async () => {
+  await abrirApp();
+  const a = falso('amazon', haHoras(30)), m = falso('ml', haHoras(30)), s = falso('shopee', haHoras(30)), n = falso('amazon', null);
+  usarItens([a, m, s, n]);
+  const [ca, cm, cs, cn] = cartoes();
+  const btn = ca.querySelector('.idade-preco .fetch');
+  afirma(btn, 'Amazon velha: botão na linha');
+  igual(btn.textContent, 'Atualizar preço');
+  igual(btn.classList.contains('secondary'), true);
+  igual(btn.getAttribute('aria-label'), 'Atualizar preço de ' + a.data.titulo);
+  igual(ca.querySelectorAll('.fetch').length, 1, 'um só botão: sai de "Mais ações"');
+  igual(ca.querySelector('.rare .fetch'), null);
+  igual(cm.querySelector('.fetch'), null, 'ML velho: sem botão');
+  igual(cs.querySelector('.fetch'), null, 'Shopee velha: sem botão');
+  igual(cm.querySelector('.idade-preco button'), null);
+  afirma(cn.querySelector('.idade-preco .fetch'), 'Amazon com data nula também está velha: botão na linha');
+});
+
+teste('CA-P1: item sem preço não ganha linha de idade nem selo (nem com preco_em velho); sem dados também não', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(900), {}, { preco: '' }), falso('ml', null, {}, { preco: '   ' }), falso('shopee', null, {}, { preco: undefined }), falso('amazon', haHoras(900), { data: null, loja: 'amazon' })]);
+  const cs = cartoes();
+  igual(cs.length, 4);
+  for (const c of cs) { igual(c.querySelector('.idade-preco'), null); igual(c.querySelector('.velho'), null); }
+  // sem preço, o "Atualizar preço" da Amazon fica em "Mais ações" (não há linha)
+  afirma(cs[0].querySelector('.rare .fetch'), 'Amazon sem preço: botão em Mais ações');
+  igual(ev('temPreco(items[0])'), false);
+  igual(ev('temPreco(items[3])'), false);
+  igual(ev('itemComPrecoVelho(items[0])'), false);
+});
+
+teste('CA-P2: em 320, 360 e 375 px a linha de idade cabe em até 2 linhas, o botão vai para a linha de baixo em largura total (44 px) e não há rolagem horizontal; em 1280 px selo e texto numa linha', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(30), {}, { titulo: 'Um produto com um título bem comprido para forçar a quebra de linha do cartão no celular' })]);
+  for (const w of [320, 360, 375]) {
+    await largura(w);
+    const l = q('.idade-preco'), b = l.querySelector('button'), selo = l.querySelector('.velho'), t = l.querySelector('time');
+    const rb = b.getBoundingClientRect(), rs = selo.getBoundingClientRect(), rt = t.getBoundingClientRect();
+    afirma(rb.top >= Math.max(rs.bottom, rt.bottom) - 1, w + ' px: o botão fica na linha de baixo');
+    afirma(rb.height >= 44, w + ' px: botão com ' + rb.height + ' px');
+    afirma(Math.abs(rb.width - l.getBoundingClientRect().width) < 2, w + ' px: largura total do botão: ' + rb.width + ' de ' + l.getBoundingClientRect().width);
+    afirma(rt.top < rs.bottom + 18 && rt.bottom - rs.top < 2 * 20 + 6, w + ' px: selo e texto em no máximo 2 linhas');
+    afirma(semRolagemHorizontal(), 'rolagem horizontal a ' + w + ' px');
+  }
+  await largura(1280);
+  const l = q('.idade-preco'), b = l.querySelector('button'), rs = l.querySelector('.velho').getBoundingClientRect(), rb = b.getBoundingClientRect();
+  const rt1 = l.querySelector('time').getBoundingClientRect();
+  afirma(Math.abs((rt1.top + rt1.height / 2) - (rs.top + rs.height / 2)) < 12, '1280 px: selo e texto na mesma linha (o botão desce se não couber)');
+  afirma(rb.height >= 36 - 0.5, '1280 px: botão com alvo de 36 px');
+  afirma(semRolagemHorizontal(), 'rolagem horizontal a 1280 px');
+});
+
+// ================================================================ CA-P4: prazo (config)
+teste('CA-P4: lerValidade aceita só inteiro de 1 a 168; qualquer outra coisa vale 24 e levanta o aviso; ausente vale 24 sem aviso', async () => {
+  await abrirApp();
+  const ler = async valor => {
+    FALSO['GET /api/config/preco_validade_horas'] = () => json(valor);
+    await W.lerValidade();
+    return [ev('precoValidade'), ev('validadeAviso')];
+  };
+  igual(await ler(48), [48, false]);
+  igual(await ler(1), [1, false]);
+  igual(await ler(168), [168, false]);
+  igual(await ler(24), [24, false]);
+  igual(await ler(null), [24, false], 'nunca gravado: padrão, sem aviso');
+  for (const v of [0, 169, -5, 24.5, '24', true, false, [], {}, 1e9]) igual(await ler(v), [24, true], JSON.stringify(v));
+  FALSO['GET /api/config/preco_validade_horas'] = () => new W.Response('{"error":"x"}', { status: 500 });
+  await W.lerValidade();
+  igual([ev('precoValidade'), ev('validadeAviso')], [24, true], 'HTTP 500');
+  FALSO['GET /api/config/preco_validade_horas'] = () => Promise.reject(new W.TypeError('rede'));
+  await W.lerValidade();
+  igual([ev('precoValidade'), ev('validadeAviso')], [24, true], 'rede fora');
+  FALSO['GET /api/config/preco_validade_horas'] = () => json(72);
+  await W.lerValidade();
+  igual([ev('precoValidade'), ev('validadeAviso')], [72, false], 'volta ao normal');
+  // Q1: o texto cru decide, como o json.loads + int do servidor: "48.0" e "1e2" o JSON.parse leria como inteiros, e o servidor usa 24
+  const cru = async texto => {
+    FALSO['GET /api/config/preco_validade_horas'] = () => new W.Response(texto, { headers: { 'Content-Type': 'application/json' } });
+    await W.lerValidade();
+    return [ev('precoValidade'), ev('validadeAviso')];
+  };
+  for (const t of ['48.0', '1e2', '2.5e1', '1E+1', '72.00', '100.0', '-0', '048', '"48"', 'NaN', 'Infinity', '', 'lixo']) igual(await cru(t), [24, true], 'texto ' + JSON.stringify(t));
+  igual(await cru('48'), [48, false]);
+  igual(await cru(' 72\n'), [72, false], 'espaço em volta do JSON vale');
+  igual(await cru('null'), [24, false], 'nunca gravado');
+  igual(W.validadeDoTexto('48'), 48);
+  igual(W.validadeDoTexto('null'), null);
+  afirma(Number.isNaN(W.validadeDoTexto('48.0')), 'validadeDoTexto("48.0") não é NaN');
+});
+
+teste('CA-P4: na carga, o app lê config/preco_validade_horas; o servidor da cópia já devolve o padrão (24) e o campo do quadro o mostra', async () => {
+  await abrirApp();
+  ev('carregarOfertas()');   // a carga original passou antes de o teste instalar o espião do fetch: refaz
+  await esperar(() => ev('ofertasProntas') === true && ev('items.length') > 0, 'a lista recarregar');
+  afirma(REG.some(r => r.metodo === 'GET' && r.caminho === '/api/config/preco_validade_horas'), 'o app não leu o prazo na carga');
+  const real = await (await fetch('/api/config/preco_validade_horas')).json();
+  const esperado = Number.isInteger(real) && real >= 1 && real <= 168 ? real : 24;
+  igual(ev('precoValidade'), esperado);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  igual(q('#qpHoras').value, String(esperado));
+});
+
+teste('CA-P4: o prazo falho na leitura não derruba a lista (usa 24 h) e o quadro avisa "Usando 24 h, o padrão."', async () => {
+  await abrirApp();
+  FALSO['GET /api/config/preco_validade_horas'] = () => Promise.reject(new W.TypeError('rede'));
+  ev('carregarOfertas()');
+  await esperar(() => ev('ofertasProntas') === true && ev('items.length') > 0, 'a lista recarregar');
+  igual(ev('precoValidade'), 24);
+  igual(ev('validadeAviso'), true);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  igual(txt(q('#qpPrazoMsg')), 'Usando 24 h, o padrão.');
+  igual(q('#qpPrazoMsg').getAttribute('role'), 'status');
+});
+
+teste('CA-P4: campo de horas (min 1, max 168, step 1) com rótulo; inválido dá erro de campo e bloqueia o "Salvar prazo"; acima de 72 h, aviso suave', async () => {
+  await abrirApp();
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  const c = q('#qpHoras'), b = q('#qpSalvarPrazo');
+  igual([c.type, c.min, c.max, c.step, c.getAttribute('inputmode')], ['number', '1', '168', '1', 'numeric']);
+  igual(txt(q('label[for="qpHoras"]')), 'Horas');
+  igual(txt(b), 'Salvar prazo');
+  igual(txt(q('#qpPrazoAjuda')), 'Um número para tudo: disparo, cartões, filtro e API. Padrão: 24 h (de 1 a 168).');
+  afirma((c.getAttribute('aria-describedby') || '').split(' ').includes('qpPrazoAjuda'), 'campo descrito pela ajuda');
+  const digitar = v => { c.value = v; c.dispatchEvent(new W.Event('input', { bubbles: true })); };
+  for (const ruim of ['', '0', '169', '1.5', '-3', 'abc', '1e2', '99999']) {
+    digitar(ruim);
+    igual(txt(q('#qpPrazoErro')), 'Informe um número inteiro de 1 a 168.', 'erro com "' + ruim + '"');
+    igual(c.getAttribute('aria-invalid'), 'true');
+    igual(b.disabled, true, 'salvar bloqueado com "' + ruim + '"');
+    afirma(c.getAttribute('aria-describedby').split(' ').includes('qpPrazoErro'), 'o erro descreve o campo');
+  }
+  for (const bom of ['1', '24', '72']) {
+    digitar(bom);
+    igual(txt(q('#qpPrazoErro')), '', 'sem erro com ' + bom);
+    igual(c.getAttribute('aria-invalid'), 'false');
+    igual(b.disabled, false);
+    igual(q('#qpPrazoLongo').hidden, true, 'até 72 h sem aviso: ' + bom);
+  }
+  digitar('73');
+  igual(q('#qpPrazoLongo').hidden, false);
+  igual(txt(q('#qpPrazoLongo')), 'Com mais de 3 dias, o grupo pode receber preço que já mudou.');
+  igual(b.disabled, false, 'o aviso suave não bloqueia');
+  afirma(c.getAttribute('aria-describedby').split(' ').includes('qpPrazoLongo'), 'o aviso descreve o campo');
+  digitar('168');
+  igual(q('#qpPrazoLongo').hidden, false);
+});
+
+teste('CA-P4: "Salvar prazo" faz PUT config/preco_validade_horas com o número, mostra "Prazo salvo" em role=status e redesenha cartões, faixa e filtro com o prazo novo', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(30)), falso('ml', haHoras(2))]);
+  igual(cartoes().filter(c => c.querySelector('.velho')).length, 1, 'com 24 h, 1 velho');
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  const PUTS = [];
+  FALSO['PUT /api/config/preco_validade_horas'] = corpo => { PUTS.push(corpo); return json({ ok: true }); };
+  const c = q('#qpHoras'), b = q('#qpSalvarPrazo');
+  c.value = '48'; c.dispatchEvent(new W.Event('input', { bubbles: true }));
+  const p = ev('salvarPrazo()');
+  igual(b.getAttribute('aria-busy'), 'true', 'salvando: botão ocupado');
+  igual(txt(b), 'Salvando…');
+  await p;
+  igual(PUTS, [48], 'o corpo é o número JSON 48');
+  igual(REG.filter(r => r.metodo === 'PUT').map(r => [r.caminho, r.corpo]), [['/api/config/preco_validade_horas', '48']]);
+  igual(ev('precoValidade'), 48);
+  igual(txt(q('#qpPrazoMsg')), 'Prazo salvo: 48 h. Contagens atualizadas.');
+  igual(q('#qpPrazoMsg').getAttribute('role'), 'status');
+  igual(b.getAttribute('aria-busy'), null);
+  igual(txt(b), 'Salvar prazo');
+  igual(cartoes().filter(c => c.querySelector('.velho')).length, 0, 'com 48 h, o de 30 h está em dia');
+  igual(txt(q('#faixaPrecosTxt')), 'Todos os preços desta categoria têm menos de 48 h.');
+  igual(txt(q('#fPreco').options[1]), 'Desatualizados (0)');
+  igual(txt(q('#fPreco').options[2]), 'Em dia (2)');
+  // prazo curto: o de 2 h passa a velho
+  c.value = '1'; c.dispatchEvent(new W.Event('input', { bubbles: true }));
+  await ev('salvarPrazo()');
+  igual(PUTS, [48, 1]);
+  igual(cartoes().filter(c => c.querySelector('.velho')).length, 2);
+  igual(txt(q('#qpPrazoMsg')), 'Prazo salvo: 1 h. Contagens atualizadas.');
+});
+
+teste('CA-P4: erro do servidor ao salvar: mensagem em role=status, o prazo em vigor não muda e o botão volta ao normal', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(30))]);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  const c = q('#qpHoras'), b = q('#qpSalvarPrazo');
+  c.value = '100'; c.dispatchEvent(new W.Event('input', { bubbles: true }));
+  FALSO['PUT /api/config/preco_validade_horas'] = () => new W.Response('{"error":"x"}', { status: 500 });
+  await ev('salvarPrazo()');
+  igual(txt(q('#qpPrazoMsg')), 'Não consegui salvar o prazo. Tente de novo.');
+  igual(ev('precoValidade'), 24);
+  igual(b.getAttribute('aria-busy'), null);
+  igual(txt(b), 'Salvar prazo');
+  igual(cartoes().filter(c => c.querySelector('.velho')).length, 1, 'os cartões continuam com 24 h');
+  FALSO['PUT /api/config/preco_validade_horas'] = () => Promise.reject(new W.TypeError('rede'));
+  await ev('salvarPrazo()');
+  igual(txt(q('#qpPrazoMsg')), 'Não consegui salvar o prazo. Tente de novo.', 'rede fora');
+  igual(ev('precoValidade'), 24);
+  // campo inválido: nada é enviado
+  const antes = REG.filter(r => r.metodo === 'PUT').length;
+  c.value = '0'; c.dispatchEvent(new W.Event('input', { bubbles: true }));
+  await ev('salvarPrazo()');
+  igual(REG.filter(r => r.metodo === 'PUT').length, antes, 'inválido não envia');
+});
+
+teste('CA-P4: a regra do disparo não tem campo de idade do preço', async () => {
+  await abrirApp();
+  const html = await (await fetch('/index.html')).text();
+  for (const palavra of ['Idade máxima do preço', 'Sem limite', 'Preço até', 'idade_max', 'max_idade']) afirma(!html.includes(palavra), 'o index.html ainda tem "' + palavra + '"');
+});
+
+// ================================================================ CA-P3: faixa e quadro
+teste('faixa: "N de T preços desta categoria passam de 24 h." com o botão "Como atualizar os preços"; só conta item com preço; segue o prazo', async () => {
+  await abrirApp();
+  usarItens(lote());
+  const f = q('#faixaPrecos');
+  igual(f.hidden, false);
+  // 6 com preço: velhos = 30 h, sem data, 50 h, 100 h, sem data (shopee nulo tem preço vazio, fora) -> amazon 30 h, amazon null, ml 50 h, shopee 100 h = 4 de 6
+  igual(txt(q('#faixaPrecosTxt')), '4 de 6 preços desta categoria passam de 24 h.');
+  const b = q('#btnComoPrecos');
+  igual(txt(b), 'Como atualizar os preços');
+  igual(b.type, 'button');
+  igual(b.classList.contains('linklike'), true);
+  afirma(q('#count').compareDocumentPosition(f) & W.Node.DOCUMENT_POSITION_FOLLOWING, 'depois de #count');
+  afirma(f.compareDocumentPosition(q('#publicoBox')) & W.Node.DOCUMENT_POSITION_FOLLOWING, 'antes de #publicoBox');
+  afirma(f.compareDocumentPosition(q('#quadroPrecos')) & W.Node.DOCUMENT_POSITION_FOLLOWING && f.nextElementSibling === q('#quadroPrecos'), 'o quadro vem logo abaixo');
+  ev('precoValidade = 80; render()');
+  igual(txt(q('#faixaPrecosTxt')), '2 de 6 preços desta categoria passam de 80 h.', 'com 80 h: o de 100 h e o sem data (50 h e 30 h estão em dia)');
+  ev('precoValidade = 168; render()');
+  igual(txt(q('#faixaPrecosTxt')), '1 de 6 preços desta categoria passam de 168 h.', 'só o sem data');
+  usarItens([falso('amazon', haHoras(1)), falso('ml', haHoras(2))]);
+  igual(txt(q('#faixaPrecosTxt')), 'Todos os preços desta categoria têm menos de 24 h.');
+  usarItens([falso('amazon', haHoras(50))]);
+  igual(txt(q('#faixaPrecosTxt')), '1 de 1 preço desta categoria passa de 24 h.');
+  usarItens([falso('amazon', haHoras(50), {}, { preco: '' })]);
+  igual(txt(q('#faixaPrecosTxt')), 'Nenhum item desta categoria tem preço para conferir.');
+});
+
+teste('faixa: some se a aba não tem item, aparece com o quadro de volta e some também no estado de carga', async () => {
+  await abrirApp();
+  usarItens(lote());
+  igual(visivel(q('#faixaPrecos')), true);
+  ev("activeCat = 'Games'; render()");   // aba sem item falso
+  igual(ev('items.filter(i=>i.cat === "Games").length'), 0);
+  igual(q('#faixaPrecos').hidden, true);
+  igual(visivel(q('#faixaPrecos')), false);
+  igual(visivel(q('.pager')), false, 'a aba vazia já escondia a lista (guarda contra regressão do CSS)');
+  ev('activeCat = ' + JSON.stringify(CAT) + '; render()');
+  igual(visivel(q('#faixaPrecos')), true);
+  // carregando: a lista e a faixa saem (só o estado e o quadro aberto ficam)
+  ev('ofertasProntas = false; definirEstadoLista(htmlEstadoLista("status", "x"), true)');
+  igual(visivel(q('#faixaPrecos')), false);
+  ev('ofertasProntas = true; render()');
+});
+
+teste('CA-P3: o quadro é um <details> fechado, logo abaixo da faixa, com o <summary> "Como atualizar os preços"', async () => {
+  await abrirApp();
+  usarItens(lote());
+  const d = q('#quadroPrecos');
+  igual(d.tagName, 'DETAILS');
+  igual(d.open, false);
+  igual(txt(d.querySelector('summary')), 'Como atualizar os preços');
+  igual(visivel(d.querySelector('summary')), true);
+  igual(visivel(q('.qp-lojas')), false, 'fechado: o corpo não aparece');
+  afirma(d.querySelector('summary').getBoundingClientRect().height >= 36, 'alvo de 36 px ou mais no desktop');
+  await largura(375);
+  afirma(d.querySelector('summary').getBoundingClientRect().height >= 36, 'alvo no celular');
+  await largura(1100);
+});
+
+teste('CA-P3: o botão da faixa abre o quadro e leva o foco ao <summary> (sem rolagem brusca)', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').focus();
+  q('#btnComoPrecos').click();
+  const d = q('#quadroPrecos');
+  igual(d.open, true);
+  mesmoNo(W.document.activeElement, d.querySelector('summary'));
+  afirma(visivel(q('.qp-lojas')), 'corpo à vista');
+  // abrir de novo (já aberto) não fecha
+  q('#btnComoPrecos').click();
+  igual(d.open, true);
+});
+
+teste('CA-P3: o quadro mostra, na ordem de LOJA, os três cartões: onde roda, passo a passo, comando com "Copiar comando", tempo e captcha', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  const lojas = qa('#quadroPrecosCorpo .qp-loja');
+  igual(lojas.map(l => l.dataset.loja), ['amazon', 'ml', 'shopee'], 'ordem fixa de LOJA');
+  igual(lojas.map(l => txt(l.querySelector('.badge'))), ['Amazon', 'Mercado Livre', 'Shopee']);
+  igual(lojas.map(l => txt(l.querySelector('.qp-cab .muted'))), ['No terminal', 'No console do Chrome', 'No terminal']);
+  const [am, ml, sh] = lojas;
+  // Amazon
+  igual(txt(am.querySelector('[data-f="cmd"]')), 'python3 atualizar_precos.py amazon --cat "' + CAT + '"', 'a categoria da aba ativa');
+  igual(am.querySelectorAll('ol li').length, 3);
+  afirma(txt(am).includes('Cerca de 40 min para tudo (Perfumes e Perfumaria, cerca de 25 min). Estimativa, não medida.'));
+  afirma(txt(am).includes('O comando para e guarda o que já fez hoje. Espere de 15 a 30 min e rode o mesmo comando de novo. Se repetir, pare por hoje e divida por categoria.'));
+  igual(am.querySelector('button[data-acao="copiar-cmd"]').getAttribute('aria-label'), 'Copiar comando da Amazon');
+  igual(txt(am.querySelector('button[data-acao="copiar-cmd"]')), 'Copiar comando');
+  // Mercado Livre
+  igual(txt(ml.querySelector('[data-f="cmd"]')), 'ColetaML.atualizar({cat: "' + CAT + '"})');
+  igual([...ml.querySelectorAll('ol li')].map(txt), ['Abra https://lista.mercadolivre.com.br no Chrome.', 'Cole o conteúdo de coletar_ml.js no console.', 'Rode o comando abaixo.']);
+  afirma(txt(ml).includes('Depende dos termos da categoria; não medido.'));
+  afirma(txt(ml).includes('Resolva o captcha na aba e rode o comando de novo; o progresso de hoje fica no navegador.'));
+  igual(ml.querySelector('button[data-acao="copiar-cmd"]').getAttribute('aria-label'), 'Copiar comando do Mercado Livre');
+  // Shopee: dois blocos
+  const blocos = [...sh.querySelectorAll('.qp-bloco')];
+  igual(blocos.length, 2);
+  igual(blocos.map(b => txt(b.querySelector('h4'))), ['Por enquanto', 'Quando a credencial chegar']);
+  igual(txt(blocos[0].querySelector('[data-f="cmd"]')), 'python3 coletar_shopee.py importar ARQUIVO');
+  // S3: a forma segura do docstring do atualizar_precos.py (Secret lido sem eco, só no ambiente do comando, apagado no fim); AppID como marcador
+  igual(txt(blocos[1].querySelector('[data-f="cmd"]')), 'read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat "' + CAT + '"; unset S');
+  igual([...blocos[1].querySelectorAll('ol li')].map(txt), ['Troque <id> pelo seu AppID no comando abaixo.', 'Rode o comando num terminal, na pasta do projeto. Ele espera o Secret: cole e tecle Enter (o Secret não aparece na tela e o unset do fim o apaga).']);
+  afirma(!/export|18328801339/.test(txt(sh)), 'o bloco da Shopee não leva export nem valor real');
+  afirma(txt(blocos[0]).includes('Cerca de 1 a 2 min por termo; não verificado.'));
+  afirma(txt(blocos[1]).includes('No limite da API o comando para: espere e rode de novo.'));
+  // D3: o rótulo "Tempo estimado" só sai com o texto do tempo; o bloco "Quando a credencial chegar" não tem tempo
+  const rotulos = b => [...b.querySelectorAll('.qp-rot')].map(txt);
+  igual(rotulos(blocos[1]), ['Passo a passo', 'Comando', 'Limite da API'], 'sem rótulo de tempo vazio');
+  igual(rotulos(blocos[0]), ['Passo a passo', 'Comando', 'Tempo estimado']);
+  for (const l of lojas) for (const r of l.querySelectorAll('.qp-rot')) afirma(r.nextElementSibling && txt(r.nextElementSibling) !== '', 'rótulo sem conteúdo: ' + txt(r));
+  afirma(txt(sh).includes('As credenciais ficam só no seu terminal. Este site nunca pede o Secret.'));
+  igual(blocos.map(b => b.querySelector('button').getAttribute('aria-label')), ['Copiar comando da Shopee (por enquanto)', 'Copiar comando da Shopee (quando a credencial chegar)']);
+  // nenhum botão do quadro dispara lote: só copiar, salvar prazo e conferir
+  const botoes = qa('#quadroPrecosCorpo button').map(b => b.id || b.dataset.acao);
+  for (const b of botoes) afirma(['copiar-cmd', 'qpSalvarPrazo', 'qpConferir'].includes(b), 'botão inesperado no quadro: ' + b);
+  // o site não pede o Secret nem tem campo de senha
+  igual(qa('#quadroPrecosCorpo input').map(i => i.type), ['number']);
+  const html = q('#quadroPrecosCorpo').innerHTML.toLowerCase();
+  igual(html.includes('type="password"'), false);
+});
+
+teste('CA-P3: "Todas as categorias": Amazon sem --cat; ML e Shopee sem comando e com a frase "Escolha uma categoria acima"; escolher categoria devolve --cat', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  const sel = q('#qpCat');
+  igual(sel.options[0].value, '');
+  igual(txt(sel.options[0]), 'Todas as categorias');
+  igual(txt(q('label[for="qpCat"]')), 'Categoria dos comandos');
+  escolher(sel, '');
+  const cmd = (l, i = 0) => txt(q('.qp-loja[data-loja="' + l + '"] .qp-bloco:nth-of-type(' + (i + 1) + ') [data-f="cmd"]'));
+  igual(cmd('amazon'), 'python3 atualizar_precos.py amazon');
+  // L1: o ColetaML.atualizar() exige cat ou termos: sem categoria, nada de atualizar({})
+  const blocoMl = q('.qp-loja[data-loja="ml"] .qp-bloco');
+  igual(cmd('ml'), '');
+  igual(visivel(blocoMl.querySelector('.cmd-linha')), false, 'ML sem comando em "Todas"');
+  igual(txt(blocoMl.querySelector('[data-f="escolha"]')), 'Escolha uma categoria acima: o Mercado Livre atualiza uma categoria por vez.');
+  igual(visivel(blocoMl.querySelector('[data-f="escolha"]')), true);
+  igual(q('.qp-loja[data-loja="amazon"] [data-f="escolha"]').hidden, true, 'a Amazon roda sem categoria: sem aviso');
+  const blocoApi = qa('.qp-loja[data-loja="shopee"] .qp-bloco')[1];
+  igual(blocoApi.querySelector('.cmd-linha').hidden, true, 'Shopee por API sem comando em "Todas"');
+  igual(visivel(blocoApi.querySelector('.cmd-linha')), false);
+  igual(txt(blocoApi.querySelector('[data-f="escolha"]')), 'Escolha uma categoria acima: a Shopee atualiza uma categoria por vez.');
+  igual(visivel(blocoApi.querySelector('[data-f="escolha"]')), true);
+  igual(qa('.qp-loja[data-loja="shopee"] .qp-bloco')[0].querySelector('.cmd-linha').hidden, false, 'o importar não depende da categoria');
+  // categoria escolhida à mão deixa de seguir a aba ativa
+  escolher(sel, 'Games');
+  igual(cmd('amazon'), 'python3 atualizar_precos.py amazon --cat "Games"');
+  igual(cmd('ml'), 'ColetaML.atualizar({cat: "Games"})');
+  igual(blocoMl.querySelector('[data-f="escolha"]').hidden, true);
+  igual(blocoApi.querySelector('.cmd-linha').hidden, false);
+  igual(blocoApi.querySelector('[data-f="escolha"]').hidden, true);
+  ev("activeCat = 'Pets'; render()");
+  igual(sel.value, 'Games', 'a escolha manual não volta sozinha à aba');
+  // categorias com os mesmos optgroups das abas
+  igual([...sel.querySelectorAll('optgroup')].map(g => g.label), ['Tecnologia', 'Casa', 'Beleza e consumo', 'Família e estilo']);
+  igual([...sel.querySelectorAll('optgroup option')].map(o => o.value), ev('ORDEM_ABAS'));
+});
+
+teste('CA-P3: sem escolha manual, a categoria dos comandos segue a aba ativa', async () => {
+  await abrirApp();
+  usarItens(lote());
+  ev('catQuadroManual = false');
+  q('#btnComoPrecos').click();
+  igual(q('#qpCat').value, CAT);
+  ev("activeCat = 'Games'; render()");
+  igual(q('#qpCat').value, 'Games');
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="cmd"]')), 'python3 atualizar_precos.py amazon --cat "Games"');
+});
+
+teste('comandos: o nome da categoria vai entre aspas seguras para o terminal (e escapado no do ML)', async () => {
+  await abrirApp();
+  igual(W.aspasShell('Pets'), '"Pets"');
+  igual(W.aspasShell('TV, Alexa e Casa Conectada'), '"TV, Alexa e Casa Conectada"');
+  igual(W.aspasShell('Black Friday | Eletrônicos'), '"Black Friday | Eletrônicos"');
+  igual(W.aspasShell('a"b'), `'a"b'`);
+  igual(W.aspasShell('$HOME'), `'$HOME'`);
+  igual(W.aspasShell('a`b'), `'a\`b'`);
+  igual(W.aspasShell('a\\b'), `'a\\b'`);
+  igual(W.aspasShell('oi!'), `'oi!'`);
+  igual(W.aspasShell("d'água $x"), `'d'\\''água $x'`);
+  const am = ev('TXT_PRECOS.lojas.amazon.blocos[0]'), ml = ev('TXT_PRECOS.lojas.ml.blocos[0]');
+  igual(W.comandoPrecos('amazon', am, '$&x'), 'python3 atualizar_precos.py amazon --cat \'$&x\'', '$& do replace não vaza para o comando');
+  igual(W.comandoPrecos('ml', ml, 'a"b'), 'ColetaML.atualizar({cat: "a\\"b"})');
+  igual(W.comandoPrecos('ml', ml, ''), '', 'o ML exige categoria');
+  // S1: caractere de controle ou de formatação no nome não vira comando (nem no terminal nem no console)
+  const ch = c => String.fromCharCode(c);
+  for (const ruim of ['a' + ch(1) + 'b', 'Pets' + ch(0x1b) + '[2J', 'a' + ch(10) + 'b', 'a' + ch(13), ch(0x200b) + 'Pets', 'Pets' + ch(0x202e), ch(0x7f)]) {
+    igual(W.aspasShell(ruim), null, 'aspasShell ' + JSON.stringify(ruim));
+    igual(W.comandoPrecos('amazon', am, ruim), '', 'amazon ' + JSON.stringify(ruim));
+    igual(W.comandoPrecos('ml', ml, ruim), '', 'ml ' + JSON.stringify(ruim));
+  }
+  igual(W.aspasShell('Cama, Mesa e Banho'), '"Cama, Mesa e Banho"', 'acento e vírgula continuam valendo');
+});
+
+teste('S1/Q4: categoria fora das 17 abas não ganha comando no quadro: "Essa categoria está fora das abas da coleta."; o importar da Shopee continua', async () => {
+  await abrirApp();
+  const ch = c => String.fromCharCode(c);
+  const nomes = ['Geral', 'Lista WhatsApp', 'Pets ', 'Pets' + ch(1), 'Pets' + ch(0x1b) + '[2J'];
+  usarItens([falso('amazon', haHoras(40)), ...nomes.map(c => falso('amazon', haHoras(40), { cat: c }))]);
+  q('#btnComoPrecos').click();
+  const sel = q('#qpCat');
+  const blocos = () => qa('#quadroPrecosCorpo .qp-bloco');
+  for (const nome of nomes) {
+    escolher(sel, nome);
+    igual(sel.value, nome, 'a categoria está no seletor (grupo Outras)');
+    for (const b of blocos()) {
+      const cmd = txt(b.querySelector('[data-f="cmd"]')), aviso = b.querySelector('[data-f="escolha"]');
+      if (!aviso) { igual(cmd, 'python3 coletar_shopee.py importar ARQUIVO', 'o importar não depende da categoria'); continue; }
+      igual(cmd, '', JSON.stringify(nome) + ': sem comando');
+      igual(visivel(b.querySelector('.cmd-linha')), false);
+      igual(txt(aviso), 'Essa categoria está fora das abas da coleta.');
+      igual(visivel(aviso), true);
+    }
+  }
+  escolher(sel, CAT);
+  for (const b of blocos()) { afirma(txt(b.querySelector('[data-f="cmd"]')) !== '', 'aba de verdade volta a ter comando'); const a = b.querySelector('[data-f="escolha"]'); if (a) igual(a.hidden, true); }
+});
+
+teste('CA-P3: "Copiar comando" copia o texto do comando, avisa "Comando copiado." em role=status (some em 4 s) e o foco fica no botão; falha avisa e deixa o texto selecionável', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  const bloco = q('.qp-loja[data-loja="amazon"] .qp-bloco'), btn = bloco.querySelector('button'), st = bloco.querySelector('[data-f="copiado"]');
+  igual(st.getAttribute('role'), 'status');
+  btn.focus(); btn.click();
+  await esperar(() => txt(st) === 'Comando copiado.', 'o aviso de copiado');
+  igual(COPIADOS, ['python3 atualizar_precos.py amazon --cat "' + CAT + '"']);
+  mesmoNo(W.document.activeElement, btn, 'o foco não sai do botão');
+  // o <code> continua selecionável (alternativa se a área de transferência falhar)
+  igual(W.getComputedStyle(bloco.querySelector('[data-f="cmd"]')).userSelect !== 'none', true);
+  // falha
+  Object.defineProperty(W.navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new W.Error('negado')) } });
+  btn.click();
+  await esperar(() => txt(st) === 'Não consegui copiar. Selecione o texto e copie.', 'o aviso de falha');
+  // o aviso de copiado some (o timer é de 4 s: aqui só conferimos que existe o temporizador trocando o tempo)
+  Object.defineProperty(W.navigator, 'clipboard', { configurable: true, value: { writeText: async t => { COPIADOS.push(t); } } });
+  const setTimeoutOriginal = W.setTimeout; const marcas = [];
+  W.setTimeout = (f, ms, ...r) => { marcas.push(ms); return setTimeoutOriginal.call(W, f, ms, ...r); };
+  btn.click();
+  await esperar(() => txt(st) === 'Comando copiado.', 'copiado de novo');
+  W.setTimeout = setTimeoutOriginal;
+  afirma(marcas.includes(4000), 'o aviso "Comando copiado." some em 4 s: temporizadores ' + marcas);
+});
+
+teste('CA-P3: contagens por loja e categoria: Itens, Com preço velho (inclui N sem data), Preço mais antigo; sem preço fica fora', async () => {
+  await abrirApp();
+  const lista = lote();
+  usarItens(lista);
+  q('#btnComoPrecos').click();
+  escolher(q('#qpCat'), CAT);
+  const dl = (l, f) => txt(q('.qp-loja[data-loja="' + l + '"] [data-f="' + f + '"]'));
+  igual(dl('amazon', 'itens'), '3');
+  igual(dl('amazon', 'velhos'), '2 (inclui 1 sem data)');
+  igual(dl('ml', 'itens'), '2');
+  igual(dl('ml', 'velhos'), '1');
+  igual(dl('shopee', 'itens'), '1', 'o sem preço não conta');
+  igual(dl('shopee', 'velhos'), '1');
+  // preço mais antigo = o menor preco_em válido do escopo
+  igual(dl('amazon', 'antigo'), ev('textoAbsolutoPreco(' + JSON.stringify(lista[1].preco_em) + ')'));
+  igual(dl('ml', 'antigo'), ev('textoAbsolutoPreco(' + JSON.stringify(lista[3].preco_em) + ')'));
+  igual(dl('shopee', 'antigo'), ev('textoAbsolutoPreco(' + JSON.stringify(lista[5].preco_em) + ')'));
+  // uma categoria sem item da loja: aviso no lugar das contagens
+  escolher(q('#qpCat'), 'Games');
+  const vazio = l => q('.qp-loja[data-loja="' + l + '"] [data-f="vazio"]');
+  igual(txt(vazio('shopee')), 'Nenhum item da Shopee nesta categoria.');
+  igual(txt(vazio('ml')), 'Nenhum item do Mercado Livre nesta categoria.');
+  igual(txt(vazio('amazon')), 'Nenhum item da Amazon nesta categoria.');
+  igual(visivel(q('.qp-loja[data-loja="shopee"] [data-f="dl"]')), false);
+  afirma(visivel(q('.qp-loja[data-loja="shopee"] [data-f="cmd"]')), 'o comando continua visível');
+  // todas as categorias soma tudo
+  usarItens([falso('amazon', haHoras(1)), falso('amazon', haHoras(40), { cat: 'Games' })]);
+  escolher(q('#qpCat'), '');
+  igual(dl('amazon', 'itens'), '2');
+  igual(dl('amazon', 'velhos'), '1');
+  igual(txt(q('.qp-loja[data-loja="ml"] [data-f="vazio"]')), 'Nenhum item do Mercado Livre.');
+});
+
+teste('CA-P3: loja em dia diz "Tudo em dia." e mantém o comando; preço mais antigo vazio vira "—"', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(1)), falso('ml', null), falso('shopee', haHoras(2))]);
+  q('#btnComoPrecos').click();
+  escolher(q('#qpCat'), CAT);
+  const dl = (l, f) => txt(q('.qp-loja[data-loja="' + l + '"] [data-f="' + f + '"]'));
+  igual(dl('amazon', 'velhos'), '0 · Tudo em dia.');
+  igual(dl('shopee', 'velhos'), '0 · Tudo em dia.');
+  igual(dl('ml', 'velhos'), '1 (inclui 1 sem data)');
+  igual(dl('ml', 'antigo'), '—', 'só sem data: não há "mais antigo"');
+  afirma(visivel(q('.qp-loja[data-loja="amazon"] [data-f="cmd"]')));
+});
+
+teste('CA-P7: nenhuma contagem visível (faixa, cartões do quadro) é aria-live; resultados pontuais usam role=status', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  igual(qa('#faixaPrecos [aria-live], #quadroPrecos [aria-live], #quadroPrecos [role="alert"], #faixaPrecos [role]').length, 0, 'nada de aria-live/alert na faixa e no quadro');
+  const status = qa('#quadroPrecos [role="status"]').map(e => e.id || e.dataset.f);
+  igual(status.sort(), ['copiado', 'copiado', 'copiado', 'copiado', 'qpConferido', 'qpPrazoMsg'].sort(), 'só prazo, conferir e copiar (4 blocos de comando)');
+  for (const el of qa('.qp-dl, .qp-dl dd, #faixaPrecosTxt')) igual(el.closest('[role="status"], [aria-live]'), null, 'contagem dentro de região viva');
+  igual(qa('.idade-msg').every(e => e.getAttribute('role') === 'status'), true);
+});
+
+// ================================================================ CA-P5: Conferir de novo
+teste('CA-P5: "Conferir de novo" recarrega os itens, atualiza as contagens e diz "Conferido às HH:MM. Amazon: N com preço velho. Mercado Livre: N. Shopee: N." em role=status; o foco fica no botão', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  escolher(q('#qpCat'), CAT);
+  const novos = [falso('amazon', haHoras(40)), falso('amazon', haHoras(50)), falso('amazon', haHoras(1)), falso('ml', haHoras(1)), falso('shopee', haHoras(60)), falso('shopee', haHoras(61)), falso('shopee', null)];
+  let liberar; const portao = new Promise(r => { liberar = r; });
+  FALSO['GET /api/items'] = async () => { await portao; return json(novos); };
+  FALSO['GET /api/config/preco_validade_horas'] = () => json(24);
+  const b = q('#qpConferir');
+  b.focus(); b.click();
+  await esperar(() => b.getAttribute('aria-busy') === 'true', 'botão ocupado');
+  igual(txt(b), 'Conferindo…');
+  mesmoNo(W.document.activeElement, b, 'foco no botão durante a conferência');
+  igual(q('#quadroPrecos').open, true, 'o quadro não some');
+  igual(visivel(b), true, 'nem o botão (a lista não troca por "Carregando")');
+  liberar();
+  await esperar(() => b.getAttribute('aria-busy') === null, 'conferência terminar');
+  igual(txt(b), 'Conferir de novo');
+  mesmoNo(W.document.activeElement, b);
+  const st = q('#qpConferido');
+  igual(st.getAttribute('role'), 'status');
+  afirma(/^Conferido às \d\d:\d\d\. Amazon: 2 com preço velho\. Mercado Livre: 0\. Shopee: 3\.$/.test(txt(st)), 'resumo: ' + txt(st));
+  igual(ev('items.length'), 7, 'itens recarregados');
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="velhos"]')), '2');
+  igual(txt(q('.qp-loja[data-loja="shopee"] [data-f="velhos"]')), '3 (inclui 1 sem data)');
+  igual(txt(q('#faixaPrecosTxt')), '5 de 7 preços desta categoria passam de 24 h.', 'faixa atualizada');
+});
+
+teste('CA-P5: "Conferir de novo" também relê o prazo da config (mudado em outra aba) e usa o valor novo nas contagens', async () => {
+  await abrirApp();
+  const lista = [falso('amazon', haHoras(30)), falso('amazon', haHoras(60))];
+  usarItens(lista);
+  q('#btnComoPrecos').click();
+  FALSO['GET /api/items'] = () => json(lista);
+  FALSO['GET /api/config/preco_validade_horas'] = () => json(48);
+  q('#qpConferir').click();
+  await esperar(() => /^Conferido às/.test(txt(q('#qpConferido'))), 'conferir');
+  igual(ev('precoValidade'), 48);
+  afirma(/Amazon: 1 com preço velho\./.test(txt(q('#qpConferido'))), 'contou com 48 h: ' + txt(q('#qpConferido')));
+  igual(txt(q('#faixaPrecosTxt')), '1 de 2 preços desta categoria passam de 48 h.');
+});
+
+teste('CA-P5: falha ao conferir: "Não consegui ver as contagens. Tentar de novo", sem perder os itens que já estavam; "Tentar de novo" confere de novo', async () => {
+  await abrirApp();
+  const antes = lote();
+  usarItens(antes);
+  q('#btnComoPrecos').click();
+  FALSO['GET /api/items'] = () => Promise.reject(new W.TypeError('rede'));
+  q('#qpConferir').click();
+  await esperar(() => q('#qpConferido [data-acao="conferir"]'), 'o botão Tentar de novo');
+  igual(txt(q('#qpConferido')), 'Não consegui ver as contagens. Tentar de novo');
+  igual(ev('items.length'), antes.length, 'itens antigos preservados');
+  igual(q('#qpConferir').getAttribute('aria-busy'), null);
+  // resposta que não é lista
+  FALSO['GET /api/items'] = () => json({ error: 'x' });
+  q('#qpConferir').click();
+  await esperar(() => q('#qpConferido [data-acao="conferir"]') && q('#qpConferir').getAttribute('aria-busy') === null, 'erro de formato');
+  igual(ev('items.length'), antes.length);
+  // HTTP 500
+  FALSO['GET /api/items'] = () => new W.Response('{}', { status: 500 });
+  q('#qpConferir').click();
+  await esperar(() => q('#qpConferir').getAttribute('aria-busy') === null && q('#qpConferido [data-acao="conferir"]'), 'HTTP 500');
+  // tentar de novo com sucesso
+  FALSO['GET /api/items'] = () => json(antes);
+  q('#qpConferido [data-acao="conferir"]').click();
+  await esperar(() => /^Conferido às/.test(txt(q('#qpConferido'))), 'conferir com sucesso');
+});
+
+teste('estados do quadro: carregando mostra "Carregando…" com aria-busy; erro de carga mostra a mensagem com "Tentar de novo" que recarrega a lista', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#quadroPrecos').open = true;
+  let liberar; const portao = new Promise(r => { liberar = r; });
+  FALSO['GET /api/items'] = async () => { await portao; return json(lote()); };
+  ev('carregarOfertas()');
+  igual(visivel(q('#quadroPrecos')), true, 'o quadro aberto fica à vista durante a carga');
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="itens"]')), 'Carregando…');
+  igual(q('#quadroPrecosCorpo').getAttribute('aria-busy'), 'true');
+  liberar();
+  await esperar(() => ev('ofertasProntas') === true, 'carga');
+  igual(q('#quadroPrecosCorpo').getAttribute('aria-busy'), 'false');
+  // erro
+  FALSO['GET /api/items'] = () => Promise.reject(new W.TypeError('rede'));
+  ev('carregarOfertas()');
+  await esperar(() => ev('estadoItens') === 'erro', 'estado de erro');
+  igual(visivel(q('#quadroPrecos')), true, 'quadro aberto visível no erro');
+  igual(txt(q('#qpConferido')), 'Não consegui ver as contagens. Tentar de novo');
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="itens"]')), '—');
+  FALSO['GET /api/items'] = () => json(lote());
+  q('#qpConferido [data-acao="conferir"]').click();
+  await esperar(() => ev('ofertasProntas') === true && ev('estadoItens') === 'pronto', 'recarga pelo Tentar de novo');
+  igual(txt(q('#qpConferido')), '', 'o aviso de erro some');
+  // fechado e na carga: o quadro fechado some junto com a lista
+  q('#quadroPrecos').open = false;
+  ev('ofertasProntas = false; definirEstadoLista(htmlEstadoLista("status", "x"), true)');
+  igual(visivel(q('#quadroPrecos')), false);
+  ev('ofertasProntas = true; render()');
+});
+
+// ================================================================ CA-P8: filtro e ordem
+teste('CA-P8: #fPreco tem rótulo, 3 opções com contagens que seguem loja, busca e título, e filtra Desatualizados / Em dia (sem preço sai dos dois)', async () => {
+  await abrirApp();
+  usarItens(lote());
+  const f = q('#fPreco');
+  igual(f.getAttribute('aria-label'), 'Filtrar por idade do preço');
+  igual([...f.options].map(o => o.value), ['', 'velho', 'dia']);
+  igual([...f.options].map(txt), ['Todos os preços', 'Desatualizados (4)', 'Em dia (2)']);
+  igual(cartoes().length, 7, 'todos, inclusive o sem preço');
+  escolher(f, 'velho');
+  igual(cartoes().length, 4);
+  afirma(cartoes().every(c => c.querySelector('.velho')), 'só velhos');
+  escolher(f, 'dia');
+  igual(cartoes().length, 2);
+  afirma(cartoes().every(c => c.querySelector('.idade-preco') && !c.querySelector('.velho')), 'só em dia');
+  // composição com a loja
+  escolher(f, 'velho');
+  escolher(q('#fLoja'), 'amazon');
+  igual(cartoes().length, 2);
+  igual([...f.options].map(txt), ['Todos os preços', 'Desatualizados (2)', 'Em dia (1)'], 'as contagens seguem a loja');
+  escolher(q('#fLoja'), 'ml');
+  igual(cartoes().length, 1);
+  igual([...f.options].map(txt), ['Todos os preços', 'Desatualizados (1)', 'Em dia (1)']);
+  escolher(q('#fLoja'), '');
+  // composição com o título
+  const alvo = ev('items[1].data.titulo');
+  q('#fTexto').value = alvo; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(cartoes().length, 1);
+  igual([...f.options].map(txt), ['Todos os preços', 'Desatualizados (1)', 'Em dia (0)']);
+  q('#fTexto').value = ''; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  // composição com a busca
+  ev('items[0].busca = "outra busca"; items[3].busca = "outra busca"; render()');
+  escolher(q('#fBusca'), 'outra busca');
+  igual(cartoes().length, 1, 'busca "outra busca" + velhos');
+  igual([...f.options].map(txt), ['Todos os preços', 'Desatualizados (1)', 'Em dia (1)']);
+});
+
+teste('CA-P8: mudar o filtro de preço volta à página 1', async () => {
+  await abrirApp();
+  const muitos = []; for (let i = 0; i < 60; i++) muitos.push(falso('amazon', i % 2 ? haHoras(30) : haHoras(1)));
+  usarItens(muitos);
+  ev('page = 3; render()');
+  igual(ev('page'), 3);
+  escolher(q('#fPreco'), 'velho');
+  igual(ev('page'), 1);
+  igual(cartoes().length, 24);
+  igual(txt(q('.pager')).includes('30 itens'), true, 'paginação com 30 itens: ' + txt(q('.pager')));
+});
+
+teste('CA-P8: ordem "Preço mais antigo primeiro": sem data (nulo ou malformado) primeiro, depois do mais antigo ao mais novo, e sem preço no fim', async () => {
+  await abrirApp();
+  const a = falso('amazon', haHoras(10)), b = falso('amazon', haHoras(100)), c = falso('ml', null), d = falso('shopee', haHoras(50)), e = falso('amazon', null, {}, { preco: '' }), f = falso('ml', 'lixo'), g = falso('ml', haHoras(100));
+  usarItens([a, b, c, d, e, f, g]);
+  const ordem = q('#fOrdem');
+  igual([...ordem.options].map(txt), ['Ordem de coleta', 'Maior desconto', 'Menor preço', 'Preço mais antigo primeiro']);
+  escolher(ordem, 'antigo');
+  const ids = () => cartoes().map(c => +c.dataset.id);
+  // sem data (c, f) na ordem de coleta; depois b e g (100 h; b é mais antigo por 1 s... ambos haHoras(100): empate decidido pelo relógio), d (50), a (10); sem preço (e) por último
+  const dados = ids();
+  igual(dados.slice(0, 2), [c.id, f.id], 'sem data primeiro, na ordem de coleta');
+  igual(dados[dados.length - 1], e.id, 'sem preço no fim');
+  const meio = dados.slice(2, 6);
+  afirma(meio.indexOf(d.id) === 2 && meio.indexOf(a.id) === 3, 'do mais antigo ao mais novo: ' + meio);
+  afirma(new Set(meio.slice(0, 2)).has(b.id) && new Set(meio.slice(0, 2)).has(g.id), 'os de 100 h antes do de 50 h');
+  escolher(ordem, '');
+  igual(ids(), [a, b, c, d, e, f, g].map(x => x.id), 'ordem de coleta de volta');
+});
+
+teste('CA-P8: lista vazia com "Desatualizados" mostra o aviso positivo "Tudo em dia: nenhum preço desta categoria passa de 24 h." com "Ver todos"; o 24 acompanha o prazo', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(1)), falso('ml', haHoras(2))]);
+  const f = q('#fPreco');
+  escolher(f, 'velho');
+  igual(cartoes().length, 0);
+  const e = q('#estadoLista .vazio');
+  igual(txt(e.querySelector('p')), 'Tudo em dia: nenhum preço desta categoria passa de 24 h.');
+  const b = e.querySelector('button');
+  igual(txt(b), 'Ver todos');
+  ev('precoValidade = 72; render()');
+  igual(txt(q('#estadoLista p')), 'Tudo em dia: nenhum preço desta categoria passa de 72 h.');
+  q('#estadoLista button').click();
+  igual(f.value, '');
+  igual(cartoes().length, 2);
+  mesmoNo(W.document.activeElement, f, 'o foco vai para o filtro, que fica na tela');
+  // "Desatualizados" com um título que não casa com nada: não é "tudo em dia", é lista vazia por outro filtro
+  escolher(f, 'velho');
+  q('#fTexto').value = 'zzz-nenhum-titulo'; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(txt(q('#estadoLista p')), 'Nenhuma oferta com esses filtros.', 'sem a mensagem positiva');
+  igual(txt(q('#estadoLista button')), 'Limpar filtros');
+  q('#fTexto').value = ''; q('#fTexto').dispatchEvent(new W.Event('input', { bubbles: true }));
+  escolher(f, '');
+  // "Em dia" sem nenhum em dia: a mensagem comum (com "Limpar filtros"), não a positiva
+  usarItens([falso('amazon', haHoras(50))]);
+  escolher(f, 'dia');
+  igual(cartoes().length, 0);
+  igual(txt(q('#estadoLista p')), 'Nenhuma oferta com esses filtros.');
+  igual(txt(q('#estadoLista button')), 'Limpar filtros');
+});
+
+teste('CA-P8: "Limpar filtros" zera o filtro de preço e a ordem', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(50)), falso('ml', haHoras(50))]);
+  escolher(q('#fPreco'), 'dia');
+  escolher(q('#fOrdem'), 'antigo');
+  igual(q('#estadoLista .vazio') !== null, true);
+  ev('limparFiltros()');
+  igual([q('#fPreco').value, q('#fOrdem').value, q('#fLoja').value, q('#fTexto').value], ['', '', '', '']);
+  igual(cartoes().length, 2);
+});
+
+// ================================================================ CA-P9: avisos ao copiar
+teste('CA-P9: Copiar num cartão velho copia do mesmo jeito e o toast avisa "o preço é de DD/MM; confira na loja."; em dia, o toast de sempre', async () => {
+  await abrirApp();
+  const velho = falso('amazon', '2026-11-01T10:00:00'), dia = falso('ml', haHoras(1)), semData = falso('shopee', null), semPreco = falso('amazon', haHoras(900), {}, { preco: '' });
+  usarItens([velho, dia, semData, semPreco]);
+  const [cv, cd, cs, cp] = cartoes();
+  igual(await clicarEEsperarToast(cv.querySelector('.copy')), 'Mensagem copiada. Atenção: o preço é de 01/11; confira na loja.');
+  igual(COPIADOS[0], cv.querySelector('textarea').value, 'a mensagem é a mesma de sempre');
+  afirma(cv.classList.contains('done'), 'o cartão fica marcado como copiado');
+  igual(await clicarEEsperarToast(cd.querySelector('.copy')), 'Mensagem copiada!');
+  igual(await clicarEEsperarToast(cs.querySelector('.copy')), 'Mensagem copiada. Atenção: não sei a idade do preço; confira na loja.');
+  igual(await clicarEEsperarToast(cp.querySelector('.copy')), 'Mensagem copiada!', 'sem preço: sem aviso de idade');
+  igual(COPIADOS.length, 4);
+  // com a imagem já copiada, o aviso vai junto da legenda
+  cv.classList.add('img-done');
+  igual(await clicarEEsperarToast(cv.querySelector('.copy')), 'Mensagem copiada! Cole como legenda da imagem. Atenção: o preço é de 01/11; confira na loja.');
+  cd.classList.add('img-done');
+  igual(await clicarEEsperarToast(cd.querySelector('.copy')), 'Mensagem copiada! Cole como legenda da imagem.', 'em dia com imagem: o toast de legenda de sempre');
+});
+
+teste('CA-P9: "Copiar todas da página" diz quantas estão com preço desatualizado (plural, singular, nenhuma)', async () => {
+  await abrirApp();
+  const copiarTodas = () => clicarEEsperarToast(q('#btnCopyAll'));
+  usarItens([falso('amazon', haHoras(30)), falso('amazon', haHoras(1)), falso('ml', null), falso('shopee', haHoras(60)), falso('shopee', haHoras(3), {}, { preco: '' })]);
+  igual(await copiarTodas(), '5 mensagens copiadas. 3 estão com preço desatualizado.');
+  igual(COPIADOS[0].split('\n\n----------\n\n').length, 5);
+  usarItens([falso('amazon', haHoras(30)), falso('amazon', haHoras(1)), falso('ml', haHoras(1))]);
+  igual(await copiarTodas(), '3 mensagens copiadas. 1 está com preço desatualizado.');
+  usarItens([falso('amazon', haHoras(1)), falso('ml', haHoras(1))]);
+  igual(await copiarTodas(), 'Copiadas!', 'nenhuma velha: o toast de sempre');
+  usarItens([falso('amazon', haHoras(30))]);
+  igual(await copiarTodas(), '1 mensagem copiada. 1 está com preço desatualizado.');
+  igual(COPIADOS.length, 4);
+});
+
+// ================================================================ "Atualizar preço" (Amazon)
+const DADOS_FRESCOS = { titulo: 'Produto atualizado', preco: 'R$ 59,90', preco_antigo: 'R$ 80,00', desconto: '-25%' };
+function respostaItem(it, preco_em, data) { return { ...it, preco_em, data: { ...it.data, ...data } }; }
+
+teste('"Atualizar preço": busca, grava por PATCH, atualiza preco_em em memória e redesenha: "Preço atualizado." e a linha vira "Preço de agora há pouco", sem selo; o foco vai ao Copiar', async () => {
+  await abrirApp();
+  const a = falso('amazon', haHoras(30));
+  usarItens([a]);
+  const t = q('#toast'); t.textContent = ''; t.classList.remove('show');
+  let liberar; const portao = new Promise(r => { liberar = r; });
+  const PATCHES = [];
+  FALSO['GET /api/fetch'] = async () => { await portao; return json(DADOS_FRESCOS); };
+  FALSO['PATCH /api/items/' + a.id] = corpo => { PATCHES.push(corpo); return json(respostaItem(a, iso(new Date()), DADOS_FRESCOS)); };
+  const btn = q('.idade-preco .fetch');
+  btn.focus(); btn.click();
+  igual(btn.getAttribute('aria-busy'), 'true');
+  igual(txt(btn), 'Buscando na Amazon…');
+  btn.click();   // clique duplo não repete
+  liberar();
+  await esperar(() => !!q('.idade-msg') && txt(q('.idade-msg')) === 'Preço atualizado.', 'preço atualizado');
+  igual(REG.filter(r => r.caminho === '/api/fetch').length, 1, 'um só pedido de busca');
+  igual(PATCHES, [{ data: DADOS_FRESCOS }]);
+  igual(REG.filter(r => r.metodo === 'PATCH').length, 1);
+  const c = cartao(0);
+  igual(txt(c.querySelector('.idade-preco')), 'Preço de agora há pouco');
+  igual(c.querySelector('.velho'), null);
+  igual(c.querySelector('.idade-preco .fetch'), null, 'sem botão na linha em dia');
+  afirma(c.querySelector('.rare .fetch'), 'o botão volta para "Mais ações"');
+  igual(txt(c.querySelector('.name')), 'Produto atualizado');
+  igual(c.querySelector('.idade-msg').getAttribute('role'), 'status');
+  igual(ev('items[0].preco_em').slice(0, 10), iso(new Date()).slice(0, 10), 'preco_em em memória');
+  mesmoNo(W.document.activeElement, c.querySelector('.copy'), 'o foco passa ao Copiar (o botão saiu de cena)');
+  igual(q('#toast').classList.contains('show'), false, 'D2: sem toast; o .idade-msg (role=status) já informa');
+  igual(q('#toastErro').classList.contains('show'), false);
+  // faixa, filtro e quadro refletem o item
+  igual(txt(q('#faixaPrecosTxt')), 'Todos os preços desta categoria têm menos de 24 h.');
+  igual(txt(q('#fPreco').options[1]), 'Desatualizados (0)');
+});
+
+teste('"Atualizar preço": erros mostram o texto em .idade-msg (role=status, cor de erro) e devolvem o botão; captcha usa o texto atual', async () => {
+  await abrirApp();
+  const a = falso('amazon', haHoras(30));
+  usarItens([a]);
+  const btn = () => q('.idade-preco .fetch'), msg = () => q('.idade-msg');
+  // rede
+  FALSO['GET /api/fetch'] = () => Promise.reject(new W.TypeError('rede'));
+  btn().click();
+  await esperar(() => txt(msg()) !== '', 'erro de rede');
+  igual(txt(msg()), 'Não consegui atualizar: a Amazon não respondeu. Tente de novo.');
+  igual(msg().classList.contains('err'), true);
+  igual(btn().getAttribute('aria-busy'), null);
+  igual(txt(btn()), 'Atualizar preço');
+  igual(ev('items[0].preco_em'), a.preco_em, 'o item não mudou');
+  afirma(q('.idade-preco .velho'), 'continua desatualizado');
+  // captcha
+  FALSO['GET /api/fetch'] = () => json({ captcha: true });
+  btn().click();
+  await esperar(() => /captcha/.test(txt(msg())), 'captcha');
+  igual(txt(msg()), 'Amazon bloqueou (captcha) ou não achou o título. Tente mais tarde.');
+  // D5: erro do servidor que não é frase para o dono vira o texto padrão; frase própria (maiúscula e ponto) aparece como veio
+  const FALHOU = 'Não consegui atualizar: a Amazon não respondeu. Tente de novo.';
+  const tentar = async (desc, fetchFalso) => {
+    msg().textContent = ''; FALSO['GET /api/fetch'] = fetchFalso;
+    btn().click();
+    await esperar(() => txt(msg()) !== '' && btn().getAttribute('aria-busy') === null, desc);
+    return txt(msg());
+  };
+  igual(await tentar('erro cru', () => json({ error: 'só links https da Amazon (amazon.com.br ou amzn.to)' })), FALHOU);
+  igual(await tentar('erro cru curto', () => json({ error: 'url recusada' })), FALHOU);
+  igual(await tentar('frase do servidor', () => json({ error: 'Não consegui abrir a página da Amazon.' })), 'Não consegui abrir a página da Amazon.');
+  igual(await tentar('resposta nula', () => json(null)), FALHOU);
+  // PATCH falha
+  FALSO['PATCH /api/items/' + a.id] = () => json({ error: 'item não encontrado' });
+  igual(await tentar('PATCH com erro', () => json(DADOS_FRESCOS)), FALHOU);
+  igual(ev('items[0].data.titulo'), a.data.titulo, 'o item em memória não recebeu o corpo de erro');
+  // o servidor ainda assim não carimbou o preco_em (ele é quem decide): a idade continua desconhecida e o texto é honesto
+  FALSO['PATCH /api/items/' + a.id] = () => json(respostaItem(a, null, { preco: '' }));
+  btn().click();
+  await esperar(() => /não trouxe o preço/.test(txt(msg())), 'sem preço legível');
+  igual(txt(msg()), 'Não consegui atualizar: a Amazon não trouxe o preço. Tente de novo.');
+  igual(msg().classList.contains('err'), true);
+});
+
+teste('R1/S4: página sem preço legível ou de outro produto: nenhum PATCH sai, o preço antigo fica e a mensagem explica', async () => {
+  await abrirApp();
+  const a = falso('amazon', haHoras(30), {}, { preco: 'R$ 99,90' });
+  usarItens([a]);
+  const PATCHES = [];
+  FALSO['PATCH /api/items/' + a.id] = corpo => { PATCHES.push(corpo); return json(respostaItem(a, iso(new Date()), corpo.data)); };
+  const btn = () => q('.idade-preco .fetch'), msg = () => q('.idade-msg');
+  const tentar = async (desc, dados) => {
+    msg().textContent = ''; FALSO['GET /api/fetch'] = () => json(dados);
+    btn().click();
+    await esperar(() => txt(msg()) !== '' && btn() && btn().getAttribute('aria-busy') === null, desc);
+    return txt(msg());
+  };
+  const SEM = 'Não consegui atualizar: a Amazon não trouxe o preço. Tente de novo.';
+  // R1: preço vazio, ausente, ilegível ou zero (a mesma regra do servidor.ler_preco)
+  for (const preco of ['', '   ', undefined, null, 'Indisponível', 'R$ 10 - R$ 20', 'R$ 0,00', '0', '1.2345', ',50'])
+    igual(await tentar('preço ' + JSON.stringify(preco), { ...DADOS_FRESCOS, preco, asin: a.item_id }), SEM, JSON.stringify(preco));
+  igual(msg().classList.contains('err'), true);
+  igual(PATCHES.length, 0, 'nenhum PATCH com preço ilegível');
+  igual(REG.filter(r => r.metodo === 'PATCH').length, 0);
+  igual(ev('items[0].data.preco'), 'R$ 99,90', 'o preço antigo ficou');
+  igual(ev('items[0].preco_em'), a.preco_em);
+  afirma(q('.idade-preco .velho'), 'continua desatualizado');
+  // S4: a página abriu outro produto (asin diferente): nem com preço bom sai PATCH
+  igual(await tentar('outro produto', { ...DADOS_FRESCOS, asin: 'B0OUTRO000' }), 'A página abriu outro produto; confira o link.');
+  igual(msg().classList.contains('err'), true);
+  igual(PATCHES.length, 0, 'nenhum PATCH com a página de outro produto');
+  igual(ev('TXT_PRECOS.outroProduto'), 'A página abriu outro produto; confira o link.', 'o texto mora em TXT_PRECOS');
+  // preços legíveis e asin igual ou ausente gravam
+  for (const [preco, asin] of [['R$ 1.299,90', a.item_id], ['R$ 4.285', ''], ['59.90', undefined]]) {
+    usarItens([a]);
+    FALSO['GET /api/fetch'] = () => json({ ...DADOS_FRESCOS, preco, asin });
+    btn().click();
+    await esperar(() => !!q('.idade-msg') && txt(q('.idade-msg')) === 'Preço atualizado.', 'grava ' + preco);
+  }
+  igual(PATCHES.map(c => c.data.preco), ['R$ 1.299,90', 'R$ 4.285', '59.90']);
+  igual(VIOL, []);
+});
+
+// ================================================================ CA-P6: disparo e atalho #precos
+teste('CA-P6: o cabeçalho do disparo diz "Preços valem N h para todas as regras." (N da config) com o link "Como atualizar os preços" para #precos', async () => {
+  await abrirApp();
+  FALSO['GET /api/config/preco_validade_horas'] = () => json(48);
+  FALSO['GET /api/config/templates'] = () => json(ev('DEFAULT_TEMPLATES'));
+  for (const rota of ['numeros', 'regras', 'fila', 'envios']) FALSO['GET /api/disparo/' + rota] = () => json([]);
+  await ev('telaRegras({}, rotaSeq)');
+  const p = q('#dspPrazo');
+  afirma(p, 'sem a linha de prazo');
+  igual(txt(p), 'Preços valem 48 h para todas as regras. Como atualizar os preços');
+  const a = p.querySelector('a');
+  igual(a.getAttribute('href'), '#precos');
+  igual(a.hasAttribute('data-nav'), true);
+  afirma(!p.querySelector('input'), 'sem campo: o número se muda no quadro');
+  igual(p.parentElement.querySelectorAll('input, select').length, 0);
+  igual(q('#telaDisparo input[type="number"]'), null, 'nenhum campo numérico na tela do disparo');
+  // sem config (falha de leitura), vale o padrão
+  FALSO['GET /api/config/preco_validade_horas'] = () => Promise.reject(new W.TypeError('rede'));
+  await ev('telaRegras({}, rotaSeq)');
+  igual(txt(q('#dspPrazo')).startsWith('Preços valem 24 h para todas as regras.'), true);
+  ev('pararFila()');
+});
+
+teste('CA-P6: o atalho #precos mostra a lista com o quadro aberto, o foco no <summary> e sem entrar na tela do disparo; sai de uma tela do disparo', async () => {
+  await abrirApp();
+  usarItens(lote());
+  igual(q('#quadroPrecos').open, false);
+  W.location.hash = '#precos';
+  await esperar(() => q('#quadroPrecos').open === true, 'o hash #precos abrir o quadro');
+  mesmoNo(W.document.activeElement, q('#quadroPrecos summary'));
+  igual(ev('noDisparo'), false);
+  igual(q('#telaDisparo').hidden, true);
+  igual(q('#telaOfertas').hidden, false);
+  igual(W.document.body.classList.contains('em-disparo'), false);
+  // o disparo -> #precos: sai do disparo e abre o quadro. A tela do disparo é aberta pelo código e o rotear() é chamado à mão, com o hash já em #precos
+  // (assim a página faz uma só mudança de hash)
+  q('#quadroPrecos').open = false;
+  for (const rota of ['regras', 'fila']) FALSO['GET /api/disparo/' + rota] = () => json([]);
+  ev("noDisparo = true; document.body.classList.add('em-disparo'); $('#telaOfertas').hidden = true; $('#telaDisparo').hidden = false;");
+  ev('rotear()');
+  await esperar(() => q('#quadroPrecos').open === true && ev('noDisparo') === false, 'sair do disparo e abrir o quadro');
+  igual(q('#telaDisparo').hidden, true);
+  igual(q('#telaOfertas').hidden, false);
+  igual(W.document.body.classList.contains('em-disparo'), false);
+  W.history.replaceState(null, '', '/index.html');
+});
+
+teste('CA-P6: abrir a página já em #precos (link do disparo, favorito) mostra a lista com o quadro aberto e o foco no <summary>', async () => {
+  await abrirApp('#precos');
+  igual(q('#quadroPrecos').open, true);
+  mesmoNo(W.document.activeElement, q('#quadroPrecos summary'));
+  igual(ev('noDisparo'), false);
+  igual(q('#telaDisparo').hidden, true);
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="itens"]')) !== 'Carregando…', true, 'as contagens já saíram da carga');
+  // R3: quem abre já em #precos também confere a atenção do disparo (o GET de regras e fila vai ao servidor da cópia)
+  await esperar(() => Array.isArray(ev('disp.regras')) && Array.isArray(ev('disp.fila')), 'atualizarAtencao() na carga em #precos');
+  W.history.replaceState(null, '', '/index.html');
+});
+
+// ================================================================ D1: contagem da regra sem os itens de preço velho
+const NUMERO = { id: 1, nome: 'N', telefone: '', grupo_nome: 'G', grupo_id: '', limite_diario: 40, ativo: 1 };
+const regraFalsa = sobre => ({ id: 7, nome: 'R', numero_id: 1, ativa: 1, cats: [CAT], lojas: ['amazon', 'ml', 'shopee'], palavras: [], desconto_min: 0, ordem: 'relevancia', generos: [],
+  template: 'Template 1', com_foto: 1, dias: [0, 1, 2, 3, 4, 5, 6], horarios: ['09:00'], por_disparo: 1, max_por_dia: 10, repetir_apos_dias: 7, intervalo_seg: 60, aviso: '', proximo: null, ...sobre });
+function contadorDoForm(lista) {
+  usarItens(lista);
+  ev('disp.numeros = ' + JSON.stringify([NUMERO]) + ';');
+  const host = W.document.createElement('div');
+  host.innerHTML = W.htmlFormRegra({ ...ev('regraPadrao()'), nome: 'R', numero_id: 1, cats: [CAT], lojas: ['amazon', 'ml', 'shopee'] });
+  W.document.body.appendChild(host);
+  try { ev('atualizarDerivados()'); const ct = q('#f-contador'); return [txt(ct), ct.classList.contains('aviso')]; } finally { host.remove(); }
+}
+
+teste('D1: contarItens tira os itens de preço velho (itemComPrecoVelho); contagemDaRegra separa enviáveis e velhos', async () => {
+  await abrirApp();
+  const v = { cats: [CAT], lojas: ['amazon', 'ml', 'shopee'], palavras: [], desconto_min: 0, generos: [] };
+  usarItens([...lote(), falso('amazon', haHoras(2), { cat: 'Games' })]);
+  // lote(): em dia 1 h e 2 h; velhos 30 h, nulo, 50 h e 100 h; o sem preço não conta; o de Games está fora da regra
+  igual(JSON.parse(JSON.stringify(W.contagemDaRegra(v))), { enviaveis: 2, velhos: 4 });
+  igual(W.contarItens(v), 2);
+  igual(W.contarItens({ ...v, lojas: ['shopee'] }), 0, 'Shopee: só o velho de 100 h e o sem preço');
+  igual(JSON.parse(JSON.stringify(W.contagemDaRegra({ ...v, lojas: ['shopee'] }))), { enviaveis: 0, velhos: 1 });
+  ev('precoValidade = 168');
+  igual(W.contarItens(v), 5, 'o prazo em vigor muda a conta (o nulo continua velho)');
+  ev('precoValidade = 24');
+});
+
+teste('D1: contador do formulário diz quantos ficam de fora por preço velho e "Sem itens para enviar" quando todos os que combinam são velhos', async () => {
+  await abrirApp();
+  igual(contadorDoForm([falso('amazon', haHoras(1)), falso('amazon', haHoras(2)), falso('amazon', haHoras(30))]),
+    ['Cerca de 2 itens combinam com esses filtros (sem contar os já enviados recentemente); 1 fica de fora por preço velho.', false]);
+  igual(contadorDoForm([falso('amazon', haHoras(1)), falso('ml', haHoras(30)), falso('ml', null)]),
+    ['Cerca de 1 item combina com esses filtros (sem contar os já enviados recentemente); 2 ficam de fora por preço velho.', false]);
+  igual(contadorDoForm([falso('amazon', haHoras(1))]), ['Cerca de 1 item combina com esses filtros (sem contar os já enviados recentemente).', false], 'nenhum velho: o texto de sempre');
+  igual(contadorDoForm([falso('amazon', haHoras(30)), falso('ml', null), falso('shopee', haHoras(99))]),
+    ['Sem itens para enviar: os 3 que combinam ficam de fora por preço velho.', true]);
+  igual(contadorDoForm([falso('amazon', haHoras(30))]), ['Sem itens para enviar: o único item que combina fica de fora por preço velho.', true]);
+  igual(contadorDoForm([falso('amazon', haHoras(1), { cat: 'Games' })]), ['Nenhum item combina; a regra não enviará nada até entrarem itens.', true]);
+  const muitos = Array.from({ length: 1200 }, () => falso('amazon', haHoras(30)));
+  igual(contadorDoForm([falso('amazon', haHoras(1)), ...muitos])[0], 'Cerca de 1 item combina com esses filtros (sem contar os já enviados recentemente); 1.200 ficam de fora por preço velho.');
+});
+
+teste('D1: o cartão da regra diz "Próximo: Sem itens para enviar" quando todos os itens que combinam estão com preço velho', async () => {
+  await abrirApp();
+  ev('disp.numeros = ' + JSON.stringify([NUMERO]) + '; disp.fila = []; disp.envios = [];');
+  const proximo = r => { const d = W.document.createElement('div'); d.innerHTML = W.htmlRegra(r); return /Próximo: (.*)$/.exec(txt([...d.querySelectorAll('.meta')].pop()))[1]; };
+  const amanha = iso(new Date(Date.now() + 864e5)).slice(0, 10) + 'T09:00:00';
+  usarItens([falso('amazon', haHoras(30)), falso('ml', null)]);
+  igual(proximo(regraFalsa({ proximo: amanha })), 'Sem itens para enviar', 'só velhos');
+  usarItens([falso('amazon', haHoras(30)), falso('ml', haHoras(1))]);
+  afirma(proximo(regraFalsa({ proximo: amanha })) !== 'Sem itens para enviar', 'com um em dia, o próximo horário aparece');
+  igual(proximo(regraFalsa({ ativa: 0, proximo: amanha })), '—', 'pausada');
+});
+
+teste('CA-P6: a prévia com preco_velho > 0 diz quantos itens ficaram de fora (singular e plural, também sem item); sem preco_velho, nada', async () => {
+  await abrirApp();
+  ev("$('#telaDisparo').hidden = false; $('#telaDisparo').innerHTML = '<div id=\"dspPrevia\"></div>'");
+  const prev = (lista, velhos) => { ev('previaLista = ' + JSON.stringify(lista) + '; previaPrecoVelho = ' + velhos + '; previaIdx = 0; desenharPrevia()'); return q('#dspPrevia'); };
+  const item = { mensagem: 'Oi', loja: 'amazon', imagem: '' };
+  igual(txt(prev([item], 3).querySelector('#dspPreviaVelhos')), '3 itens ficaram de fora por preço velho.');
+  igual(txt(prev([item], 1).querySelector('#dspPreviaVelhos')), '1 item ficou de fora por preço velho.');
+  igual(txt(prev([item], 1200).querySelector('#dspPreviaVelhos')), '1.200 itens ficaram de fora por preço velho.');
+  igual(prev([item], 0).querySelector('#dspPreviaVelhos'), null, 'zero: nada');
+  igual(txt(prev([], 5).querySelector('#dspPreviaVelhos')), '5 itens ficaram de fora por preço velho.', 'sem nenhum item combinando, a explicação ainda aparece');
+  afirma(txt(q('#dspPrevia')).startsWith('Nenhum item combina com esta regra agora.'));
+  igual(prev([], 0).querySelector('#dspPreviaVelhos'), null);
+  ev("$('#telaDisparo').innerHTML = ''; $('#telaDisparo').hidden = true; previaLista = []; previaPrecoVelho = 0");
+});
+
+teste('CA-P6: a prévia pede com_info e lê tanto {itens, preco_velho} quanto a lista pura; preco_velho inválido vale 0', async () => {
+  await abrirApp();
+  const fonte = ev('atualizarPrevia.toString()');
+  afirma(/com_info\s*:\s*true/.test(fonte) && /lerRespostaPrevia\(r\)/.test(fonte), 'a prévia não pede com_info ou não usa lerRespostaPrevia');
+  const ler = r => JSON.parse(JSON.stringify(W.lerRespostaPrevia(r)));
+  const it = [{ mensagem: 'a' }];
+  igual(ler({ itens: it, recusados: 0, preco_velho: 3 }), { itens: it, precoVelho: 3 });
+  igual(ler({ itens: it, recusados: 2 }), { itens: it, precoVelho: 0 }, 'servidor sem a contagem');
+  igual(ler(it), { itens: it, precoVelho: 0 }, 'lista pura (servidor antigo)');
+  for (const ruim of [-1, 0, 1.5, '3', null, true]) igual(ler({ itens: it, preco_velho: ruim }).precoVelho, 0, JSON.stringify(ruim));
+  igual(ler({ itens: 'x', preco_velho: 2 }), { itens: [], precoVelho: 2 });
+  igual(ler(null), { itens: [], precoVelho: 0 });
+  igual(ler(undefined), { itens: [], precoVelho: 0 });
+  igual(ler({ error: 'x' }), { itens: [], precoVelho: 0 });
+});
+
+// ================================================================ CA-P10 e demais: acessibilidade, largura, tokens
+teste('CA-P2/CA-P3: quadro aberto em 320, 360, 375 e 1280 px: sem rolagem horizontal, grade em 1 coluna no celular e 3 colunas a 1280, comando quebra linha, botões de 44 px no celular', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  escolher(q('#qpCat'), 'TV, Alexa e Casa Conectada');
+  for (const w of [320, 360, 375]) {
+    await largura(w);
+    afirma(semRolagemHorizontal(), 'rolagem horizontal a ' + w + ' px');
+    const tops = qa('.qp-loja').map(l => Math.round(l.getBoundingClientRect().left));
+    igual(new Set(tops).size, 1, w + ' px: uma coluna');
+    for (const cmd of qa('.cmd')) afirma(cmd.scrollWidth <= cmd.clientWidth + 1, w + ' px: o comando rolou na horizontal');
+    for (const b of qa('.cmd-linha button').filter(visivel)) afirma(b.getBoundingClientRect().height >= 44, w + ' px: "Copiar comando" com ' + b.getBoundingClientRect().height);
+    for (const b of [q('#qpSalvarPrazo'), q('#qpConferir')]) afirma(b.getBoundingClientRect().height >= 44, w + ' px: ' + b.id);
+    afirma(q('#qpHoras').getBoundingClientRect().height >= 44, w + ' px: campo de horas');
+  }
+  await largura(1280);
+  afirma(semRolagemHorizontal(), 'rolagem horizontal a 1280 px');
+  const lefts = qa('.qp-loja').map(l => Math.round(l.getBoundingClientRect().left));
+  igual(new Set(lefts).size, 3, '1280 px: três colunas');
+  await largura(1100);
+});
+
+teste('CA-P10: nenhum token novo (cores só por var()), o quadro funciona em claro e escuro; o selo usa a borda do campo (3:1)', async () => {
+  await abrirApp();
+  const html = await (await fetch('/index.html')).text();
+  const css = html.slice(html.indexOf('/* ---- Preço sempre atualizado'), html.indexOf('@media (prefers-reduced-motion'));
+  afirma(css.length > 500, 'bloco de CSS dos preços não achado');
+  igual(/#[0-9a-fA-F]{3,8}\b/.test(css), false, 'cor literal no CSS dos preços');
+  igual(/rgba?\(/.test(css), false);
+  igual(/--[a-z-]+\s*:/.test(css), false, 'token novo declarado no CSS dos preços');
+  const usados = [...new Set([...css.matchAll(/var\((--[a-z0-9-]+)\)/g)].map(m => m[1]))];
+  const raiz = html.slice(html.indexOf(':root{'), html.indexOf('@media (prefers-color-scheme:dark)'));
+  for (const t of usados) afirma(raiz.includes(t + ':'), 'token inexistente: ' + t);
+  afirma(!usados.includes('--falhou') || /\.idade-msg\.err\{color:var\(--falhou\)/.test(css), '--falhou só no erro de .idade-msg');
+  igual(/\.velho[^}]*--falhou/.test(css), false, 'o selo não usa vermelho');
+});
+
+teste('acessibilidade: summary, campo, select e botões com nome; alvo de 36 px no desktop; ordem de foco prazo, categoria, cartões, conferir', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  for (const b of qa('#quadroPrecosCorpo button')) afirma((b.getAttribute('aria-label') || b.textContent).trim().length > 0, 'botão sem nome');
+  for (const b of qa('#quadroPrecosCorpo button, #quadroPrecos summary, #btnComoPrecos, #qpHoras, #qpCat').filter(visivel)) afirma(b.getBoundingClientRect().height >= 36 - 0.5, 'alvo pequeno: ' + (b.id || txt(b)) + ' ' + b.getBoundingClientRect().height);
+  const ordem = qa('#quadroPrecosCorpo input, #quadroPrecosCorpo select, #quadroPrecosCorpo button').filter(visivel).map(e => e.id || e.dataset.acao);
+  igual(ordem.slice(0, 3), ['qpHoras', 'qpSalvarPrazo', 'qpCat']);
+  igual(ordem[ordem.length - 1], 'qpConferir');
+  // a faixa e o filtro
+  igual(q('#fPreco').getAttribute('aria-label'), 'Filtrar por idade do preço');
+  // o nome do botão do cartão começa pelo texto visível (WCAG 2.5.3)
+  usarItens([falso('amazon', haHoras(30))]);
+  const b = q('.idade-preco .fetch');
+  afirma(b.getAttribute('aria-label').toLowerCase().startsWith(b.textContent.trim().toLowerCase()), 'rótulo acessível não começa pelo texto visível');
+});
+
+teste('o app não deixa o quadro para trás quando o disparo recarrega a lista: render() não recria o quadro nem apaga o que o dono digitou', async () => {
+  await abrirApp();
+  usarItens(lote());
+  q('#btnComoPrecos').click();
+  const c = q('#qpHoras'), corpo = q('#quadroPrecosCorpo').firstElementChild;
+  c.value = '100'; c.dispatchEvent(new W.Event('input', { bubbles: true }));
+  c.focus();
+  ev('render()');
+  mesmoNo(q('#qpHoras'), c, 'o campo é o mesmo nó');
+  igual(c.value, '100', 'o que o dono digitou fica');
+  mesmoNo(W.document.activeElement, c);
+  mesmoNo(q('#quadroPrecosCorpo').firstElementChild, corpo);
+  // fechado, o render não gasta contagem (e abrir recalcula)
+  q('#quadroPrecos').open = false;
+  usarItens([falso('amazon', haHoras(99))]);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="velhos"]')), '1');
+});
+
+// ================================================================ fecho: a API real não mudou
+teste('só GET saiu para a API real, nada saiu para /api/fetch nem /api/disparo, e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita ou de rede (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+  const prazo = await (await fetch('/api/config/preco_validade_horas')).json();
+  afirma(prazo === null || prazo === PRAZO_ANTES, 'a config do prazo mudou no servidor real: ' + JSON.stringify(prazo));
+});
+
+// ================================================================ execução
+let PRAZO_ANTES = null;
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    const lista = JSON.parse(API_ANTES);
+    afirma(Array.isArray(lista) && lista.length > 0, '/api/items vazio');
+    afirma(lista.every(i => 'preco_em' in i), 'o servidor não traz preco_em (etapa 1 do plano não está no ar nesta porta?)');
+    PRAZO_ANTES = await (await fetch('/api/config/preco_validade_horas')).json();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

@@ -37,11 +37,11 @@ Corpo, em `dl` Legenda/Mono: **Itens** · **Com preço velho** (e, se houver, "i
 
 **Amazon:** comando `python3 atualizar_precos.py amazon --cat "ABA"` (sem `--cat` quando "Todas as categorias"). Tempo: cerca de 40 min para tudo pela página de busca (Perfumes e Perfumaria, cerca de 25 min), estimativa pelas pausas do código. Captcha ou bloqueio: o comando para com o progresso do dia salvo (saída 3); esperar de 15 a 30 min e rodar o mesmo comando de novo; se repetir, parar por hoje e dividir por categoria.
 
-**Mercado Livre:** passos: abrir `https://lista.mercadolivre.com.br` no Chrome, colar o `coletar_ml.js` no console, rodar `ColetaML.atualizar({cat: "ABA"})` (sem `cat` quando "Todas"). Tempo: depende dos termos da categoria (99 no total); não medido. Captcha: resolver na aba e chamar `atualizar` de novo; o progresso do dia fica no navegador. Nota: o Chrome precisa do "Acesso à rede local" liberado para o ML (já descrito no README).
+**Mercado Livre:** passos: abrir `https://lista.mercadolivre.com.br` no Chrome, colar o `coletar_ml.js` no console, rodar `ColetaML.atualizar({cat: "ABA"})`. Com "Todas as categorias" o bloco não mostra comando e diz "Escolha uma categoria acima: o Mercado Livre atualiza uma categoria por vez.". Tempo: depende dos termos da categoria (99 no total); não medido. Captcha: resolver na aba e chamar `atualizar` de novo; o progresso do dia fica no navegador. Nota: o Chrome precisa do "Acesso à rede local" liberado para o ML (já descrito no README).
 
 **Shopee:** dois blocos, porque o dono ainda não tem a credencial da Open API.
 - "Por enquanto": o `importar` do painel (`python3 coletar_shopee.py importar`; **argumentos exatos a confirmar com o dev, do README**), cerca de 1 a 2 min por termo, não verificado.
-- "Quando a credencial chegar": `python3 atualizar_precos.py shopee --cat "ABA"`. Com "Todas as categorias", o bloco diz "Escolha uma categoria acima: a Shopee atualiza uma categoria por vez." e não mostra comando. Limite da API: o comando para com saída 3; esperar e rodar de novo.
+- "Quando a credencial chegar": `read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat "ABA"; unset S` (o Secret só no ambiente do comando; nunca no site). Categoria fora das 17 abas fica sem comando: "Essa categoria está fora das abas da coleta." Com "Todas as categorias", o bloco diz "Escolha uma categoria acima: a Shopee atualiza uma categoria por vez." e não mostra comando. Limite da API: o comando para com saída 3; esperar e rodar de novo.
 - Frase fixa: "As credenciais ficam só no seu terminal. Este site nunca pede o Secret."
 
 ### Contagens (de onde saem)

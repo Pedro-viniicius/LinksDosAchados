@@ -21,7 +21,15 @@ Vistas na etapa 5 do plano genero-nas-categorias (2026-11-03):
 - **Módulo novo importado pelo `api_ofertas.py`:** o `TestAmbienteDeTesteIgnoraTokenReal` (`test_api_ofertas_servidor.py`) copia os `.py` para um diretório temporário; sem o módulo novo na tupla, o servidor da cópia derruba a conexão (`RemoteDisconnected`).
 - `MAX_PARES` com `genero` é 32; o banco real estava em `user_version` 1 (sem `generos_manuais`) e a v1 continuou em ~0,5 s.
 
-**How to apply:** ao mexer no `api_ofertas.py`, no `disparo.ordenar`/`elegiveis` ou nos testes deles. Relacionado: [[disparo-testes]], [[servidor-testes]].
+**How to apply:** ao mexer no `api_ofertas.py`, no `disparo.ordenar`/`elegiveis` ou nos testes deles. Relacionado: [[disparo-testes]], [[servidor-testes]], [[atualizar-precos-testes]].
+
+Vistas na etapa 3 de atualizar-precos (`preco_em` na v1, 2026-11-04):
+
+- **`test_api_ofertas_qa.py::DadosReais` lê um retrato do banco real direto, sem `criar_banco`:** se o banco real ainda não migrou, coluna nova de `items` dá `IndexError` no `row['coluna']` e derruba o `setUpClass`. Por isso o `api_ofertas` tolera banco sem `preco_em` (`try/except IndexError` e `PRAGMA table_info` antes de pôr a coluna no SQL).
+- **O `D.elegiveis` tira preço velho desde a etapa 2:** oráculo de paridade com itens sem `preco_em` volta vazio. Em `test_api_ofertas.py`, o `OrdensDoDisparo.gravar` põe `preco_em=hora(AGORA)`. O `ParidadeComODisparo` do qa quebra pelo mesmo motivo (arquivo do qa).
+- **`ServidorDadosReais` falha com coleta real rodando** (`ps` mostra `coletar_amazon.py`): itens gravados há menos de 60 s ficam na folga da ordem `atualizacao` e faltam de 1 a 18 contra o `/categorias`. Não é regressão.
+- **`curl` respeita `http_proxy`:** com os proxies mortos exportados, o `curl` para `localhost` dá `000`. Exporte `no_proxy=localhost,127.0.0.1` antes.
+- Mutante equivalente para os testes de saída: tirar o `AND preco_em >= ?` do SQL (o `_casa` decide). Só morre com espião em `A.oferta` contando as chamadas.
 
 Vistas na etapa 2 (v1 no servidor.py, 2026-11-03):
 

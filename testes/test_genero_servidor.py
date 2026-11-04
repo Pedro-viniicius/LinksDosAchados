@@ -25,7 +25,7 @@ CASA = 'Casa e Decoração'
 BF = 'Black Friday | Eletrônicos'
 GENEROS = ('feminino', 'masculino', 'unissex', 'sem')
 ORIGENS = ('titulo', 'busca', 'manual', '')
-CHAVES_ITEM = {'id', 'loja', 'item_id', 'cat', 'busca', 'url', 'data', 'genero', 'genero_origem', 'genero_auto'}
+CHAVES_ITEM = {'id', 'loja', 'item_id', 'cat', 'busca', 'url', 'data', 'genero', 'genero_origem', 'genero_auto', 'preco_em'}
 # valor de teste que nunca pode aparecer na resposta nem no log (as mensagens não ecoam o valor)
 MARCA = 'ValorMarcaGenero7Q'
 VELHO = '2000-01-01T00:00:00'

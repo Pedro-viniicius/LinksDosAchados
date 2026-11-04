@@ -274,6 +274,12 @@ class ModeloDoCursor(T.Base):
 
 # ------------------------------------------------------------------ CA3/CA4: paridade com o disparo
 class ParidadeComODisparo(T.Base):
+    def gravar(self, loja='amazon', **campos):
+        """Preço confirmado agora: o oráculo D.elegiveis tira o preço velho (CA6 de atualizar-precos),
+        e aqui o que se compara é a paridade de ordem e de filtros, não a trava de idade."""
+        campos.setdefault('preco_em', T.hora(AGORA))
+        return super().gravar(loja, **campos)
+
     TITULOS = ['Perfume Ácido Café 100ml', 'CAFÉ solúvel', 'cafe moido', 'Ração ÇÃO premium', 'Maçã verde',
                'STRASSE importada', 'Fone de ouvido bluetooth', 'Perfume masculino 100ml', 'Ônibus de brinquedo',
                'Conjunto Faqueiro 24 peças']
@@ -494,6 +500,16 @@ class DadosReais(unittest.TestCase):
         cls.caminho = os.path.join(cls.dir, 'copia.db')
         if not copiar_banco_real(cls.caminho):
             raise unittest.SkipTest('sem achadinhos.db legível neste checkout: os testes de dados reais precisam dele')
+        # O retrato pode ser de antes da v3 (sem items.preco_em) e o oráculo D.elegiveis tira o preço velho:
+        # migra a cópia (descartável) e marca todo preço como confirmado em AGORA. Aqui se compara a v1
+        # com o disparo nos dados reais, não a trava de idade (essa tem testes próprios).
+        prep = sqlite3.connect(cls.caminho)
+        try:
+            D.migrar(prep)
+            prep.execute('UPDATE items SET preco_em=?', (T.hora(AGORA),))
+            prep.commit()
+        finally:
+            prep.close()
         cls.con = T.abrir(cls.caminho, so_leitura=True)
         cls.addClassCleanup(cls.con.close)
         cls.linhas = cls.con.execute('SELECT COUNT(*) FROM items').fetchone()[0]

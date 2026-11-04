@@ -11,6 +11,10 @@
  *        await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria']})
  *        await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})  // maior preço
  *        ColetaML.parar()                                                  // para depois do termo (ou lote) atual
+ *      Para atualizar os preços do que já está no banco (nunca insere item novo nem troca o meli.la):
+ *        await ColetaML.atualizar({cat: 'Perfumes e Perfumaria'})                 // termos da aba, relevância
+ *        await ColetaML.atualizar({cat: 'Perfumes e Perfumaria', ordem: 'caros'})
+ *        await ColetaML.atualizar({termos: ['Body splash'], enviar: false})       // só monta o lote
  *   4. Depois, numa aba em https://www.mercadolivre.com.br/afiliados/linkbuilder, cole o arquivo e rode:
  *        await ColetaML.afiliar({enviar: false, itens: ['https://produto.mercadolivre.com.br/MLB-…']})
  *        await ColetaML.afiliar({servidor: 'http://localhost:8766'})       // troca as urls por meli.la
@@ -24,6 +28,8 @@
  * O progresso fica no localStorage da aba, por servidor: termo já enviado não é coletado de novo.
  * ordem: 'relevancia' (padrão, a listagem de sempre) ou 'caros' (a mesma listagem por maior preço). O progresso da
  * relevância é o termo puro; o das outras ordens é "<ordem>|<termo>", então cada ordem coleta uma vez por termo.
+ * atualizar() lê a página inteira de cada termo e manda {items, so_existentes: true}; o progresso dele fica em
+ * __atualizarML:<servidor>, com "<AAAA-MM-DD>|<ordem>|<termo>", e vale só no dia (local) em que foi gravado.
  * afiliar() só manda PATCH com url https://meli.la/<código>, casando a resposta pelo código MLB.
  * Plano: docs/produto/planos/eletronicos-e-coleta-ml.md. Testes: node --test testes/coletar_ml.test.mjs
  *
@@ -780,6 +786,24 @@
     return { ...comuns, porBusca, termos, ordem };
   }
 
+  /** Abre a listagem do termo na ordem pedida, na própria aba. {html} ou {erro} (rede, captcha ou HTTP). */
+  async function abrirBusca(f, termo, ordem) {
+    let pagina;
+    try {
+      pagina = await pedir(f, '/' + slug(termo) + ORDENS_ML[ordem], { credentials: 'include' }, 'text');
+    } catch (e) {
+      return { erro: `não consegui abrir a busca "${termo}" no ML (${nomeErro(e)}). Nada foi enviado deste termo.` };
+    }
+    if (RX_CAPTCHA.test(String(pagina.r.url || ''))) {
+      return { erro: `o ML pediu verificação (captcha) na busca "${termo}". Resolva na aba e rode de novo; ` +
+        'os termos já enviados ficam no progresso. Nada foi enviado deste termo.' };
+    }
+    if (!pagina.r.ok) {
+      return { erro: `o ML respondeu ${pagina.r.status} na busca "${termo}". Nada foi enviado deste termo.` };
+    }
+    return { html: pagina.corpo };
+  }
+
   /**
    * Coleta os termos na própria aba do ML e, com enviar:true, grava cada termo no servidor.
    * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, foraDoPiso, usados, semPiso, parado, erro}.
@@ -825,21 +849,10 @@
         estado.termoAtual = termo;
         const cat = categoriaDe(termo);
 
-        let pagina;
-        try {
-          pagina = await pedir(f, '/' + slug(termo) + ORDENS_ML[ordem], { credentials: 'include' }, 'text');
-        } catch (e) {
-          return falhar(estado, `não consegui abrir a busca "${termo}" no ML (${nomeErro(e)}). Nada foi enviado deste termo.`);
-        }
-        if (RX_CAPTCHA.test(String(pagina.r.url || ''))) {
-          return falhar(estado, `o ML pediu verificação (captcha) na busca "${termo}". Resolva na aba e rode de novo; ` +
-            'os termos já enviados ficam no progresso. Nada foi enviado deste termo.');
-        }
-        if (!pagina.r.ok) {
-          return falhar(estado, `o ML respondeu ${pagina.r.status} na busca "${termo}". Nada foi enviado deste termo.`);
-        }
+        const pagina = await abrirBusca(f, termo, ordem);
+        if (pagina.erro) return falhar(estado, pagina.erro);
         const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
-        const itens = extrairItens(pagina.corpo, termo, cat, porBusca, contagem);
+        const itens = extrairItens(pagina.html, termo, cat, porBusca, contagem);
         estado.foraDoPiso += contagem.foraDoPiso;
         estado.usados += contagem.usados;
         if (!contagem.lidos) {
@@ -892,6 +905,234 @@
         log(`fim: ${estado.feitos.length} termos coletados, ${estado.pulados.length} pulados (já feitos), ` +
           `${estado.foraDoPiso} itens fora do piso (${estado.usados} usados), ${estado.semPiso.length} termos sem nenhum item no piso` +
           (enviar ? `; inserido ${estado.inserido}, atualizado ${estado.atualizado}.`
+            : '. Nada foi enviado: os itens estão em ColetaML.estado.itens.'));
+      }
+      return estado;
+    } finally {
+      estado.rodando = false;
+      estado.termoAtual = null;
+      execucao = null;
+    }
+  }
+
+  // ---------------------------------------------------------------- atualização de preços (só itens que já existem)
+
+  // Progresso do atualizar(): "<AAAA-MM-DD>|<ordem>|<termo>", por dia local; os dias anteriores somem na gravação.
+  const PREFIXO_ATUALIZAR = '__atualizarML:';
+  const RX_PRECO_LEGIVEL = /^R\$ \d{1,3}(?:\.\d{3})*(?:,\d{2})?$/;
+
+  /** Data local "AAAA-MM-DD" de um Date. */
+  function diaLocal(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  /**
+   * true se o preço do card é legível e maior que zero (o formato de formatarPreco, que o ler_preco do servidor lê).
+   * Card sem preço não vai no lote: o servidor apagaria o preço gravado e zeraria o preco_em (Decisão 5 do plano).
+   */
+  function temPreco(preco) {
+    return typeof preco === 'string' && RX_PRECO_LEGIVEL.test(preco) && /[1-9]/.test(preco);
+  }
+
+  function lerProgressoDoDia(arm, servidor, dia) {
+    try {
+      const v = JSON.parse(arm.getItem(PREFIXO_ATUALIZAR + servidor) || '[]');
+      return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.startsWith(dia + '|')) : []);
+    } catch (e) {
+      return new Set();   // progresso ilegível: atualizar de novo só repete leituras, não estraga dado
+    }
+  }
+
+  function gravarProgressoDoDia(arm, servidor, feitos) {
+    try {
+      arm.setItem(PREFIXO_ATUALIZAR + servidor, JSON.stringify([...feitos]));
+    } catch (e) {
+      console.warn('[ColetaML] não consegui gravar o progresso no localStorage; a atualização continua.');
+    }
+  }
+
+  /** Opções do POST do lote, iguais às da coleta (sem credenciais nem referrer). */
+  const postJson = (corpo) => ({
+    method: 'POST', credentials: 'omit', referrerPolicy: 'no-referrer',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(corpo),
+  });
+
+  /** Confere as opções do atualizar(). Devolve {erro} ou a configuração pronta. */
+  function conferirAtualizar(o) {
+    const comuns = opcoesComuns(o, 'atualizar');
+    if (comuns.erro) return comuns;
+    if (o.porBusca !== undefined) return { erro: 'atualizar() lê a página inteira de cada termo: não use porBusca' };
+    if (o.agora !== undefined && typeof o.agora !== 'function') return { erro: 'agora deve ser uma função que devolve a data' };
+    const ordem = o.ordem === undefined ? 'relevancia' : o.ordem;
+    if (typeof ordem !== 'string' || !Object.prototype.hasOwnProperty.call(ORDENS_ML, ordem)) {
+      return { erro: 'ordem deve ser uma destas: ' + Object.keys(ORDENS_ML).join(', ') };
+    }
+    let cat = null;
+    if (o.cat !== undefined) {
+      cat = typeof o.cat === 'string' ? o.cat.normalize('NFC').trim() : '';
+      if (!Object.prototype.hasOwnProperty.call(BUSCAS, cat)) {
+        return { erro: 'cat deve ser uma das abas de ColetaML.BUSCAS, por exemplo "Perfumes e Perfumaria"' };
+      }
+    }
+    let termos = o.termos;
+    if (termos === undefined) {
+      if (cat === null) return { erro: 'passe cat (uma aba de ColetaML.BUSCAS) ou termos' };
+      termos = [...BUSCAS[cat], ...Object.keys(ALIAS).filter((t) => categoriaDe(t) === cat)];
+    }
+    if (!Array.isArray(termos) || !termos.length || !termos.every((t) => typeof t === 'string')) {
+      return { erro: 'termos deve ser uma lista de textos, por exemplo ["Body splash"]' };
+    }
+    termos = [...new Set(termos.map((t) => t.normalize('NFC').trim()))];
+    const desconhecidos = termos.filter((t) => categoriaDe(t) === null);
+    if (desconhecidos.length) {
+      return { erro: 'termos fora de buscas.json (e do ALIAS): ' + JSON.stringify(desconhecidos) };
+    }
+    if (cat !== null) {
+      const deOutraAba = termos.filter((t) => categoriaDe(t) !== cat);
+      if (deOutraAba.length) return { erro: `termos que não são da aba "${cat}": ` + JSON.stringify(deOutraAba) };
+    }
+    return { ...comuns, termos, ordem, cat, agora: o.agora || (() => new Date()) };
+  }
+
+  /**
+   * Manda um lote vazio com so_existentes:true. Um servidor.py antigo ignora o campo e inseriria os itens
+   * do lote de verdade; ele responde sem "ausente", e aí o atualizar() para antes de enviar qualquer item.
+   * Devolve null ou a mensagem de erro.
+   */
+  async function conferirSoExistentes(f, servidor) {
+    let resp;
+    try {
+      resp = await pedir(f, servidor + '/api/items', postJson({ items: [], so_existentes: true }), 'json');
+    } catch (e) {
+      return `não consegui falar com o servidor em ${servidor} (${nomeErro(e)}). Ele está no ar?`;
+    }
+    const c = resp.corpo;
+    if (!resp.r.ok) {
+      const motivo = ehObjeto(c) && typeof c.error === 'string' ? ': ' + c.error : '';
+      return `o servidor recusou o teste do so_existentes com ${resp.r.status}${motivo}.`;
+    }
+    if (!ehObjeto(c) || !ehNumero(c.ausente) || c.inserido !== 0) {
+      return `o servidor em ${servidor} não conhece so_existentes (versão antiga do servidor.py?) e poderia inserir ` +
+        'itens. Reinicie o servidor com o código novo e rode de novo.';
+    }
+    return null;
+  }
+
+  /**
+   * Atualiza preço e dados dos itens do ML que já estão no banco, relendo as buscas dos termos na própria aba.
+   * Opções: cat (aba de BUSCAS; sem termos, lê os termos dela e os do ALIAS que apontam para ela), termos, ordem
+   * ('relevancia' ou 'caros'), mais servidor, enviar, pausa, fetch, armazenamento e agora (só testes) do coletar().
+   * Lê a página inteira (sem o corte de 30) e manda {items, so_existentes: true}: o servidor nunca insere e preserva
+   * o meli.la. Fica fora do lote o card usado, fora do piso ou sem preço legível: o item guarda os dados antigos,
+   * o preco_em envelhece e a trava do disparo o tira (CA5). O progresso é por dia local, separado do da coleta.
+   * Devolve o estado: {rodando, servidor, enviar, ordem, cat, dia, feitos, pulados, itens, lidos, atualizado,
+   * ausente (itens da página que não estão no banco), foraDoPiso, usados, semPreco, parado, erro}.
+   */
+  async function atualizar(opcoes = {}) {
+    if (execucao) {
+      console.error('[ColetaML] já há uma coleta rodando. Use ColetaML.parar() e espere ela terminar.');
+      return ultimoEstado;
+    }
+    const estado = {
+      rodando: false, servidor: null, enviar: null, ordem: null, cat: null, dia: null, termoAtual: null,
+      feitos: [], pulados: [], itens: [], lidos: 0, atualizado: 0, ausente: 0, foraDoPiso: 0, usados: 0, semPreco: 0,
+      parado: false, erro: null,
+    };
+    ultimoEstado = estado;
+    const origem = globalThis.location ? globalThis.location.origin : undefined;
+    if (origem !== ORIGEM_LISTA) {
+      return falhar(estado, `atualizar() só roda numa aba de ${ORIGEM_LISTA} (esta aba é ${origem || 'desconhecida'}). ` +
+        'Abra a lista do Mercado Livre, cole o arquivo de novo e rode lá. Nada foi feito.');
+    }
+    const cfg = conferirAtualizar(opcoes);
+    if (cfg.erro) return falhar(estado, cfg.erro + '. Nada foi feito.');
+    const { servidor, enviar, pausa, termos, ordem, cat, arm, f } = cfg;
+    let data;
+    try { data = cfg.agora(); } catch (e) { data = null; }
+    if (Object.prototype.toString.call(data) !== '[object Date]' || Number.isNaN(data.getTime())) {
+      return falhar(estado, 'agora() deve devolver uma data válida. Nada foi feito.');
+    }
+    const dia = diaLocal(data);
+    Object.assign(estado, { rodando: true, servidor, enviar, ordem, cat, dia });
+    execucao = { parar: false, acordar: null };
+    try {
+      if (enviar) {
+        const erro = await conferirSoExistentes(f, servidor);
+        if (erro) return falhar(estado, erro + ' Nada foi enviado.');
+      }
+      const feitosAntes = enviar ? lerProgressoDoDia(arm, servidor, dia) : new Set();
+      const feitos = new Set(feitosAntes);
+      const chaveDe = (termo) => `${dia}|${ordem}|${termo}`;
+      const rotulo = ordem === 'relevancia' ? '' : ' (' + ordem + ')';
+      let buscou = false;
+      for (let n = 0; n < termos.length; n++) {
+        const termo = termos[n];
+        if (execucao.parar) break;
+        if (feitosAntes.has(chaveDe(termo))) { estado.pulados.push(termo); continue; }
+        if (buscou) {
+          await pausar(pausa[0] + Math.random() * (pausa[1] - pausa[0]));
+          if (execucao.parar) break;
+        }
+        buscou = true;
+        estado.termoAtual = termo;
+        const aba = categoriaDe(termo);
+
+        const pagina = await abrirBusca(f, termo, ordem);
+        if (pagina.erro) return falhar(estado, pagina.erro);
+        const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
+        const noPiso = extrairItens(pagina.html, termo, aba, Infinity, contagem);
+        if (!contagem.lidos) {
+          return falhar(estado, `a busca "${termo}" veio sem polycard: pode ser captcha ou mudança na página do ML. ` +
+            'A atualização parou e nada foi enviado deste termo.');
+        }
+        const lote = noPiso.filter((it) => temPreco(it.data.preco));
+        const semPreco = noPiso.length - lote.length;
+        estado.lidos += contagem.lidos;
+        estado.foraDoPiso += contagem.foraDoPiso;
+        estado.usados += contagem.usados;
+        estado.semPreco += semPreco;
+        estado.itens.push(...lote);
+
+        let resumo = '';
+        if (enviar && lote.length) {
+          let resp;
+          try {
+            resp = await pedir(f, servidor + '/api/items', postJson({ items: lote, so_existentes: true }), 'json');
+          } catch (e) {
+            return falhar(estado, `não consegui falar com o servidor em ${servidor} (${nomeErro(e)}). Ele está no ar?`);
+          }
+          const c = resp.corpo;
+          if (!resp.r.ok) {
+            const motivo = ehObjeto(c) && typeof c.error === 'string' ? ': ' + c.error : '';
+            return falhar(estado, `o servidor recusou "${termo}" com ${resp.r.status}${motivo}. A atualização parou.`);
+          }
+          if (!ehObjeto(c) || !ehNumero(c.atualizado) || !ehNumero(c.ausente) || c.inserido !== 0) {
+            return falhar(estado, `resposta inesperada do servidor em "${termo}" (ele deveria só atualizar). ` +
+              'A atualização parou.');
+          }
+          estado.atualizado += c.atualizado;
+          estado.ausente += c.ausente;
+          resumo = ` (atualizado ${c.atualizado}, ausente ${c.ausente})`;
+        }
+        if (enviar) {
+          feitos.add(chaveDe(termo));
+          gravarProgressoDoDia(arm, servidor, feitos);
+        }
+        estado.feitos.push(termo);
+        log(`${n + 1}/${termos.length} "${termo}"${rotulo} → ${aba}: ${contagem.lidos} lidos, ${lote.length} no lote${resumo}, ` +
+          `${contagem.foraDoPiso} fora do piso (${contagem.usados} usados), ${semPreco} sem preço`);
+      }
+      if (execucao.parar) {
+        estado.parado = true;
+        log(`parado. ${estado.feitos.length} termos atualizados nesta rodada; rode atualizar() de novo para continuar.`);
+      } else {
+        log(`fim da atualização de ${dia}: ${estado.feitos.length} termos lidos, ${estado.pulados.length} pulados ` +
+          `(já feitos hoje), ${estado.lidos} itens lidos, ${estado.foraDoPiso} fora do piso (${estado.usados} usados), ` +
+          `${estado.semPreco} sem preço` +
+          (enviar ? `; atualizado ${estado.atualizado}, ausente ${estado.ausente} (não estão no banco). ` +
+            'Quem ficou de fora guarda o preço antigo e envelhece.'
             : '. Nada foi enviado: os itens estão em ColetaML.estado.itens.'));
       }
       return estado;
@@ -1451,7 +1692,7 @@
     }
   }
 
-  /** Interrompe a coleta ou o afiliar() em andamento depois do termo ou lote atual (a pausa é cortada). */
+  /** Interrompe a coleta, o atualizar() ou o afiliar() em andamento depois do termo ou lote atual (a pausa é cortada). */
   function parar() {
     if (!execucao) { log('nenhuma coleta rodando.'); return; }
     execucao.parar = true;
@@ -1459,11 +1700,12 @@
     log('vou parar depois do termo ou lote atual.');
   }
 
-  /** Esquece o progresso e os inelegíveis guardados de um servidor. */
+  /** Esquece o progresso (da coleta e do atualizar) e os inelegíveis guardados de um servidor. */
   function zerar(servidor = SERVIDOR_PADRAO, armazenamento = globalThis.localStorage) {
     const s = normalizarServidor(servidor);
     if (!s) { console.error('[ColetaML] servidor deve ser http://localhost:<porta>'); return false; }
     armazenamento.removeItem(PREFIXO_PROGRESSO + s);
+    armazenamento.removeItem(PREFIXO_ATUALIZAR + s);
     armazenamento.removeItem(PREFIXO_INELEGIVEIS + s);
     log(`progresso e inelegíveis de ${s} apagados.`);
     return true;
@@ -1471,7 +1713,7 @@
 
   globalThis.ColetaML = Object.freeze({
     BUSCAS, ALIAS, CAMPOS,
-    coletar, afiliar, parar, zerar,
+    coletar, atualizar, afiliar, parar, zerar,
     get estado() { return ultimoEstado; },
     slug, categoriaDe, literalQ, extrairItens, polycardParaItem, formatarPreco,
     idMLB, mapearLinks, urlsRepetidas, ehLinkMeliLa, gerarNaPagina,

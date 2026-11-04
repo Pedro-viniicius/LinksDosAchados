@@ -51,6 +51,14 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - Piso nas coletas: `coletar_amazon.passa_piso/eh_usado`, `coletar_ml.js passaPiso/ehUsado` (não mudou url/fetch/afiliar).
 - `backups/` inteiro está no `.gitignore` desde 2026-11-04.
 
+**Preço sempre atualizado (plano atualizar-precos, E1-E6 revisadas em 2026-11-04, rodada 1)**
+- `items.preco_em` (migração v3 em `disparo.migrar`, `_items_sem_preco_em` dentro do `BEGIN IMMEDIATE`; backfill = `criado_em` só com GLOB exato). Só `upsert` e PATCH `data` carimbam (`preco_em_de`: `agora()` se `ler_preco` lê, senão NULL); cliente não manda `preco_em`. Banco real ainda v2 em 2026-11-04 (sem `backups/antes-v3.db`): qualquer coleta/`atualizar_precos.py`/restart migra.
+- `POST /api/items` com `so_existentes` (bool estrito, 400) → `upsert(inserir=False)` devolve `ausente`; rota/CORS iguais. Trava do disparo: `preco_recente` via `ler_preco_em` estrito (futuro > 5 min = velho, `FOLGA_FUTURO_PRECO`) e `validade_horas` (config, 1-168, senão 24) dentro do `elegiveis`, na transação do `processar_slot`.
+- v1: `preco_max_horas` por `_inteiro` (`[0-9]{1,3}`), SQL parametrizado + recheck no `_casa`; sem parâmetro, nada filtra.
+- `atualizar_precos.py`: Secret só por `CS.credenciais()` (pop), `main` imprime só tipo; rede só por `C.url_busca`/`C.baixar` e `S.buscar_produto_amazon(C.link_afiliado(asin))` (ASIN `[A-Z0-9]{10}` do banco); nenhum lock aberto durante a rede (gerador roda depois do commit); progresso `atualizar_precos_feitos.txt` (gitignore) só `loja|dia|ordem|termo`.
+- `ColetaML.atualizar` só em `lista.`, testa o servidor com lote vazio `so_existentes` antes; progresso `__atualizarML:<servidor>`.
+- Front: quadro "Como atualizar" monta comando de terminal só para `cat` de `ORDEM_ABAS` (`comandoDoQuadro`) e recusa `\p{Cc}`/`\p{Cf}` (`aspasShell`/`comandoPrecos`); bloco da Shopee mostra `read -rs S; ...; unset S`. `fetchItem` não grava se `d.asin` difere ou sem preço legível. Rodada 2 (2026-11-04): S1-S4 corrigidos.
+
 **Saídas no front (`index.html`)**
 - `innerHTML` com template string; `esc()` escapa `& < > "`. "Copiar imagem": `HOSTS_FOTO` na URL pedida e no `r.url` final.
 - Botão "Abrir": só `https:` via `new URL`, com `noopener,noreferrer` (S1 corrigido em 2026-11-03). POST `/api/items` exige `eh_url_de_loja` (https, netloc == host, `HOSTS_LOJAS` + `*.mercadolivre.com.br`); PATCH segue com `eh_link_afiliado`. `coletar_amazon.py` grava por `S.upsert()` direto, sem essa validação (ramo do WhatsApp grava `https?://\S+` do chat).

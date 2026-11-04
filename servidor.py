@@ -16,8 +16,8 @@ O disparo é importado dentro das funções que o usam (criar_banco, rotas e __m
 este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
 mesmo numa cópia sem o disparo.py. O coletar_amazon.py e o coletar_shopee.py chamam criar_banco, então
 precisam do disparo.py e do genero.py ao lado (o disparo.py importa o genero no topo) e também migram o
-banco (só aditivo: cria numeros, regras, envios e generos_manuais). O genero.py (público de cada item,
-derivado na leitura) também é importado sob demanda aqui.
+banco (só aditivo: cria numeros, regras, envios, generos_manuais e a coluna items.preco_em). O genero.py
+(público de cada item, derivado na leitura) também é importado sob demanda aqui.
 """
 import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
 from datetime import datetime
@@ -94,6 +94,7 @@ def criar_banco():
       tem_dados INTEGER DEFAULT 0,
       posicao INTEGER DEFAULT 0,
       criado_em TEXT, atualizado_em TEXT,
+      preco_em TEXT,                 -- quando o preço foi confirmado (NULL = sem preço legível)
       UNIQUE(loja, item_id)
     );
     CREATE INDEX IF NOT EXISTS ix_items_cat ON items(cat);
@@ -101,7 +102,8 @@ def criar_banco():
     ''')
     con.commit()
     import disparo
-    # PRAGMA user_version 2, só aditiva: v1 cria numeros, regras e envios; v2, generos_manuais e regras.generos
+    # PRAGMA user_version 3, só aditiva: v1 cria numeros, regras e envios; v2, generos_manuais e regras.generos;
+    # v3, items.preco_em (num banco que já tinha items)
     disparo.migrar(con)
     con.close()
 
@@ -121,7 +123,7 @@ def linha_para_item(r, manuais=None):
     g, origem = genero.do_item(r['id'], r['cat'], r['busca'], r['titulo'], manuais)
     auto = genero.classificar(r['cat'], r['busca'], r['titulo'])[0] if origem == 'manual' else g
     return {'id': r['id'], 'loja': r['loja'], 'item_id': r['item_id'], 'cat': r['cat'],
-            'busca': r['busca'], 'url': r['url'], 'data': d,
+            'busca': r['busca'], 'url': r['url'], 'data': d, 'preco_em': r['preco_em'],
             'genero': g, 'genero_origem': origem, 'genero_auto': auto}
 
 
@@ -256,6 +258,18 @@ def conferir_tipos(it, campos, onde=''):
             raise ErroCliente(400, f'{onde}data.{c} tem número inválido')
 
 
+def so_existentes_do_lote(body):
+    """"so_existentes" do POST /api/items: true faz o lote só atualizar itens que já existem.
+
+    Ausente (ou corpo em lista) vale false. Qualquer valor que não seja true/false dá ErroCliente 400.
+    """
+    if not isinstance(body, dict) or 'so_existentes' not in body:
+        return False
+    if not isinstance(body['so_existentes'], bool):
+        raise ErroCliente(400, 'so_existentes deve ser true ou false')
+    return body['so_existentes']
+
+
 def itens_do_lote(body):
     """Lista de itens do POST /api/items, validada inteira antes de gravar qualquer um."""
     lista = body.get('items', []) if isinstance(body, dict) else body
@@ -323,8 +337,20 @@ def sanear_precos(vals):
     return vals
 
 
-def upsert(con, it):
-    """Insere ou atualiza um item. Mantém a categoria original se já existir."""
+def preco_em_de(preco, quando):
+    """preco_em de uma escrita com os dados do item: `quando` se o preço é legível (ler_preco), senão None.
+
+    Uma regra só para o upsert e o PATCH com data (CA1 de docs/produto/planos/atualizar-precos.md).
+    """
+    return quando if ler_preco(preco) is not None else None
+
+
+def upsert(con, it, inserir=True):
+    """Insere ou atualiza um item. Mantém a categoria original se já existir.
+
+    Devolve 'inserido', 'atualizado' ou, com inserir=False (lote que só atualiza, "so_existentes"),
+    'ausente' quando o item não existe: nada é gravado. Com título, grava preco_em (preco_em_de).
+    """
     loja = it.get('loja') or 'amazon'
     if loja not in LOJAS:
         raise ValueError('loja inválida (use amazon, ml ou shopee)')
@@ -334,14 +360,18 @@ def upsert(con, it):
     d = it.get('data') or {}
     vals = sanear_precos({c: (d.get(c) or '') for c in CAMPOS})
     tem = 1 if vals['titulo'] else 0
+    quando = agora()
+    preco_em = preco_em_de(vals['preco'], quando)
     cur = con.execute('SELECT id, tem_dados FROM items WHERE loja=? AND item_id=?', (loja, item_id)).fetchone()
     if not cur:
+        if not inserir:
+            return 'ausente'
         pos = con.execute('SELECT COALESCE(MAX(posicao),0)+1 FROM items').fetchone()[0]
         try:
-            con.execute(f'''INSERT INTO items (loja,item_id,cat,busca,url,{','.join(CAMPOS)},tem_dados,posicao,criado_em,atualizado_em)
-                            VALUES (?,?,?,?,?,{','.join('?'*len(CAMPOS))},?,?,?,?)''',
+            con.execute(f'''INSERT INTO items (loja,item_id,cat,busca,url,{','.join(CAMPOS)},tem_dados,posicao,criado_em,atualizado_em,preco_em)
+                            VALUES (?,?,?,?,?,{','.join('?'*len(CAMPOS))},?,?,?,?,?)''',
                         [loja, item_id, it.get('cat') or 'Geral', it.get('busca') or '', it['url']]
-                        + [vals[c] for c in CAMPOS] + [tem, pos, agora(), agora()])
+                        + [vals[c] for c in CAMPOS] + [tem, pos, quando, quando, preco_em])
             return 'inserido'
         except sqlite3.IntegrityError:
             # outro POST gravou o mesmo loja+item_id entre o SELECT e o INSERT: vira atualização
@@ -351,10 +381,10 @@ def upsert(con, it):
     if tem:
         sets = ', '.join(f'{c}=?' for c in CAMPOS)
         # atualiza preços/dados, mas nunca troca um link de afiliado já gerado
-        con.execute(f'''UPDATE items SET {sets}, tem_dados=1, atualizado_em=?,
+        con.execute(f'''UPDATE items SET {sets}, tem_dados=1, atualizado_em=?, preco_em=?,
                         url=CASE WHEN {sql_link_preservado()} THEN url ELSE ? END
                         WHERE id=?''',
-                    [vals[c] for c in CAMPOS] + [agora(), it['url'], cur['id']])
+                    [vals[c] for c in CAMPOS] + [quando, preco_em, it['url'], cur['id']])
     return 'atualizado'
 
 
@@ -753,14 +783,16 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self._caminho == '/api/items':
             try:
-                lista = itens_do_lote(self.corpo())
+                body = self.corpo()
+                so_existentes = so_existentes_do_lote(body)
+                lista = itens_do_lote(body)
             except ErroCliente as e:
                 return self.json({'error': e.msg}, e.codigo)
-            con = conectar(); cont = {'inserido': 0, 'atualizado': 0}
+            con = conectar(); cont = {'inserido': 0, 'atualizado': 0, 'ausente': 0}
             try:
                 for it in lista:
                     if it.get('url'):
-                        cont[upsert(con, it)] += 1
+                        cont[upsert(con, it, inserir=not so_existentes)] += 1
                 con.commit()
                 total = con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
             except ValueError as e:
@@ -809,8 +841,9 @@ class Handler(SimpleHTTPRequestHandler):
             d = body['data']
             vals = sanear_precos({c: (d.get(c) or '') for c in CAMPOS})   # mesma regra do preço antigo do upsert
             sets = ', '.join(f'{c}=?' for c in CAMPOS)
-            con.execute(f'UPDATE items SET {sets}, tem_dados=1, atualizado_em=? WHERE id=?',
-                        [vals[c] for c in CAMPOS] + [agora(), iid])
+            quando = agora()
+            con.execute(f'UPDATE items SET {sets}, tem_dados=1, atualizado_em=?, preco_em=? WHERE id=?',
+                        [vals[c] for c in CAMPOS] + [quando, preco_em_de(vals['preco'], quando), iid])
         con.commit()
         import genero
         r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()

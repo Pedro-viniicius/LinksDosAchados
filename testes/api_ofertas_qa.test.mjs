@@ -229,14 +229,16 @@ describe('uso repetido e simultâneo, como o agendador do Turbo', () => {
 
   test('4 pedidos simultâneos, várias rodadas, sempre 200 com JSON inteiro', async () => {
     for (let rodada = 0; rodada < 5; rodada++) {
-      const rs = await Promise.all([0, 1, 2, 3].map((n) => pedir(
-        ['/api/v1/categorias', '/api/v1/ofertas?limite=200', '/api/v1/ofertas?ordem=desconto&limite=50',
-          '/api/v1/ofertas?q=produto&limite=10'][n], auth())));
-      for (const r of rs) {
+      // Cada pedido lê o corpo assim que chega. Pedir os 4 e ler os corpos depois deixa o socket dos outros com o corpo
+      // parado quando o servidor fecha a conexão, e o undici do Node 22 dispara um assert interno (`!this.paused`)
+      // com resposta acima de ~64 KB (reproduz contra um http.createServer qualquer: não é defeito do servidor.py).
+      await Promise.all([0, 1, 2, 3].map(async (n) => {
+        const r = await pedir(['/api/v1/categorias', '/api/v1/ofertas?limite=200', '/api/v1/ofertas?ordem=desconto&limite=50',
+          '/api/v1/ofertas?q=produto&limite=10'][n], auth());
         assert.equal(r.status, 200);
         const j = await r.json();
         assert.equal(j.versao, 1);
-      }
+      }));
     }
   });
 

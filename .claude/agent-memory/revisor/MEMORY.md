@@ -9,3 +9,4 @@
 - [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
 - [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
+- [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente

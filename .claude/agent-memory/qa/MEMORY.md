@@ -9,3 +9,4 @@
 - [Front do Público/gênero (genero-qa, genero-integracao)](testes-genero-front.md) — rodar, armadilhas (</script> em string, cssRules), teclado via CDP, bugs baixos abertos, mutantes
 - [Gênero/público (backend)](testes-genero-backend.md) — test_genero_qa.py: migração na cópia real, paridade 3 consumidores, código antigo por commit, mutantes
 - [Abas por nicho (17 abas, etapas 1-10)](testes-abas-nichadas.md) — abas-qa, Q1/Q2 abertos, fatos da cópia migrada, mutantes e lacunas de usado
+- [Preço sempre atualizado (preco_em, trava, v1, lote)](testes-atualizar-precos.md) — test_atualizar_precos_qa.py, precos-qa, Q1-Q4 baixos, bug do undici >64 KB, mutantes

@@ -623,7 +623,7 @@ teste('CA2: "Marcar todas" e "Limpar" nas categorias; atalhos de dias; contador 
   clicar('[data-acao="cats-limpar"]');
   igual(qa('#f-cats [data-acao="cats-grupo"]').map(txt), qa('#f-cats .grupo-cats').map(() => 'Marcar o grupo'));
   marcarChip('#f-cats', CAT1());
-  const esperado = W.eval('items.filter(i=>i.cat===cats()[0] && i.data && i.data.titulo && i.data.preco).length');
+  const esperado = W.eval('items.filter(i=>i.cat===cats()[0] && i.data && i.data.titulo && i.data.preco && !itemComPrecoVelho(i)).length');
   afirma(txt(q('#f-contador')).includes('Cerca de ' + W.eval('fmtNum(' + esperado + ')')) || esperado === 0, 'contador: ' + txt(q('#f-contador')) + ' (esperado ' + esperado + ')');
   igual(q('#f-contador').getAttribute('aria-live'), 'polite');
   clicar('[data-acao="dias-util"]');

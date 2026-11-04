@@ -1465,5 +1465,238 @@ class TestPrecoAntigoHttp(ServidorTeste):
         self.assertEqual(it['url'], url)
 
 
+
+# ================================================================ preco_em e so_existentes (atualizar-precos, etapa 1)
+RX_PRECO_EM = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}')
+ANTES = '2026-11-01T08:00:00'   # preco_em "velho" gravado à mão para ver se a escrita mexe nele
+
+
+class TestPrecoEmUnidade(ServidorEmProcesso):
+    """CA1: o upsert grava preco_em só quando o preço é legível; com inserir=False, nunca cria item."""
+
+    T1, T2 = '2026-11-04T10:00:00', '2026-11-04T11:00:00'
+
+    def setUp(self):
+        db = os.path.join(self.dir, f'{self._testMethodName}.db')
+        p = mock.patch.object(self.S, 'DB', db)
+        p.start()
+        self.addCleanup(p.stop)
+        self.S.criar_banco()
+        self.con = self.S.conectar()
+        self.addCleanup(self.con.close)
+
+    def upsert(self, quando, it, **kw):
+        with mock.patch.object(self.S, 'agora', return_value=quando):
+            return self.S.upsert(self.con, it, **kw)
+
+    def linha(self, item_id):
+        return self.con.execute('SELECT * FROM items WHERE item_id=?', (item_id,)).fetchone()
+
+    @staticmethod
+    def it(item_id, preco='R$ 69,90', loja='ml', url=None, **dados):
+        urls = {'ml': f'https://meli.la/{item_id}', 'shopee': f'https://s.shopee.com.br/{item_id}',
+                'amazon': f'https://www.amazon.com.br/dp/{item_id}?tag=desejodemen01-20'}
+        return {'loja': loja, 'item_id': item_id, 'cat': 'Casa e Decoração', 'url': url or urls[loja],
+                'data': {'titulo': 'Produto', 'preco': preco, **dados}}
+
+    def test_coluna_no_fim_de_items(self):
+        cols = [tuple(r)[1:] for r in self.con.execute('PRAGMA table_info(items)')]
+        self.assertEqual(cols[-1], ('preco_em', 'TEXT', 0, None, 0))
+        self.assertEqual(self.con.execute('PRAGMA user_version').fetchone()[0], 3)
+
+    def test_insert_com_preco_legivel_grava_preco_em(self):
+        for n, preco in enumerate(['R$ 69,90', 'R$ 1.299,90', 'R$ 4.285', '12.5', 10, 'R$\u00a01.000,00']):
+            with self.subTest(preco=preco):
+                self.assertEqual(self.upsert(self.T1, self.it(f'L{n}', preco)), 'inserido')
+                r = self.linha(f'L{n}')
+                self.assertEqual((r['preco_em'], r['criado_em'], r['atualizado_em']), (self.T1,) * 3)
+
+    def test_insert_sem_preco_legivel_deixa_null(self):
+        for n, preco in enumerate(['', None, 'indisponível', 'R$ 0,00', 'R$ -5,00', 'R$ 10 - R$ 20', 'R$ 1.2.3']):
+            with self.subTest(preco=preco):
+                self.assertEqual(self.upsert(self.T1, self.it(f'N{n}', preco)), 'inserido')
+                self.assertIsNone(self.linha(f'N{n}')['preco_em'])
+
+    def test_update_com_preco_renova_e_sem_preco_zera(self):
+        self.upsert(self.T1, self.it('U1'))
+        self.assertEqual(self.upsert(self.T2, self.it('U1', 'R$ 59,90')), 'atualizado')
+        r = self.linha('U1')
+        self.assertEqual((r['preco'], r['preco_em'], r['criado_em'], r['atualizado_em']),
+                         ('R$ 59,90', self.T2, self.T1, self.T2))
+        # escrita com título e sem preço legível grava o preço vazio: o preco_em acompanha e vira NULL
+        self.upsert('2026-11-04T12:00:00', self.it('U1', ''))
+        self.assertEqual((self.linha('U1')['preco'], self.linha('U1')['preco_em']), ('', None))
+
+    def test_escrita_sem_titulo_nao_mexe_em_nada(self):
+        self.upsert(self.T1, self.it('S1'))
+        antes = tuple(self.linha('S1'))
+        sem_titulo = self.it('S1', 'R$ 1,00', titulo='')
+        self.assertEqual(self.upsert(self.T2, sem_titulo), 'atualizado')
+        self.assertEqual(tuple(self.linha('S1')), antes)
+
+    def test_so_existentes_nao_insere(self):
+        total = self.con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
+        for loja in ('amazon', 'ml', 'shopee'):
+            with self.subTest(loja=loja):
+                self.assertEqual(self.upsert(self.T1, self.it('A' + loja, loja=loja), inserir=False), 'ausente')
+                self.assertIsNone(self.linha('A' + loja))
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM items').fetchone()[0], total)
+
+    def test_so_existentes_atualiza_e_nao_troca_link_de_afiliado(self):
+        self.upsert(self.T1, self.it('MLBX1'))
+        self.upsert(self.T1, self.it('B0X0000001', loja='amazon'))
+        self.upsert(self.T1, self.it('Sh0p1', loja='shopee'))
+        trocas = {'MLBX1': 'https://www.mercadolivre.com.br/p/MLBX1',
+                  'B0X0000001': 'https://www.amazon.com.br/dp/B0X0000001',
+                  'Sh0p1': 'https://s.shopee.com.br/Outro9'}
+        for iid, url in trocas.items():
+            with self.subTest(item=iid):
+                loja = self.linha(iid)['loja']
+                gravada = self.linha(iid)['url']
+                self.assertEqual(self.upsert(self.T2, self.it(iid, 'R$ 49,90', loja=loja, url=url), inserir=False),
+                                 'atualizado')
+                r = self.linha(iid)
+                self.assertEqual((r['url'], r['preco'], r['preco_em'], r['cat']),
+                                 (gravada, 'R$ 49,90', self.T2, 'Casa e Decoração'))
+
+    def test_so_existentes_mantem_as_guardas_da_loja(self):
+        with self.assertRaises(ValueError):
+            self.upsert(self.T1, {'loja': 'x', 'item_id': 'Z', 'url': 'https://meli.la/z'}, inserir=False)
+        with self.assertRaises(ValueError):
+            self.upsert(self.T1, self.it('Z', loja='shopee', url='https://meli.la/z'), inserir=False)
+
+    def test_linha_para_item_traz_preco_em(self):
+        self.upsert(self.T1, self.it('P1'))
+        self.upsert(self.T1, self.it('P2', ''))
+        self.assertEqual(self.S.linha_para_item(self.linha('P1'), {})['preco_em'], self.T1)
+        self.assertIsNone(self.S.linha_para_item(self.linha('P2'), {})['preco_em'])
+
+
+class TestPrecoEmHttp(ServidorTeste):
+    """CA1 e CA3 (servidor) pela porta de verdade: POST, PATCH, PUT de gênero e GET /api/items."""
+
+    def banco(self):
+        con = sqlite3.connect(self.db, timeout=30)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        return con
+
+    def envelhecer(self, item_id):
+        """Grava ANTES em preco_em e atualizado_em, para ver quem mexe neles."""
+        con = self.banco()
+        with con:
+            con.execute('UPDATE items SET preco_em=?, atualizado_em=? WHERE item_id=?', (ANTES, ANTES, item_id))
+
+    def coluna(self, item_id, *colunas):
+        r = self.banco().execute(f'SELECT {",".join(colunas)} FROM items WHERE item_id=?', (item_id,)).fetchone()
+        return tuple(r) if r else None
+
+    def ml_item(self, item_id, preco='R$ 69,90', url=None, **extra):
+        return {'loja': 'ml', 'item_id': item_id, 'cat': 'Casa e Decoração', 'url': url or f'https://meli.la/{item_id}',
+                'data': {'titulo': 'Produto', 'preco': preco}, **extra}
+
+    def item(self, item_id):
+        return next((i for i in self.itens() if i['item_id'] == item_id), None)
+
+    def test_get_items_traz_preco_em_em_todo_item(self):
+        self.postar([self.ml_item('MLBG1'), self.ml_item('MLBG2', preco='')])
+        itens = {i['item_id']: i for i in self.itens()}
+        for i in itens.values():
+            self.assertIn('preco_em', i)
+            self.assertTrue(i['preco_em'] is None or RX_PRECO_EM.fullmatch(i['preco_em']), i['preco_em'])
+        self.assertRegex(itens['MLBG1']['preco_em'], RX_PRECO_EM)
+        self.assertIsNone(itens['MLBG2']['preco_em'])
+
+    def test_post_do_site_grava_preco_em(self):
+        st, _, dados = self.postar([self.ml_item('MLBP1')])
+        self.assertEqual(st, 200, dados)
+        self.envelhecer('MLBP1')
+        st, _, dados = self.postar([self.ml_item('MLBP1', preco='R$ 59,90')])
+        self.assertEqual((st, self.json_de(dados)['atualizado']), (200, 1))
+        preco_em, atualizado = self.coluna('MLBP1', 'preco_em', 'atualizado_em')
+        self.assertRegex(preco_em, RX_PRECO_EM)
+        self.assertGreater(preco_em, ANTES)
+        self.assertEqual(preco_em, atualizado)
+
+    def test_so_existentes_da_origem_do_ml_so_atualiza(self):
+        self.postar([self.ml_item('MLBSE1')])
+        self.envelhecer('MLBSE1')
+        lote = {'so_existentes': True, 'items': [
+            self.ml_item('MLBSE1', preco='R$ 49,90', url='https://produto.mercadolivre.com.br/MLB-SE1'),
+            self.ml_item('MLBSE2', url='https://produto.mercadolivre.com.br/MLB-SE2')]}
+        total = len(self.itens())
+        st, h, dados = self.pedir('POST', '/api/items', lote, ml(ML_LISTA))
+        self.assertEqual(st, 200, dados)
+        self.assertEqual(h.get('Access-Control-Allow-Origin'), ML_LISTA)
+        self.assertEqual(self.json_de(dados), {'inserido': 0, 'atualizado': 1, 'ausente': 1, 'total': total})
+        self.assertIsNone(self.item('MLBSE2'))   # nunca insere
+        url, preco, preco_em = self.coluna('MLBSE1', 'url', 'preco', 'preco_em')
+        self.assertEqual((url, preco), ('https://meli.la/MLBSE1', 'R$ 49,90'))   # o meli.la fica
+        self.assertGreater(preco_em, ANTES)
+
+    def test_so_existentes_false_e_a_forma_em_lista_seguem_inserindo(self):
+        st, _, dados = self.pedir('POST', '/api/items', {'so_existentes': False, 'items': [self.ml_item('MLBF1')]},
+                                  self.local())
+        self.assertEqual(st, 200, dados)
+        self.assertEqual({k: v for k, v in self.json_de(dados).items() if k != 'total'},
+                         {'inserido': 1, 'atualizado': 0, 'ausente': 0})
+        st, _, dados = self.pedir('POST', '/api/items', [self.ml_item('MLBF2')], self.local())
+        self.assertEqual((st, self.json_de(dados)['inserido'], self.json_de(dados)['ausente']), (200, 1, 0))
+        self.assertIsNotNone(self.item('MLBF1'))
+        self.assertIsNotNone(self.item('MLBF2'))
+
+    def test_so_existentes_que_nao_e_bool_da_400_e_nao_grava(self):
+        self.postar([self.ml_item('MLBB1')])
+        antes = self.coluna('MLBB1', '*')
+        for valor in ('true', 'false', 1, 0, None, [], {}, [True], 1.0):
+            for nome, h in (('local', self.local()), ('ml', ml(ML_LISTA))):
+                with self.subTest(valor=valor, origem=nome):
+                    lote = {'so_existentes': valor, 'items': [self.ml_item('MLBB1', preco='R$ 1,00'),
+                                                              self.ml_item('MLBB2')]}
+                    st, _, dados = self.pedir('POST', '/api/items', lote, h)
+                    self.assertEqual(st, 400, dados)
+                    self.assertEqual(self.json_de(dados), {'error': 'so_existentes deve ser true ou false'})
+        self.assertEqual(self.coluna('MLBB1', '*'), antes)
+        self.assertIsNone(self.item('MLBB2'))
+
+    def test_patch_com_data_renova_ou_zera_preco_em(self):
+        self.postar([self.ml_item('MLBPD1')])
+        iid = self.item('MLBPD1')['id']
+        self.envelhecer('MLBPD1')
+        st, _, dados = self.pedir('PATCH', f'/api/items/{iid}', {'data': {'titulo': 'Novo', 'preco': 'R$ 39,90'}},
+                                  self.local())
+        self.assertEqual(st, 200, dados)
+        resposta = self.json_de(dados)
+        self.assertGreater(resposta['preco_em'], ANTES)
+        self.assertEqual(self.coluna('MLBPD1', 'preco_em')[0], resposta['preco_em'])
+        st, _, dados = self.pedir('PATCH', f'/api/items/{iid}', {'data': {'titulo': 'Novo', 'preco': 'esgotado'}},
+                                  self.local())
+        self.assertEqual(st, 200, dados)
+        self.assertIsNone(self.json_de(dados)['preco_em'])
+        self.assertEqual(self.coluna('MLBPD1', 'preco_em'), (None,))
+
+    def test_patch_so_de_url_ou_cat_nao_mexe_em_preco_em(self):
+        self.postar([self.ml_item('MLBPU1', url='https://produto.mercadolivre.com.br/MLB-PU1')])
+        iid = self.item('MLBPU1')['id']
+        for corpo in ({'url': 'https://meli.la/pu1'}, {'cat': 'Outra aba'}, {'url': 'https://meli.la/pu2', 'cat': 'Mais uma'}):
+            with self.subTest(corpo=corpo):
+                self.envelhecer('MLBPU1')
+                st, _, dados = self.pedir('PATCH', f'/api/items/{iid}', corpo, self.local())
+                self.assertEqual(st, 200, dados)
+                preco_em, atualizado = self.coluna('MLBPU1', 'preco_em', 'atualizado_em')
+                self.assertEqual(preco_em, ANTES)
+                self.assertGreater(atualizado, ANTES)   # a escrita aconteceu
+
+    def test_put_de_genero_nao_mexe_em_preco_em(self):
+        self.postar([{**self.ml_item('MLBGE1'), 'cat': 'Perfumes e Perfumaria'}])
+        iid = self.item('MLBGE1')['id']
+        self.envelhecer('MLBGE1')
+        st, _, dados = self.pedir('PUT', f'/api/items/{iid}/genero', {'genero': 'unissex'}, self.local())
+        self.assertEqual(st, 200, dados)
+        preco_em, atualizado = self.coluna('MLBGE1', 'preco_em', 'atualizado_em')
+        self.assertEqual(preco_em, ANTES)
+        self.assertGreater(atualizado, ANTES)
+
+
 if __name__ == '__main__':
     unittest.main()

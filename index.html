@@ -235,7 +235,7 @@
   /* Estados da lista de ofertas (carregando, erro, sem resultado). Sem dados, só o bloco do estado aparece; a altura mínima evita o salto quando a lista chega. */
   #estadoLista:empty{display:none}
   #estadoLista .vazio{min-height:144px;justify-content:center}
-  #telaOfertas.sem-dados>:not(#estadoLista):not(#anuncioLista){display:none}
+  #telaOfertas.sem-dados>:not(#estadoLista):not(#anuncioLista):not(#quadroPrecos[open]){display:none}
   #telaOfertas.aba-vazia>:is(.filters,.barra-lista,.pager,#publicoBox,#grid){display:none}
   .dsp fieldset{border:1px solid var(--linha);border-radius:var(--r-lg);padding:var(--s4);margin:0 0 var(--s4);min-width:0;background:var(--superficie)}
   .dsp legend{font:var(--t-subtitulo);padding:0 var(--s2)}
@@ -323,6 +323,46 @@
     .htab td{border:0;padding:var(--s1) var(--s3);text-align:left}
     .htab td::before{content:attr(data-rot);display:block;font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
   }
+  /* ---- Preço sempre atualizado: idade no cartão, faixa da lista e quadro "Como atualizar os preços". Só tokens existentes; o acabamento fino é do designer. ---- */
+  .idade-preco{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s1) var(--s2);margin-top:var(--s1);font:var(--t-legenda);color:var(--mudo)}
+  .idade-preco .velho{display:inline-flex;align-items:center;padding:0 var(--s2);border:1px solid var(--linha-campo);border-radius:var(--r-pill);font:var(--t-rotulo);font-weight:500;color:var(--tinta);white-space:nowrap}
+  .idade-preco button{min-height:var(--alvo);padding:0 var(--s3);font:var(--t-legenda);font-weight:500}
+  .idade-msg{display:block;margin-top:var(--s1);font:var(--t-legenda);color:var(--mudo);overflow-wrap:anywhere}
+  .idade-msg:empty{position:absolute}
+  .idade-msg.err{color:var(--falhou)}
+  .faixa-precos{display:flex;flex-wrap:wrap;align-items:center;gap:0 var(--s3);margin:0 0 var(--s3);font:var(--t-legenda);color:var(--mudo)}
+  .faixa-precos[hidden]{display:none}
+  .faixa-precos button.linklike{font:var(--t-legenda)}
+  details.quadro-precos{margin:0 0 var(--s4);padding:0 var(--s4);background:var(--superficie);border:1px solid var(--linha);border-radius:var(--r-lg)}
+  details.quadro-precos[open]>summary{margin-bottom:var(--s2)}
+  .qp{display:flex;flex-direction:column;gap:var(--s4);padding-bottom:var(--s4)}
+  .qp p{margin:0}
+  .qp [role="status"]:empty{position:absolute}
+  .qp .ajuda,.qp .muted{font:var(--t-legenda);color:var(--mudo)}
+  .qp fieldset{margin:0;min-width:0;padding:var(--s3) var(--s4);border:1px solid var(--linha);border-radius:var(--r)}
+  .qp legend{font:var(--t-legenda);font-weight:500;padding:0 var(--s2)}
+  .qp .linha{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+  .qp input[type=number]{width:8em;max-width:100%;min-height:var(--alvo);padding:0 var(--s3);background:var(--superficie);color:var(--tinta);border:1px solid var(--linha-campo);border-radius:var(--r)}
+  .qp [aria-invalid="true"]{border-color:var(--falhou)}
+  .qp .campo>label{font:var(--t-legenda);font-weight:500}
+  .qp-lojas{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:var(--s3)}
+  .qp-cab{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--s1) var(--s2)}
+  .qp-dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--s1) var(--s3);margin:0}
+  .qp-dl dt{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
+  .qp-dl dd{margin:0;font:var(--t-mono-p);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .qp-bloco{display:flex;flex-direction:column;gap:var(--s2);padding-top:var(--s2);border-top:1px solid var(--linha)}
+  .qp-bloco h4{margin:0;font:var(--t-legenda);font-weight:600}
+  .qp-rot{font:var(--t-rotulo);letter-spacing:.06em;text-transform:uppercase;color:var(--mudo)}
+  .qp ol{margin:0;padding-left:var(--s5);font:var(--t-legenda)}
+  .cmd-linha{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:flex-start}
+  .cmd-linha[hidden],.qp-dl[hidden]{display:none}
+  .cmd{flex:1 1 220px;min-width:0;padding:var(--s2) var(--s3);background:var(--superficie);border:1px solid var(--linha-campo);border-radius:var(--r);font:var(--t-mono-p);white-space:pre-wrap;overflow-wrap:anywhere}
+  .qp-rodape{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s3);align-items:center}
+  @media (max-width:600px){
+    details.quadro-precos{padding:0 var(--s3)}
+    .idade-preco button,.cmd-linha button,.qp .linha button,.qp-rodape button{flex:1 1 100%;min-height:44px}
+    .qp input[type=number]{flex:1 1 6em;min-height:44px}
+  }
   @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
@@ -368,11 +408,14 @@
   <div class="tabs" id="tabs" role="group" aria-label="Categorias"></div>
   <div class="sel-cat"><label class="lbl" id="lblSelCat" for="selCat"></label><select id="selCat"></select></div>
   <p class="muted total" id="count"></p>
+  <div id="faixaPrecos" class="faixa-precos" hidden><span id="faixaPrecosTxt"></span><button type="button" class="linklike" id="btnComoPrecos"></button></div>
+  <details id="quadroPrecos" class="filtros quadro-precos"><summary id="quadroPrecosSum"></summary><div class="qp" id="quadroPrecosCorpo"></div></details>
   <div id="publicoBox"></div>
   <p class="sr" id="anuncioLista" role="status" aria-live="polite"></p>
   <div class="row filters">
     <select id="fLoja" aria-label="Filtrar por loja"><option value="">Todas as lojas</option></select>
     <select id="fBusca" aria-label="Filtrar por busca"><option value="">Todas as buscas</option></select>
+    <select id="fPreco" aria-label="Filtrar por idade do preço"></select>
     <select id="fOrdem" aria-label="Ordenar por"><option value="">Ordem de coleta</option><option value="desc">Maior desconto</option><option value="preco">Menor preço</option></select>
     <input type="search" id="fTexto" aria-label="Filtrar pelo título" placeholder="Filtrar pelo título">
   </div>
@@ -429,6 +472,60 @@ const TXT_LISTA = {
   semResultadoPublico:'Nenhuma oferta para {PUBLICO} com esses filtros.',
   limpar:'Limpar filtros',
   semOfertas:'Esta categoria ainda não tem ofertas. Use Adicionar links para incluir.',
+};
+// Preço sempre atualizado (plano atualizar-precos, etapa 6; spec docs/produto/specs/atualizar-precos.md). O site só informa, ensina e mede:
+// quem atualiza os preços é o comando de cada loja (terminal; console do Chrome no ML). Placeholders: {H} horas, {N} contagem, {DATA} dd/mm, {HORA} hh:mm.
+const TXT_PRECOS = {
+  como:'Como atualizar os preços', desatualizado:'Desatualizado',
+  faixaVelhos:'{N} de {T} preços desta categoria passam de {H} h.', faixaVelhosUm:'1 de 1 preço desta categoria passa de {H} h.',
+  faixaEmDia:'Todos os preços desta categoria têm menos de {H} h.', faixaSemPreco:'Nenhum item desta categoria tem preço para conferir.',
+  agoraPouco:'Preço de agora há pouco', hoje:'Preço de hoje, {HORA}', ontem:'Preço de ontem, {HORA}', diasAtras:'Preço de {DATA} (há {N} dias)', mesAtras:'Preço de {DATA} (há mais de 1 mês)', desconhecida:'Idade do preço desconhecida',
+  atualizar:'Atualizar preço', atualizarDe:'Atualizar preço de', buscando:'Buscando na Amazon…', atualizado:'Preço atualizado.',
+  atualizarFalhou:'Não consegui atualizar: a Amazon não respondeu. Tente de novo.', atualizarSemPreco:'Não consegui atualizar: a Amazon não trouxe o preço. Tente de novo.',
+  atualizarBloqueio:'Amazon bloqueou (captcha) ou não achou o título. Tente mais tarde.', outroProduto:'A página abriu outro produto; confira o link.',
+  avisoCopia:'Atenção: o preço é de {DATA}; confira na loja.', avisoCopiaSemData:'Atenção: não sei a idade do preço; confira na loja.',
+  copiadaVelha:'Mensagem copiada. {AVISO}', copiadaTodas:'{N} mensagens copiadas. {V} com preço desatualizado.', copiadaUma:'1 mensagem copiada. 1 está com preço desatualizado.',
+  filtroTodos:'Todos os preços', filtroVelhos:'Desatualizados ({N})', filtroEmDia:'Em dia ({N})', ordemAntigo:'Preço mais antigo primeiro',
+  tudoEmDia:'Tudo em dia: nenhum preço desta categoria passa de {H} h.', verTodos:'Ver todos',
+  apoio:'O site não busca preços sozinho. Cada loja se atualiza fora dele, com o comando abaixo. Depois, clique em Conferir de novo.',
+  prazoTitulo:'Quanto tempo o preço vale', horas:'Horas', salvarPrazo:'Salvar prazo', salvando:'Salvando…',
+  prazoAjuda:'Um número para tudo: disparo, cartões, filtro e API. Padrão: 24 h (de 1 a 168).',
+  prazoSalvo:'Prazo salvo: {H} h. Contagens atualizadas.', prazoInvalido:'Informe um número inteiro de 1 a 168.', prazoErro:'Não consegui salvar o prazo. Tente de novo.',
+  prazoPadrao:'Usando 24 h, o padrão.', prazoLongo:'Com mais de 3 dias, o grupo pode receber preço que já mudou.',
+  catTitulo:'Categoria dos comandos', todasCats:'Todas as categorias',
+  itens:'Itens', velhos:'Com preço velho', semData:'inclui {N} sem data', maisAntigo:'Preço mais antigo', emDia:'Tudo em dia.', carregando:'Carregando…',
+  lojaVazia:'Nenhum item {DE} nesta categoria.', lojaVaziaTodas:'Nenhum item {DE}.',
+  de:{amazon:'da Amazon', ml:'do Mercado Livre', shopee:'da Shopee'},
+  onde:{terminal:'No terminal', console:'No console do Chrome'},
+  passos:'Passo a passo', comando:'Comando', copiar:'Copiar comando', copiarDe:'Copiar comando {DE}', copiado:'Comando copiado.', copiarFalhou:'Não consegui copiar. Selecione o texto e copie.', tempo:'Tempo estimado',
+  escolhaCat:{ml:'Escolha uma categoria acima: o Mercado Livre atualiza uma categoria por vez.', shopee:'Escolha uma categoria acima: a Shopee atualiza uma categoria por vez.'},
+  foraDasAbas:'Essa categoria está fora das abas da coleta.',
+  // `cmd` leva {ARG}: nos comandos de terminal vira ` --cat "ABA"` (nada, em "Todas as categorias"); no do ML, o objeto {cat: "ABA"}.
+  // Bloco com precisaCat fica sem comando em "Todas as categorias" (o ColetaML.atualizar() exige cat; a Shopee vai por categoria).
+  lojas:{
+    amazon:{onde:'terminal', blocos:[{
+      passos:['Abra um terminal na pasta do projeto.', 'Rode o comando abaixo. Ele só atualiza itens que já existem.', 'Volte aqui e clique em Conferir de novo.'],
+      cmd:'python3 atualizar_precos.py amazon{ARG}',
+      tempo:'Cerca de 40 min para tudo (Perfumes e Perfumaria, cerca de 25 min). Estimativa, não medida.',
+      problema:'Se der captcha', problemaTexto:'O comando para e guarda o que já fez hoje. Espere de 15 a 30 min e rode o mesmo comando de novo. Se repetir, pare por hoje e divida por categoria.'}]},
+    ml:{onde:'console', blocos:[{
+      passos:['Abra https://lista.mercadolivre.com.br no Chrome.', 'Cole o conteúdo de coletar_ml.js no console.', 'Rode o comando abaixo.'],
+      cmd:'ColetaML.atualizar({ARG})', precisaCat:true,
+      tempo:'Depende dos termos da categoria; não medido.',
+      problema:'Se der captcha', problemaTexto:'Resolva o captcha na aba e rode o comando de novo; o progresso de hoje fica no navegador.'}]},
+    shopee:{onde:'terminal', nota:'As credenciais ficam só no seu terminal. Este site nunca pede o Secret.', blocos:[
+      {titulo:'Por enquanto', passos:['Capture os itens do termo no painel de afiliados da Shopee e salve num arquivo JSON (o formato está no começo do coletar_shopee.py).', 'Rode o comando abaixo, trocando ARQUIVO pelo caminho do arquivo.'],
+       cmd:'python3 coletar_shopee.py importar ARQUIVO', tempo:'Cerca de 1 a 2 min por termo; não verificado.', problema:null},
+      {titulo:'Quando a credencial chegar', passos:['Troque <id> pelo seu AppID no comando abaixo.', 'Rode o comando num terminal, na pasta do projeto. Ele espera o Secret: cole e tecle Enter (o Secret não aparece na tela e o unset do fim o apaga).'],
+       cmd:'read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee{ARG}; unset S', precisaCat:true,
+       problema:'Limite da API', problemaTexto:'No limite da API o comando para: espere e rode de novo.'}]},
+  },
+  conferir:'Conferir de novo', conferindo:'Conferindo…', conferido:'Conferido às {HORA}.', erroContagens:'Não consegui ver as contagens.', tentar:'Tentar de novo',
+  disparoPrazo:'Preços valem {H} h para todas as regras.',
+  previaVelhos:'{N} itens ficaram de fora por preço velho.', previaVelhosUm:'1 item ficou de fora por preço velho.',
+  // contador do formulário da regra: "Cerca de N itens combinam com esses filtros (…); X ficam de fora por preço velho."
+  contadorVelhos:'{N} ficam de fora por preço velho.', contadorVelhosUm:'1 fica de fora por preço velho.',
+  contadorSoVelhos:'Sem itens para enviar: os {N} que combinam ficam de fora por preço velho.', contadorSoVelhosUm:'Sem itens para enviar: o único item que combina fica de fora por preço velho.',
 };
 // Hosts dos links por loja, espelho do servidor.py (HOSTS_LOJAS e HOSTS_AFILIADO_SHOPEE); o ML também aceita só os subdomínios de SUFIXO_ML
 // (o domínio nu mercadolivre.com.br o servidor recusa). Cada constante fica numa linha só: testes/test_front_constantes.py lê estas linhas e confere com o servidor.
@@ -512,6 +609,305 @@ function copiarGenero(it, r){
   if (r && GENEROS.includes(r.genero)) Object.assign(it, {genero:r.genero, genero_origem:r.genero_origem || '', genero_auto:r.genero_auto});
 }
 
+// ---- Preço sempre atualizado: idade do preço, faixa, filtro e quadro "Como atualizar os preços". Funções com `function` para o iframe dos testes alcançar.
+// Prazo em vigor: config/preco_validade_horas (inteiro de 1 a 168; qualquer outra coisa vale 24), lido na carga e gravado pelo quadro.
+const PRECO_VALIDADE = {padrao:24, min:1, max:168};
+let precoValidade = PRECO_VALIDADE.padrao, validadeAviso = false;   // validadeAviso: a leitura falhou ou o valor era inválido
+let estadoItens = 'carregando';   // 'carregando' | 'erro' | 'pronto': o quadro mostra isto nas contagens
+const RX_PRECO_EM = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})$/;   // o formato que o servidor grava (ISO local, sem fuso)
+const doisDig = n=>String(n).padStart(2,'0');
+const hhmm = d=>doisDig(d.getHours())+':'+doisDig(d.getMinutes());
+const ddmm = d=>doisDig(d.getDate())+'/'+doisDig(d.getMonth()+1);
+const inicioDoDia = d=>new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const FOLGA_FUTURO_PRECO_MS = 5*6e4;   // preco_em mais de 5 min à frente do agora conta como velho (disparo.FOLGA_FUTURO_PRECO)
+// Dias do mês no calendário gregoriano, sem a regra do Date de que os anos 0 a 99 são 1900 a 1999
+function diasNoMes(a, me){ const u = new Date(0); u.setUTCFullYear(a, me, 0); return u.getUTCDate(); }
+// preco_em (ISO local) -> Date local, ou null se for nulo, de outro tipo, fora do formato (fuso, frações, hora 24, 99:99:99) ou com data
+// impossível (2026-02-30, ano 0000): o mesmo rigor de disparo.ler_preco_em. A conferência é feita nos números, não num Date de volta,
+// para a hora que o horário de verão pulou (válida no servidor) não virar inválida aqui.
+function lerPrecoEm(s){
+  const m = typeof s === 'string' ? RX_PRECO_EM.exec(s) : null;
+  if (!m) return null;
+  const [a, me, d, h, mi, se] = m.slice(1).map(Number);
+  if (a < 1 || me < 1 || me > 12 || d < 1 || d > diasNoMes(a, me) || h > 23 || mi > 59 || se > 59) return null;
+  const q = new Date(2000, 0, 1, h, mi, se); q.setFullYear(a, me-1, d);
+  return q;
+}
+// Passou da validade? Nulo, malformado ou mais de 5 min no futuro conta como velho (na dúvida, o preço é velho), como disparo.preco_recente.
+// `agora` entra como parâmetro para o teste.
+function precoVelho(preco_em, horas=precoValidade, agora=new Date()){
+  const q = lerPrecoEm(preco_em), t = new Date(agora).getTime();
+  return !q || q.getTime() > t + FOLGA_FUTURO_PRECO_MS || q.getTime() < t - horas*36e5;
+}
+const validadeValida = v=>typeof v === 'number' && Number.isInteger(v) && v >= PRECO_VALIDADE.min && v <= PRECO_VALIDADE.max;
+// Prazo a partir do texto JSON cru, como disparo.validade_horas (json.loads + int): só um inteiro escrito sem ponto nem expoente vale.
+// O JSON.parse leria "48.0" e "1e2" como inteiros, e o servidor os recusa (vale 24). Devolve o número, null para o JSON null, ou NaN.
+function validadeDoTexto(texto){
+  const t = String(texto ?? '').trim();
+  if (t === 'null') return null;
+  return /^-?(?:0|[1-9][0-9]*)$/.test(t) ? Number(t) : NaN;
+}
+// "Preço de hoje, 14:20", "Preço de 03/11 (há 2 dias)"... relativo ao relógio do navegador; ver a tabela na spec
+function textoIdadePreco(preco_em, agora=new Date()){
+  const q = lerPrecoEm(preco_em), T = TXT_PRECOS;
+  if (!q) return T.desconhecida;
+  const a = new Date(agora);
+  if (q.getTime() > a.getTime() + FOLGA_FUTURO_PRECO_MS) return T.desconhecida;   // D6: futuro é velho no precoVelho; "agora há pouco" contradiria o selo
+  if (a.getTime() - q.getTime() < 36e5) return T.agoraPouco;   // menos de 1 h (e relógio um pouco adiantado)
+  const dias = Math.round((inicioDoDia(a) - inicioDoDia(q)) / 864e5);
+  if (dias <= 0) return T.hoje.replace('{HORA}', hhmm(q));
+  if (dias === 1) return T.ontem.replace('{HORA}', hhmm(q));
+  if (dias < 30) return T.diasAtras.replace('{DATA}', ddmm(q)).replace('{N}', dias);
+  return T.mesAtras.replace('{DATA}', ddmm(q));
+}
+// "03/11/2026 às 14:20" (title do <time> e "Preço mais antigo"); vazio se preco_em não é uma data
+const absoluto = q=>`${ddmm(q)}/${q.getFullYear()} às ${hhmm(q)}`;
+function textoAbsolutoPreco(preco_em){
+  const q = lerPrecoEm(preco_em);
+  return q ? absoluto(q) : '';
+}
+// Só item com preço legível entra nas contagens e ganha a linha de idade: sem preço não haveria data e ele ficaria velho para sempre
+function temPreco(it){ return !!(it && it.data && String(it.data.preco ?? '').trim()); }
+function itemComPrecoVelho(it, agora=new Date()){ return temPreco(it) && precoVelho(it.preco_em, precoValidade, agora); }
+// Aviso ao copiar um cartão velho; '' se o cartão está em dia ou não tem preço
+function avisoPrecoVelho(it, agora=new Date()){
+  if (!itemComPrecoVelho(it, agora)) return '';
+  const q = lerPrecoEm(it.preco_em);
+  return q ? TXT_PRECOS.avisoCopia.replace('{DATA}', ddmm(q)) : TXT_PRECOS.avisoCopiaSemData;
+}
+// Linha de idade do cartão (logo abaixo do preço): selo "Desatualizado", o texto e, na Amazon velha, "Atualizar preço". ML e Shopee não têm botão: o quadro ensina o comando.
+function htmlIdadePreco(it){
+  if (!temPreco(it)) return '';
+  const velho = precoVelho(it.preco_em), q = lerPrecoEm(it.preco_em), t = esc(textoIdadePreco(it.preco_em)), titulo = it.data.titulo;
+  const tempo = q ? `<time datetime="${esc(it.preco_em)}" title="${esc(textoAbsolutoPreco(it.preco_em))}">${t}</time>` : `<span>${t}</span>`;
+  const botao = velho && it.loja === 'amazon' ? `<button type="button" class="secondary fetch"${titulo ? ` aria-label="${esc(TXT_PRECOS.atualizarDe+' '+titulo)}"` : ''}>${esc(TXT_PRECOS.atualizar)}</button>` : '';
+  return `<div class="idade-preco">${[velho ? `<span class="velho">${esc(TXT_PRECOS.desatualizado)}</span>` : '', tempo, botao].filter(Boolean).join(' ')}</div>`;
+}
+// A Amazon velha leva o botão na linha de idade; nos outros casos ele fica em "Mais ações"
+const botaoNaLinhaDeIdade = it=>it.loja === 'amazon' && itemComPrecoVelho(it);
+
+// Prazo: GET /api/config/preco_validade_horas, lido como texto (validadeDoTexto). Nunca rejeita: falha de rede ou valor inválido vale 24
+// e levanta validadeAviso (o quadro avisa).
+async function lerValidade(){
+  let v = null, falhou = false;
+  try{
+    const r = await fetch('/api/config/preco_validade_horas');
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    v = validadeDoTexto(await r.text());
+  }catch{ falhou = true; }
+  validadeAviso = falhou || (v !== null && !validadeValida(v));
+  precoValidade = !falhou && validadeValida(v) ? v : PRECO_VALIDADE.padrao;
+}
+
+// Contagens de uma lista de itens: com preço, velhos (e quantos sem data), em dia e o preço mais antigo com data válida
+function contarPrecos(lista, agora=new Date()){
+  const c = {itens:0, velhos:0, semData:0, emDia:0, antigo:null};
+  for (const i of lista){
+    if (!temPreco(i)) continue;
+    c.itens++;
+    const q = lerPrecoEm(i.preco_em);
+    if (!q) c.semData++;
+    else if (!c.antigo || q < c.antigo) c.antigo = q;
+    if (precoVelho(i.preco_em, precoValidade, agora)) c.velhos++; else c.emDia++;
+  }
+  return c;
+}
+// Faixa da aba ativa: some se a aba não tem item
+function atualizarFaixaPrecos(){
+  const f = $('#faixaPrecos'), doAba = items.filter(i=>i.cat === activeCat), T = TXT_PRECOS;
+  f.hidden = !ofertasProntas || !doAba.length;
+  if (f.hidden) return;
+  const c = contarPrecos(doAba), h = precoValidade;
+  $('#faixaPrecosTxt').textContent = !c.itens ? T.faixaSemPreco
+    : !c.velhos ? T.faixaEmDia.replace('{H}', h)
+    : (c.itens === 1 ? T.faixaVelhosUm : T.faixaVelhos).replace('{N}', fmtNum(c.velhos)).replace('{T}', fmtNum(c.itens)).replace('{H}', h);
+}
+// Opções do filtro de preço, com as contagens da lista atual (loja, busca, título e público valem; o próprio filtro de preço não)
+function atualizarFiltroPreco(){
+  const c = contarPrecos(filtrarItens({semPreco:true})), T = TXT_PRECOS, sel = $('#fPreco');
+  const mudar = (o, t)=>{ if (o.textContent !== t) o.textContent = t; };
+  mudar(sel.options[1], T.filtroVelhos.replace('{N}', fmtNum(c.velhos)));
+  mudar(sel.options[2], T.filtroEmDia.replace('{N}', fmtNum(c.emDia)));
+}
+// Chamado depois de mudar a idade de um item sem redesenhar a lista (o "Atualizar preço" do cartão)
+function atualizarPrecosGeral(){ atualizarFaixaPrecos(); atualizarFiltroPreco(); atualizarQuadroPrecos(); }
+
+// ---- Quadro "Como atualizar os preços" (<details id="quadroPrecos">). Montado uma vez; depois só mudam textos, para o foco e o que o dono digitou ficarem.
+// Aspas do terminal: duas, ou simples se o nome tiver `"`, `\`, `$`, crase ou `!`. null se o nome tiver caractere de controle ou de
+// formatação (\p{Cc}/\p{Cf}: quebra de linha, ESC, invisíveis, direção do texto), que não entra em comando copiável.
+function aspasShell(s){
+  if (/[\p{Cc}\p{Cf}]/u.test(s)) return null;
+  return /^[^"\\$`!]*$/.test(s) ? '"'+s+'"' : "'"+s.replace(/'/g, "'\\''")+"'";
+}
+// O comando de um bloco da loja para a categoria escolhida ('' = todas); '' se o bloco exige categoria e não há, ou se o nome tem
+// caractere de controle. Quem mostra o comando ainda confere se a categoria é uma das ORDEM_ABAS (comandoDoQuadro).
+function comandoPrecos(loja, bloco, cat){
+  if (bloco.precisaCat && !cat) return '';
+  if (cat && /[\p{Cc}\p{Cf}]/u.test(cat)) return '';
+  const arg = loja === 'ml' ? (cat ? '{cat: '+JSON.stringify(cat)+'}' : '{}') : (cat ? ' --cat '+aspasShell(cat) : '');
+  return bloco.cmd.replace('{ARG}', ()=>arg);
+}
+// Comando que o quadro mostra: só para "Todas as categorias" ou uma das ORDEM_ABAS (o atualizar_precos.py recusa o resto com saída 2).
+// Devolve {cmd, aviso}: sem comando, o aviso diz por quê (escolher uma categoria, ou categoria fora das abas).
+function comandoDoQuadro(loja, bloco, cat){
+  const T = TXT_PRECOS;
+  if (!bloco.cmd.includes('{ARG}')) return {cmd:bloco.cmd, aviso:''};
+  if (cat && !ORDEM_ABAS.includes(cat)) return {cmd:'', aviso:T.foraDasAbas};
+  const cmd = comandoPrecos(loja, bloco, cat);
+  return {cmd, aviso: cmd ? '' : !cat ? (T.escolhaCat[loja] || '') : T.foraDasAbas};
+}
+function htmlBlocoLoja(k, b, i){
+  const T = TXT_PRECOS;
+  const rotuloCopiar = T.copiarDe.replace('{DE}', ()=>T.de[k]+(b.titulo ? ' ('+b.titulo.toLowerCase()+')' : ''));
+  return `<section class="qp-bloco" data-bloco="${i}">
+    ${b.titulo ? `<h4>${esc(b.titulo)}</h4>` : ''}
+    <p class="qp-rot">${esc(T.passos)}</p>
+    <ol>${b.passos.map(p=>`<li>${esc(p)}</li>`).join('')}</ol>
+    <p class="qp-rot">${esc(T.comando)}</p>
+    <div class="cmd-linha"><code class="cmd" data-f="cmd"></code><button type="button" class="secondary" data-acao="copiar-cmd" aria-label="${esc(rotuloCopiar)}">${esc(T.copiar)}</button></div>
+    ${b.cmd.includes('{ARG}') ? `<p class="muted" data-f="escolha" hidden></p>` : ''}
+    <p class="muted" data-f="copiado" role="status"></p>
+    ${b.tempo ? `<p class="qp-rot">${esc(T.tempo)}</p><p class="muted">${esc(b.tempo)}</p>` : ''}
+    ${b.problema ? `<p class="qp-rot">${esc(b.problema)}</p><p class="muted">${esc(b.problemaTexto)}</p>` : ''}
+  </section>`;
+}
+function htmlLojaPrecos(k){
+  const T = TXT_PRECOS, l = T.lojas[k];
+  return `<article class="dcard qp-loja" data-loja="${k}" aria-labelledby="qpl-${k}">
+    <div class="qp-cab"><span class="badge" id="qpl-${k}">${esc(LOJA[k])}</span><span class="muted">${esc(T.onde[l.onde])}</span></div>
+    <p class="muted" data-f="vazio" hidden></p>
+    <dl class="qp-dl" data-f="dl"><dt>${esc(T.itens)}</dt><dd data-f="itens"></dd><dt>${esc(T.velhos)}</dt><dd data-f="velhos"></dd><dt>${esc(T.maisAntigo)}</dt><dd data-f="antigo"></dd></dl>
+    ${l.blocos.map((b,i)=>htmlBlocoLoja(k, b, i)).join('')}
+    ${l.nota ? `<p class="muted">${esc(l.nota)}</p>` : ''}
+  </article>`;
+}
+function montarQuadroPrecos(){
+  const T = TXT_PRECOS;
+  $('#quadroPrecosSum').textContent = T.como;
+  $('#btnComoPrecos').textContent = T.como;
+  $('#quadroPrecosCorpo').innerHTML = `<p>${esc(T.apoio)}</p>
+    <fieldset class="qp-prazo"><legend>${esc(T.prazoTitulo)}</legend>
+      <div class="campo"><label for="qpHoras">${esc(T.horas)}</label>
+        <div class="linha"><input type="number" id="qpHoras" min="${PRECO_VALIDADE.min}" max="${PRECO_VALIDADE.max}" step="1" inputmode="numeric" aria-describedby="qpPrazoAjuda"><button type="button" class="secondary" id="qpSalvarPrazo">${esc(T.salvarPrazo)}</button></div>
+        <p class="ajuda" id="qpPrazoAjuda">${esc(T.prazoAjuda)}</p>
+        <p class="erro-campo" id="qpPrazoErro"></p>
+        <p class="ajuda" id="qpPrazoLongo" hidden>${esc(T.prazoLongo)}</p>
+        <p class="ajuda" id="qpPrazoMsg" role="status"></p></div>
+    </fieldset>
+    <div class="campo"><label for="qpCat">${esc(T.catTitulo)}</label><select id="qpCat"></select></div>
+    <div class="qp-lojas">${Object.keys(LOJA).map(htmlLojaPrecos).join('')}</div>
+    <div class="qp-rodape"><button type="button" class="secondary" id="qpConferir">${esc(T.conferir)}</button><p class="ajuda" id="qpConferido" role="status"></p></div>`;
+  $('#fPreco').innerHTML = `<option value="">${esc(T.filtroTodos)}</option><option value="velho"></option><option value="dia"></option>`;   // as contagens entram no render()
+  $('#fOrdem').insertAdjacentHTML('beforeend', `<option value="antigo">${esc(T.ordemAntigo)}</option>`);
+}
+montarQuadroPrecos();
+let catQuadroManual = false;   // o dono escolheu a categoria dos comandos: deixa de seguir a aba ativa
+function atualizarQuadroPrecos(){
+  const q = $('#quadroPrecos'); if (!q.open) return;   // fechado: nada a medir; abrir chama de novo
+  const T = TXT_PRECOS, sel = $('#qpCat'), corpo = $('#quadroPrecosCorpo');
+  corpo.setAttribute('aria-busy', estadoItens === 'carregando' ? 'true' : 'false');
+  // categorias: a mesma lista e os mesmos grupos do seletor de aba; refeita só quando a estrutura muda
+  const grupos = gruposDeAbas(contarAbas()), estrutura = grupos.map(g=>g.rotulo+'\n'+g.abas.join('\n')).join('\n\n');
+  const anterior = sel.value, existe = v=>[...sel.options].some(o=>o.value === v);
+  if (sel.dataset.estrutura !== estrutura){
+    sel.dataset.estrutura = estrutura;
+    sel.innerHTML = `<option value="">${esc(T.todasCats)}</option>`+grupos.map(g=>`<optgroup label="${esc(g.rotulo)}">${g.abas.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</optgroup>`).join('');
+    sel.value = anterior;
+  }
+  if (!catQuadroManual) sel.value = existe(activeCat) ? activeCat : '';
+  else if (!existe(sel.value)) sel.value = '';
+  const cat = sel.value;
+  // prazo: o campo segue o valor em vigor, menos enquanto o dono digita
+  const campo = $('#qpHoras');
+  if (document.activeElement !== campo && campo.dataset.sujo !== '1') campo.value = precoValidade;
+  if (validadeAviso && !$('#qpPrazoMsg').textContent) $('#qpPrazoMsg').textContent = T.prazoPadrao;
+  const agora = new Date(), no = lojaK=>items.filter(i=>i.loja === lojaK && (!cat || i.cat === cat));
+  for (const k of Object.keys(LOJA)){
+    const card = corpo.querySelector(`.qp-loja[data-loja="${k}"]`), c = contarPrecos(no(k), agora), f = n=>card.querySelector(`[data-f="${n}"]`);
+    const vazio = estadoItens === 'pronto' && !no(k).length;
+    f('vazio').hidden = !vazio; f('dl').hidden = vazio;
+    f('vazio').textContent = vazio ? (cat ? T.lojaVazia : T.lojaVaziaTodas).replace('{DE}', ()=>T.de[k]) : '';
+    const pronto = estadoItens === 'pronto', outro = estadoItens === 'carregando' ? T.carregando : '—';
+    f('itens').textContent = pronto ? fmtNum(c.itens) : outro;
+    f('velhos').textContent = !pronto ? outro : !c.itens ? '0' : c.velhos ? fmtNum(c.velhos)+(c.semData ? ` (${T.semData.replace('{N}', fmtNum(c.semData))})` : '') : '0 · '+T.emDia;
+    f('antigo').textContent = pronto && c.antigo ? absoluto(c.antigo) : '—';
+    T.lojas[k].blocos.forEach((b, i)=>{
+      const bloco = card.querySelector(`.qp-bloco[data-bloco="${i}"]`), {cmd, aviso} = comandoDoQuadro(k, b, cat);
+      bloco.querySelector('[data-f="cmd"]').textContent = cmd;
+      bloco.querySelector('.cmd-linha').hidden = !cmd;
+      const escolha = bloco.querySelector('[data-f="escolha"]');
+      if (escolha){ if (escolha.textContent !== aviso) escolha.textContent = aviso; escolha.hidden = !aviso; }
+    });
+  }
+}
+function abrirQuadroPrecos(){
+  const q = $('#quadroPrecos'); q.open = true; atualizarQuadroPrecos();
+  q.querySelector('summary').focus({preventScroll:true});
+  q.scrollIntoView({block:'nearest'});
+}
+$('#btnComoPrecos').onclick = ()=>abrirQuadroPrecos();
+$('#quadroPrecos').addEventListener('toggle', ()=>atualizarQuadroPrecos());
+function lerCampoPrazo(){
+  const t = $('#qpHoras').value.trim(), n = /^[0-9]{1,4}$/.test(t) ? +t : NaN;
+  return validadeValida(n) ? n : null;
+}
+// Valida o campo de horas enquanto o dono digita: erro de campo e salvar bloqueado; acima de 72 h, um aviso suave
+function validarCampoPrazo(){
+  const campo = $('#qpHoras'), n = lerCampoPrazo(), erro = n === null, longo = !erro && n > 72;
+  campo.dataset.sujo = '1';
+  campo.setAttribute('aria-invalid', erro ? 'true' : 'false');
+  $('#qpPrazoErro').textContent = erro ? TXT_PRECOS.prazoInvalido : '';
+  $('#qpPrazoLongo').hidden = !longo;
+  $('#qpSalvarPrazo').disabled = erro;
+  campo.setAttribute('aria-describedby', ['qpPrazoAjuda', erro ? 'qpPrazoErro' : '', longo ? 'qpPrazoLongo' : ''].filter(Boolean).join(' '));
+  $('#qpPrazoMsg').textContent = '';
+}
+$('#qpHoras').addEventListener('input', validarCampoPrazo);
+async function salvarPrazo(){
+  const n = lerCampoPrazo(), b = $('#qpSalvarPrazo'), msg = $('#qpPrazoMsg'), T = TXT_PRECOS;
+  if (n === null){ validarCampoPrazo(); return; }
+  if (b.getAttribute('aria-busy') === 'true') return;
+  b.setAttribute('aria-busy','true'); b.setAttribute('aria-disabled','true'); b.textContent = T.salvando; msg.textContent = '';
+  try{
+    const r = await fetch('/api/config/preco_validade_horas', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(n)});
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    precoValidade = n; validadeAviso = false; $('#qpHoras').dataset.sujo = '';
+    render();   // cartões, faixa, filtro e contagens passam a usar o prazo novo
+    msg.textContent = T.prazoSalvo.replace('{H}', n);
+  }catch{ msg.textContent = T.prazoErro; }
+  finally{ b.removeAttribute('aria-busy'); b.removeAttribute('aria-disabled'); b.textContent = T.salvarPrazo; }
+}
+async function copiarComando(btn){
+  const bloco = btn.closest('.qp-bloco'), st = bloco.querySelector('[data-f="copiado"]'), T = TXT_PRECOS;
+  clearTimeout(bloco._timer);
+  try{ await navigator.clipboard.writeText(bloco.querySelector('[data-f="cmd"]').textContent); st.textContent = T.copiado; bloco._timer = setTimeout(()=>{ st.textContent = ''; }, 4000); }
+  catch{ st.textContent = T.copiarFalhou; }
+}
+// "Conferir de novo": recarrega só os itens (e o prazo), sem trocar a tela por "Carregando": o botão e o foco ficam onde estão
+async function conferirPrecos(){
+  if (!ofertasProntas){ carregarOfertas(); return; }
+  const b = $('#qpConferir'), st = $('#qpConferido'), T = TXT_PRECOS;
+  if (b.getAttribute('aria-busy') === 'true') return;
+  b.setAttribute('aria-busy','true'); b.setAttribute('aria-disabled','true'); b.textContent = T.conferindo; st.textContent = '';
+  try{
+    const [it] = await Promise.all([carregarJson('items'), lerValidade()]);
+    if (!Array.isArray(it)) throw new Error('lista de itens inválida');
+    items = it; estadoItens = 'pronto'; render();
+    const cat = $('#qpCat').value, agora = new Date();
+    const partes = Object.keys(LOJA).map((k,i)=>`${LOJA[k]}: ${fmtNum(contarPrecos(items.filter(x=>x.loja === k && (!cat || x.cat === cat)), agora).velhos)}${i === 0 ? ' com preço velho' : ''}.`);
+    st.textContent = T.conferido.replace('{HORA}', hhmm(agora))+' '+partes.join(' ');
+  }catch{
+    st.innerHTML = `${esc(T.erroContagens)} <button type="button" class="linklike" data-acao="conferir">${esc(T.tentar)}</button>`;
+  }finally{ b.removeAttribute('aria-busy'); b.removeAttribute('aria-disabled'); b.textContent = T.conferir; }
+}
+$('#quadroPrecosCorpo').addEventListener('click', ev=>{
+  const b = ev.target.closest('button'); if (!b) return;
+  if (b.id === 'qpSalvarPrazo') salvarPrazo();
+  else if (b.id === 'qpConferir' || b.dataset.acao === 'conferir') conferirPrecos();
+  else if (b.dataset.acao === 'copiar-cmd') copiarComando(b);
+});
+$('#qpCat').addEventListener('change', ()=>{ catQuadroManual = true; atualizarQuadroPrecos(); });
+
 function buildMsg(it){
   const d = it.data || {};
   const map = {
@@ -531,16 +927,47 @@ function buildMsg(it){
   return s.trim();
 }
 
+// Espelho de servidor.ler_preco (formato brasileiro, maior que zero): o PATCH com preço vazio ou ilegível apagaria o preço e o preco_em gravados
+const RX_PRECO_BR = /^(?:[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]+)?|[0-9]+(?:,[0-9]+)?|[0-9]+\.[0-9]{1,2})$/, RX_PRECO_MILHAR = /^[0-9]{1,3}(?:\.[0-9]{3})+$/;
+function precoLegivel(p){
+  if (p == null || typeof p === 'boolean') return false;
+  let t = String(p).replace(/R\$|\s/g, '');
+  if (!RX_PRECO_BR.test(t)) return false;
+  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (RX_PRECO_MILHAR.test(t)) t = t.replace(/\./g, '');
+  return Number(t) > 0;
+}
+// Mensagem de erro do servidor só aparece se já for uma frase para o dono (maiúscula no começo, ponto no fim); o resto vira o texto padrão
+const fraseDoServidor = m=>typeof m === 'string' && m.length <= 200 && /^\p{Lu}.*\.$/su.test(m) ? m : TXT_PRECOS.atualizarFalhou;
+// "Atualizar preço" (Amazon): busca a página, grava pelo PATCH (o servidor carimba preco_em) e redesenha o cartão. O resultado vai em .idade-msg, logo abaixo da linha de idade.
+// Página de outro produto (asin diferente) ou sem preço legível: não grava nada, para não trocar os dados nem apagar o preço que já estava.
 async function fetchItem(it, card){
-  const st = card.querySelector('.status'); const btn = card.querySelector('.fetch');
-  btn.disabled = true; st.className='status'; st.textContent='Buscando na Amazon...';
+  const btn = card.querySelector('.fetch'), msg = card.querySelector('.idade-msg'), T = TXT_PRECOS;
+  if (!btn || btn.getAttribute('aria-busy') === 'true') return;   // evita o clique duplo
+  const rotulo = btn.textContent, tinhaFoco = document.activeElement === btn;
+  const dizer = (t, erro=false)=>{ msg.className = 'idade-msg'+(erro ? ' err' : ''); msg.textContent = t; };
+  const falha = t=>Object.assign(new Error(t), {pronta:true});
+  btn.setAttribute('aria-busy','true'); btn.setAttribute('aria-disabled','true'); btn.textContent = T.buscando; dizer('');
   try{
     const d = await api('fetch?url='+encodeURIComponent(it.url));
-    if (d.error) throw new Error(d.error);
-    if (d.captcha || !d.titulo) throw new Error('Amazon bloqueou (captcha) ou não achou o título. Tente mais tarde.');
-    Object.assign(it, await api('items/'+it.id,'PATCH',{data:d}));
-    renderCard(card, it); toast('Dados atualizados');
-  }catch(e){ st.className='status err'; st.textContent='Erro: '+e.message; btn.disabled=false; }
+    if (!d || typeof d !== 'object') throw falha(T.atualizarFalhou);
+    if (d.error) throw falha(fraseDoServidor(d.error));
+    if (d.captcha || !d.titulo) throw falha(T.atualizarBloqueio);
+    if (d.asin && d.asin !== it.item_id) throw falha(T.outroProduto);
+    if (!precoLegivel(d.preco)) throw falha(T.atualizarSemPreco);
+    const r = await api('items/'+it.id,'PATCH',{data:d});
+    if (!r || r.error) throw falha(fraseDoServidor(r && r.error));
+    Object.assign(it, r);
+    renderCard(card, it);   // o cartão é redesenhado: o resultado entra no novo .idade-msg (role=status; sem toast, para não dizer duas vezes)
+    const semPreco = !lerPrecoEm(it.preco_em);   // o servidor só carimba preco_em quando o preço é legível
+    const novaMsg = card.querySelector('.idade-msg');
+    novaMsg.className = 'idade-msg'+(semPreco ? ' err' : ''); novaMsg.textContent = semPreco ? T.atualizarSemPreco : T.atualizado;
+    atualizarPrecosGeral();
+    if (tinhaFoco) card.querySelector('.copy').focus({preventScroll:true});   // o botão saiu de cena se o preço ficou em dia
+  }catch(e){
+    dizer(e.pronta ? e.message : T.atualizarFalhou, true);
+    btn.removeAttribute('aria-busy'); btn.removeAttribute('aria-disabled'); btn.textContent = rotulo;
+  }
 }
 
 // "Copiar imagem": baixa a foto do CDN da loja (CORS, sem cookies), converte para PNG e põe na área de transferência.
@@ -637,7 +1064,7 @@ function renderCard(card, it, abas=cats()){   // `abas`: o render() calcula a li
   const rotImg = d&&d.titulo ? ` aria-label="Copiar imagem de ${esc(d.titulo)}"` : '';
   card.innerHTML = `
     <div class="top"><span class="badge ${esc(it.loja)}">${esc(LOJA[it.loja]||it.loja)}</span>${htmlSeloGenero(it)}<span class="busca" title="${esc(it.busca)}">${esc(it.busca)}</span><span class="feito" aria-hidden="true">✓ Mensagem copiada</span></div>
-    ${d ? `<div class="info">${d.imagem?`<img loading="lazy" alt="" src="${esc(d.imagem)}">`:''}<div class="t"><h2 class="name" title="${esc(d.titulo)}">${esc(d.titulo)}</h2><div class="price"><span class="now">${esc(d.preco)}</span>${d.preco_antigo?'<s class="old"><span class="sr">Preço antigo </span>'+esc(d.preco_antigo)+'</s>':''}${d.desconto?'<span class="off">'+esc(d.desconto)+'</span>':''}</div>${meta?'<div class="meta">'+meta+'</div>':''}</div></div>` : ''}
+    ${d ? `<div class="info">${d.imagem?`<img loading="lazy" alt="" src="${esc(d.imagem)}">`:''}<div class="t"><h2 class="name" title="${esc(d.titulo)}">${esc(d.titulo)}</h2><div class="price"><span class="now">${esc(d.preco)}</span>${d.preco_antigo?'<s class="old"><span class="sr">Preço antigo </span>'+esc(d.preco_antigo)+'</s>':''}${d.desconto?'<span class="off">'+esc(d.desconto)+'</span>':''}</div>${htmlIdadePreco(it)}<span class="idade-msg" role="status"></span>${meta?'<div class="meta">'+meta+'</div>':''}</div></div>` : '<span class="idade-msg" role="status"></span>'}
     <textarea aria-label="Mensagem para copiar"></textarea>
     <div class="status" role="status"></div>
     <div class="actions">
@@ -649,7 +1076,7 @@ function renderCard(card, it, abas=cats()){   // `abas`: o render() calcula a li
       <details class="more">
         <summary>Mais ações</summary>
         <div class="rare">
-          ${it.loja==='amazon'?'<button class="secondary fetch">Atualizar preço</button>':''}
+          ${it.loja==='amazon' && !botaoNaLinhaDeIdade(it) ? `<button class="secondary fetch">${esc(TXT_PRECOS.atualizar)}</button>` : ''}
           <button class="secondary reset">Recarregar</button>
           <label class="lbl">Mover para <select class="mv">${abas.map(c=>`<option ${c===it.cat?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ nova...</option></select></label>
           ${htmlCampoGenero(it)}
@@ -658,7 +1085,11 @@ function renderCard(card, it, abas=cats()){   // `abas`: o render() calcula a li
       </details>
     </div>`;
   const ta = card.querySelector('textarea'); ta.value = buildMsg(it);
-  card.querySelector('.copy').onclick = async()=>{ await navigator.clipboard.writeText(ta.value); card.classList.add('done'); toast(card.classList.contains('img-done') ? TXT_IMG.toastLegenda : 'Mensagem copiada!'); };
+  card.querySelector('.copy').onclick = async()=>{
+    await navigator.clipboard.writeText(ta.value); card.classList.add('done');
+    const aviso = avisoPrecoVelho(it), legenda = card.classList.contains('img-done');   // cartão velho copia do mesmo jeito, mas o aviso lembra de conferir na loja
+    toast(legenda ? TXT_IMG.toastLegenda+(aviso ? ' '+aviso : '') : aviso ? TXT_PRECOS.copiadaVelha.replace('{AVISO}', ()=>aviso) : 'Mensagem copiada!');
+  };
   const ci = card.querySelector('.copyimg'); ci.onclick = ()=>copiarImagem(it, card, ci);
   const f = card.querySelector('.fetch'); if(f) f.onclick = ()=>fetchItem(it, card);
   card.querySelector('.open').onclick = ()=>{
@@ -744,15 +1175,21 @@ async function corrigirGenero(it, card, sel){
 }
 
 // Itens da aba ativa que passam nos filtros. semGenero e semBusca servem às contagens do controle "Público" (loja e título valem; o próprio público e a busca não).
-function filtrarItens({semGenero=false, semBusca=false}={}){
-  const loja=$('#fLoja').value, busca=semBusca?'':$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), g=semGenero?'':generoEscolhido(activeCat);
-  return items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)) && (!g||casaGenero(i,[g])));
+// semPreco serve às contagens do filtro de preço (o próprio filtro não vale nelas)
+function filtrarItens({semGenero=false, semBusca=false, semPreco=false}={}){
+  const loja=$('#fLoja').value, busca=semBusca?'':$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), g=semGenero?'':generoEscolhido(activeCat), fp=semPreco?'':$('#fPreco').value, agora=new Date();
+  return items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)) && (!g||casaGenero(i,[g])) && (!fp||(temPreco(i)&&precoVelho(i.preco_em,precoValidade,agora)===(fp==='velho'))));
 }
 function filtrada(){
   const ordem=$('#fOrdem').value;
   let l = filtrarItens();
   if(ordem==='desc') l=[...l].sort((a,b)=>pct(b.data&&b.data.desconto)-pct(a.data&&a.data.desconto));
   if(ordem==='preco') l=[...l].sort((a,b)=>(num(a.data&&a.data.preco)||1e12)-(num(b.data&&b.data.preco)||1e12));
+  // mais antigo primeiro: com preço e sem data (nulo ou malformado) vêm antes; sem preço (sem data possível) ficam no fim
+  if(ordem==='antigo'){
+    const chave=i=>{ if(!temPreco(i)) return Infinity; const q=lerPrecoEm(i.preco_em); return q?q.getTime():-Infinity; };
+    l=l.map(i=>[chave(i),i]).sort((a,b)=>a[0]===b[0]?0:a[0]<b[0]?-1:1).map(x=>x[1]);
+  }
   return l;
 }
 
@@ -799,6 +1236,7 @@ function render(){
   const buscas=[...new Set(items.filter(i=>i.cat===activeCat && (!gSel||casaGenero(i,[gSel]))).map(i=>i.busca).filter(Boolean))];
   const bsel=$('#fBusca'), bval=bsel.value;
   bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+buscas.map(b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`).join('');
+  atualizarFiltroPreco();
   const list = filtrada();
   // loja sem item some do contador; cada trecho leva o "·" final no mesmo nowrap, para o separador nunca abrir a 2ª linha
   const partes = [items.length+' itens no total'].concat(Object.keys(LOJA).map(k=>[k, items.filter(i=>i.loja===k).length]).filter(x=>x[1] > 0).map(([k,n])=>n+' '+LOJA[k]));
@@ -814,8 +1252,10 @@ function render(){
   const g = generoEscolhido(activeCat);
   if (!items.length) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), true);
   else if (!contagem.get(activeCat)) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), false, true);
+  else if (!list.length && $('#fPreco').value === 'velho' && filtrarItens({semPreco:true}).length) definirEstadoLista(htmlEstadoLista('status', TXT_PRECOS.tudoEmDia.replace('{H}', precoValidade), 'ver-todos-precos', TXT_PRECOS.verTodos), false);   // positivo: com os outros filtros atuais, nenhum preço passou do prazo
   else if (!list.length) definirEstadoLista(htmlEstadoLista('status', g ? TXT_LISTA.semResultadoPublico.replace('{PUBLICO}', NOME_GENERO[g]) : TXT_LISTA.semResultado, 'limpar', TXT_LISTA.limpar), false);
   else definirEstadoLista('', false);
+  atualizarFaixaPrecos(); atualizarQuadroPrecos();
   devolverFoco(foco);
 }
 // ---- Estados da lista (M3). `#estadoLista` mostra o bloco; com `sem-dados` o resto da tela (abas, filtros, paginação, grade) fica escondido.
@@ -828,13 +1268,14 @@ function definirEstadoLista(html, semDados, abaVazia=false){
 }
 // Volta loja, busca, ordem, título e público ao padrão; a aba fica
 function limparFiltros(){
-  for (const s of ['#fLoja','#fBusca','#fOrdem','#fTexto']) $(s).value = '';
+  for (const s of ['#fLoja','#fBusca','#fPreco','#fOrdem','#fTexto']) $(s).value = '';
   guardarGenero(activeCat, ''); page = 1; render();
   $('#fTexto').focus({preventScroll:true});   // o botão que tinha o foco saiu da tela
 }
 $('#estadoLista').addEventListener('click', ev=>{
   const b = ev.target.closest('button[data-acao]'); if (!b) return;
   if (b.dataset.acao === 'tentar') carregarOfertas(); else if (b.dataset.acao === 'limpar') limparFiltros();
+  else if (b.dataset.acao === 'ver-todos-precos'){ $('#fPreco').value = ''; page = 1; render(); $('#fPreco').focus({preventScroll:true}); }
 });
 // GET que falha em erro de rede e em resposta que não é 2xx (o `api()` devolve o corpo de erro como se fosse dado)
 async function carregarJson(caminho){
@@ -844,23 +1285,27 @@ async function carregarJson(caminho){
 }
 async function carregarOfertas(){
   const doEstado = $('#estadoLista').contains(document.activeElement);   // "Tentar de novo" tinha o foco
-  ofertasProntas = false;
+  ofertasProntas = false; estadoItens = 'carregando';
   $('main').setAttribute('aria-busy','true');
   definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.carregando), true);
+  atualizarQuadroPrecos();
   if (doEstado){ const b = $('#estadoLista .vazio'); b.tabIndex = -1; b.focus({preventScroll:true}); }
   let it, tp, cur;
   try{
-    [it, tp, cur] = await Promise.all([carregarJson('items'), carregarJson('config/templates'), carregarJson('config/currentTpl')]);
+    [it, tp, cur] = await Promise.all([carregarJson('items'), carregarJson('config/templates'), carregarJson('config/currentTpl'), lerValidade()]);   // o prazo nunca derruba a carga: sem ele vale 24
     if (!Array.isArray(it)) throw new Error('lista de itens inválida');
   }catch{
+    estadoItens = 'erro';
     $('main').removeAttribute('aria-busy');
     definirEstadoLista(htmlEstadoLista('alert', TXT_LISTA.erro, 'tentar', TXT_LISTA.tentar), true);
+    $('#qpConferido').innerHTML = `${esc(TXT_PRECOS.erroContagens)} <button type="button" class="linklike" data-acao="conferir">${esc(TXT_PRECOS.tentar)}</button>`;
+    atualizarQuadroPrecos();
     if (doEstado) $('#estadoLista button').focus({preventScroll:true});
     return false;
   }
   items = it; if(tp) templates = tp; if(cur && templates[cur]) current = cur;
   fillSelect();
-  ofertasProntas = true;
+  ofertasProntas = true; estadoItens = 'pronto'; $('#qpConferido').textContent = '';
   $('main').removeAttribute('aria-busy');
   render();
   if (doEstado){ const a = controleDeAba() || $('#estadoLista button') || $('#btnAdd'); a.focus({preventScroll:true}); }
@@ -918,7 +1363,7 @@ $('#publicoBox').addEventListener('change', ev=>{
   const n = filtrada().length;   // anúncio para o leitor de tela: o efeito da escolha
   $('#anuncioLista').textContent = `Mostrando ${fmtNum(n)} ${n === 1 ? 'oferta' : 'ofertas'}: ${(OPCOES_PUBLICO.find(o=>o[0] === r.value)||[])[1]}`;
 });
-['#fLoja','#fBusca','#fOrdem'].forEach(s=>$(s).onchange=()=>{page=1;render();});
+['#fLoja','#fBusca','#fPreco','#fOrdem'].forEach(s=>$(s).onchange=()=>{page=1;render();});
 $('#fTexto').oninput=()=>{page=1;render();};
 
 function fillSelect(){
@@ -951,7 +1396,12 @@ $('#saveLinks').onclick=async()=>{
   }
   items=await api('items'); activeCat=cat; $('#addLinks').value=ignorados.join('\n'); $('#addCatNew').value=''; render(); toast(r.inserido+' links adicionados em "'+cat+'"'+aviso);
 };
-$('#btnCopyAll').onclick=async()=>{const all=[...document.querySelectorAll('.card textarea')].map(t=>t.value).join('\n\n----------\n\n');await navigator.clipboard.writeText(all);toast('Copiadas!');};
+$('#btnCopyAll').onclick=async()=>{
+  const cartoes=[...document.querySelectorAll('.card')], all=cartoes.map(c=>c.querySelector('textarea').value).join('\n\n----------\n\n');
+  await navigator.clipboard.writeText(all);
+  const velhos=cartoes.filter(c=>{ const it=items.find(i=>String(i.id)===c.dataset.id); return it && itemComPrecoVelho(it); }).length;   // quantos da página estão com preço desatualizado
+  toast(!velhos ? 'Copiadas!' : cartoes.length===1 ? TXT_PRECOS.copiadaUma : TXT_PRECOS.copiadaTodas.replace('{N}', cartoes.length).replace('{V}', velhos===1 ? '1 está' : velhos+' estão'));
+};
 
 (async()=>{
   await carregarOfertas();
@@ -1014,7 +1464,7 @@ const NOME_ORDEM = Object.fromEntries(TXT_DISPARO.ordens);
 
 const disp = {numeros:null, regras:null, fila:null, envios:null};
 let rotaSeq = 0, previaSeq = 0, formSujo = false, timerFila = null, rascunhoRegra = null;
-let templatesGarantidos = false, scrollOfertas = 0, noDisparo = false, previaLista = [], previaIdx = 0, tempoPrevia = null;
+let templatesGarantidos = false, scrollOfertas = 0, noDisparo = false, previaLista = [], previaIdx = 0, previaPrecoVelho = 0, tempoPrevia = null;
 
 // ---------------------------------------------------------------- utilidades
 // fetch das rotas de disparo: em erro lança Error(mensagem em pt-BR) com .status (0 = sem servidor)
@@ -1069,19 +1519,23 @@ const fmtNum = n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
 function resumoAgenda(r){
   return `${textoDias(r.dias)}, ${listaTexto(horariosOrdenados(r.horarios))} · ${r.por_disparo} por horário · máx. ${r.max_por_dia}/dia`;
 }
-// Itens que combinam com os filtros (conta do cliente; o servidor ainda tira os já enviados e confere o link)
-function contarItens(v){
-  const pal = (v.palavras||[]).map(semAcento);
-  return items.filter(i=>{
+// Itens que combinam com os filtros, separados em {enviaveis, velhos}: o de preço velho (itemComPrecoVelho) o disparo não manda.
+// Conta do cliente; o servidor ainda tira os já enviados e confere o link.
+function contagemDaRegra(v, agora=new Date()){
+  const pal = (v.palavras||[]).map(semAcento), c = {enviaveis:0, velhos:0};
+  for (const i of items){
     const d = i.data;
-    if (!d || !d.titulo || !d.preco) return false;
-    if (!v.cats.includes(i.cat) || !v.lojas.includes(i.loja)) return false;
-    if (!casaGenero(i, v.generos)) return false;   // o público só vale nas categorias com gênero; nas outras o item passa
-    if (pct(d.desconto) < (Number.isFinite(v.desconto_min) ? v.desconto_min : 0)) return false;
-    if (pal.length){ const t = semAcento(d.titulo); if (!pal.some(p=>t.includes(p))) return false; }
-    return true;
-  }).length;
+    if (!d || !d.titulo || !d.preco) continue;
+    if (!v.cats.includes(i.cat) || !v.lojas.includes(i.loja)) continue;
+    if (!casaGenero(i, v.generos)) continue;   // o público só vale nas categorias com gênero; nas outras o item passa
+    if (pct(d.desconto) < (Number.isFinite(v.desconto_min) ? v.desconto_min : 0)) continue;
+    if (pal.length){ const t = semAcento(d.titulo); if (!pal.some(p=>t.includes(p))) continue; }
+    if (itemComPrecoVelho(i, agora)) c.velhos++; else c.enviaveis++;
+  }
+  return c;
 }
+// Quantos itens a regra pode mandar agora (sem os de preço velho)
+function contarItens(v){ return contagemDaRegra(v).enviaveis; }
 const raiz = ()=>$('#telaDisparo');
 const corpoEl = ()=>$('#dspCorpo');
 const rotuloNumero = n=>n ? n.nome : TXT_DISPARO.numeroRemovido;
@@ -1129,6 +1583,7 @@ async function atualizarAtencao(){
 function rotaAtual(){
   const h = location.hash.replace(/^#/,'');
   let m;
+  if (h === 'precos') return {tela:'precos'};   // atalho: mostra a lista com o quadro "Como atualizar os preços" aberto; não é tela do disparo
   if (h === 'disparo') return {tela:'regras'};
   if (h === 'disparo/nova') return {tela:'regra', id:null};
   if ((m = /^disparo\/regra\/(\d{1,9})$/.exec(h))) return {tela:'regra', id:+m[1]};
@@ -1176,6 +1631,7 @@ async function rotear(){
   const r = rotaAtual(), seq = ++rotaSeq;
   pararFila(); marcarSujo(false); previaSeq++; clearTimeout(tempoPrevia);
   if (!r){ sairDisparo(); return; }
+  if (r.tela === 'precos'){ const veio = noDisparo; sairDisparo(); if (!veio) atualizarAtencao(); abrirQuadroPrecos(); return; }   // vindo do disparo, o sairDisparo já confere a atenção
   if (!noDisparo){
     scrollOfertas = window.scrollY; noDisparo = true;
     document.body.classList.add('em-disparo');
@@ -1206,11 +1662,11 @@ async function carregarTudo(){
 }
 async function telaRegras(_, seq){
   abrirCasca({ativa:'regras', titulo:TXT_DISPARO.titulo});
-  try{ await Promise.all([preparar(), carregarTudo()]); }
+  try{ await Promise.all([preparar(), carregarTudo(), lerValidade()]); }   // lerValidade não rejeita: o prazo mostrado é o da config
   catch{ if (seq === rotaSeq) corpoEl().innerHTML = erroCarga(TXT_DISPARO.erroRegras); return; }
   if (seq !== rotaSeq) return;
   const semNum = !disp.numeros.length;
-  $('#dspTitulo').parentElement.insertAdjacentHTML('beforeend', `<p class="muted">${esc(TXT_DISPARO.apoio)}</p>`);
+  $('#dspTitulo').parentElement.insertAdjacentHTML('beforeend', `<p class="muted">${esc(TXT_DISPARO.apoio)}</p><p class="muted" id="dspPrazo">${esc(TXT_PRECOS.disparoPrazo.replace('{H}', precoValidade))} <a data-nav href="#precos">${esc(TXT_PRECOS.como)}</a></p>`);
   if (!semNum) $('#dspTitulo').closest('.dtopo').insertAdjacentHTML('beforeend', `<button type="button" data-acao="nova-regra">${esc(TXT_DISPARO.novaRegra)}</button>`);   // sem número, a única ação é "Cadastrar número" (abaixo)
   corpoEl().innerHTML = `<section class="dsec" id="dspFilaSec" aria-labelledby="dspFilaT">
       <h3 id="dspFilaT" tabindex="-1">${esc(TXT_DISPARO.fila)} <span class="muted" id="dspFilaN" aria-live="polite"></span></h3>
@@ -1678,9 +2134,12 @@ function atualizarDerivados(){
   const v = lerFormRegra(), ct = $('#f-contador'), rs = $('#f-resumo');
   if (!v.cats.length) ct.textContent = 'Escolha ao menos uma categoria para ver quantos itens combinam.';
   else {
-    const n = contarItens(v);
+    const {enviaveis:n, velhos} = contagemDaRegra(v), T = TXT_PRECOS;
+    const fora = velhos ? (velhos === 1 ? T.contadorVelhosUm : T.contadorVelhos.replace('{N}', fmtNum(velhos))) : '';
     ct.className = 'resumo'+(n ? '' : ' aviso');
-    ct.textContent = n ? `Cerca de ${fmtNum(n)} ${n === 1 ? 'item combina' : 'itens combinam'} com esses filtros (sem contar os já enviados recentemente).` : 'Nenhum item combina; a regra não enviará nada até entrarem itens.';
+    ct.textContent = n ? `Cerca de ${fmtNum(n)} ${n === 1 ? 'item combina' : 'itens combinam'} com esses filtros (sem contar os já enviados recentemente)`+(fora ? '; '+fora : '.')
+      : velhos ? (velhos === 1 ? T.contadorSoVelhosUm : T.contadorSoVelhos.replace('{N}', fmtNum(velhos)))
+      : 'Nenhum item combina; a regra não enviará nada até entrarem itens.';
   }
   const hs = v.horarios.filter(h=>/^\d\d:\d\d$/.test(h));
   if (!hs.length || !v.dias.length || !Number.isInteger(v.por_disparo)){ rs.className = 'resumo'; rs.textContent = ''; return; }
@@ -1691,17 +2150,23 @@ function atualizarDerivados(){
     + (Number.isInteger(v.max_por_dia) ? `, até ${v.max_por_dia} por dia.` : '.')
     + (folga && capTocada ? ` Pelos horários, saem no máximo ${cap} por dia.` : '');
 }
+// Resposta da prévia: com com_info vem {itens, recusados, preco_velho}; uma lista pura (servidor sem a contagem) também vale
+function lerRespostaPrevia(r){
+  return {itens: Array.isArray(r) ? r : (r && Array.isArray(r.itens) ? r.itens : []), precoVelho: r && Number.isInteger(r.preco_velho) && r.preco_velho > 0 ? r.preco_velho : 0};
+}
+// "3 itens ficaram de fora por preço velho." (vem de com_info, só se o servidor contou algum)
+const htmlPreviaVelhos = ()=>previaPrecoVelho > 0 ? `<p class="muted" id="dspPreviaVelhos">${esc(previaPrecoVelho === 1 ? TXT_PRECOS.previaVelhosUm : TXT_PRECOS.previaVelhos.replace('{N}', fmtNum(previaPrecoVelho)))}</p>` : '';
 function desenharPrevia(){
   const box = $('#dspPrevia'); if (!box) return;
   if (!previaLista.length){
-    box.innerHTML = `<p class="resumo aviso">Nenhum item combina com esta regra agora. Ela não enviará nada até entrarem itens.</p>`;
+    box.innerHTML = `<p class="resumo aviso">Nenhum item combina com esta regra agora. Ela não enviará nada até entrarem itens.</p>${htmlPreviaVelhos()}`;
     return;
   }
   const a = previaLista[previaIdx % previaLista.length];
   box.innerHTML = `<p class="muted">Assim a mensagem chega no grupo. Usa o template escolhido acima.</p>
     ${LOJA[a.loja] ? `<p class="muted" id="dspPreviaLoja">Loja: ${esc(LOJA[a.loja])}</p>` : ''}
     <div class="corpo">${a.imagem ? `<img class="foto" alt="Foto do item da prévia" src="${esc(a.imagem)}">` : `<div class="sem-foto">Sem foto</div>`}<pre class="msg">${esc(a.mensagem)}</pre></div>
-    ${previaLista.length > 1 ? `<div><button type="button" class="secondary" data-acao="outra-previa">Ver outro item (${previaIdx % previaLista.length + 1} de ${previaLista.length})</button></div>` : ''}`;
+    ${previaLista.length > 1 ? `<div><button type="button" class="secondary" data-acao="outra-previa">Ver outro item (${previaIdx % previaLista.length + 1} de ${previaLista.length})</button></div>` : ''}${htmlPreviaVelhos()}`;
 }
 async function atualizarPrevia(){
   const box = $('#dspPrevia'); if (!box) return;
@@ -1712,9 +2177,10 @@ async function atualizarPrevia(){
   }
   box.setAttribute('aria-busy','true');
   try{
-    const r = await dapi('previa', 'POST', {...v, nome: v.nome || 'Prévia', n:5});
+    const r = await dapi('previa', 'POST', {...v, nome: v.nome || 'Prévia', n:5, com_info:true});
     if (seq !== previaSeq) return;
-    previaLista = r; previaIdx = 0; desenharPrevia();
+    ({itens: previaLista, precoVelho: previaPrecoVelho} = lerRespostaPrevia(r));
+    previaIdx = 0; desenharPrevia();
   }catch(e){
     if (seq !== previaSeq) return;
     box.innerHTML = `<p class="resumo aviso">Prévia indisponível: ${esc(e.message)}</p>`;

@@ -45,7 +45,7 @@ FOTO = {'amazon': 'https://m.media-amazon.com/images/I/71teste.jpg',
         'shopee': 'https://down-br.img.susercontent.com/file/teste'}
 CAMPOS_OFERTA = ['id', 'chave', 'loja', 'item_id', 'categoria', 'busca', 'titulo', 'link', 'imagem', 'preco',
                  'preco_antigo', 'desconto_pct', 'vendas', 'avaliacao', 'num_avaliacoes', 'frete_gratis',
-                 'cupom', 'criado_em', 'atualizado_em', 'genero']
+                 'cupom', 'criado_em', 'atualizado_em', 'genero', 'preco_em']
 SEGREDO = 'XYZVALORDOCLIENTE'   # nunca pode voltar na mensagem de erro
 
 
@@ -146,7 +146,7 @@ class Formato(Base):
         i = self.gravar(item_id='B0G5NZ82TJ', url='https://www.amazon.com.br/dp/B0G5NZ82TJ?tag=desejodemen01-20',
                         titulo='Perfume Importado Masculino 100ml', preco='R$ 523,99', preco_antigo='R$ 929,00',
                         desconto='-44%', vendas='Mais de 50 compras no mês passado', avaliacao='4,5 de 5 estrelas',
-                        num_avaliacoes='7.000', frete='', cupom='')
+                        num_avaliacoes='7.000', frete='', cupom='', preco_em=ANTIGO)
         o = self.ofertas()['ofertas'][0]
         self.assertEqual(list(o), CAMPOS_OFERTA)
         self.assertEqual(o, {
@@ -156,7 +156,7 @@ class Formato(Base):
             'link': 'https://www.amazon.com.br/dp/B0G5NZ82TJ?tag=desejodemen01-20',
             'imagem': FOTO['amazon'], 'preco': 523.99, 'preco_antigo': 929.0, 'desconto_pct': 44,
             'vendas': 50, 'avaliacao': 4.5, 'num_avaliacoes': 7000, 'frete_gratis': False, 'cupom': '',
-            'criado_em': ANTIGO, 'atualizado_em': ANTIGO, 'genero': 'masculino'})
+            'criado_em': ANTIGO, 'atualizado_em': ANTIGO, 'genero': 'masculino', 'preco_em': ANTIGO})
 
     def test_ca1_tipos_de_cada_campo(self):
         self.gravar()                                   # quase tudo vazio
@@ -167,7 +167,8 @@ class Formato(Base):
                  'busca': (str,), 'titulo': (str,), 'link': (str,), 'imagem': (str, type(None)),
                  'preco': (float,), 'preco_antigo': (float, type(None)), 'desconto_pct': (int,), 'vendas': (int,),
                  'avaliacao': (float, type(None)), 'num_avaliacoes': (int,), 'frete_gratis': (bool,),
-                 'cupom': (str,), 'criado_em': (str,), 'atualizado_em': (str,), 'genero': (str,)}
+                 'cupom': (str,), 'criado_em': (str,), 'atualizado_em': (str,), 'genero': (str,),
+                 'preco_em': (str, type(None))}
         ofertas = self.ofertas()['ofertas']
         self.assertEqual(len(ofertas), 3)
         for o in ofertas:
@@ -454,9 +455,10 @@ class Filtros(Base):
     def test_ca3_filtros_devolve_valores_normalizados(self):
         f = A.filtros(pares('cat=A&cat=B&loja=ml&q=Caf%C3%A9,+%C3%93leo&desconto_min=07&ordem=cupom&limite=10&cursor=20'))
         self.assertEqual(f, {'cats': ['A', 'B'], 'lojas': ['ml'], 'generos': [], 'termos': ['cafe', 'oleo'], 'desconto_min': 7,
-                             'ordem': 'cupom', 'limite': 10, 'cursor': 20})
+                             'ordem': 'cupom', 'limite': 10, 'cursor': 20, 'preco_max_horas': None})
         self.assertEqual(A.filtros([]), {'cats': [], 'lojas': [], 'generos': [], 'termos': [], 'desconto_min': 0,
-                                         'ordem': 'atualizacao', 'limite': 50, 'cursor': None})
+                                         'ordem': 'atualizacao', 'limite': 50, 'cursor': None, 'preco_max_horas': None})
+        self.assertEqual(A.filtros(pares('preco_max_horas=024'))['preco_max_horas'], 24)
         self.assertEqual(A.filtros(None)['ordem'], 'atualizacao')
 
 
@@ -554,6 +556,12 @@ class PaginacaoAtualizacao(Base):
 
 
 class OrdensDoDisparo(Base):
+    def gravar(self, loja='amazon', **campos):
+        """Preço confirmado agora: o disparo.elegiveis, oráculo destes testes, tira o preço velho
+        (CA6 de docs/produto/planos/atualizar-precos.md); a v1 sem preco_max_horas não tira."""
+        campos.setdefault('preco_em', hora(AGORA))
+        return super().gravar(loja, **campos)
+
     def popular(self, rng):
         """Itens com empates de propósito (vendas, preço, desconto, posição, criado_em)."""
         for _ in range(45):
@@ -700,7 +708,8 @@ class Genero(Base):
         self.assertEqual(por_id[busca]['genero'], 'feminino')
         self.assertEqual({o['genero'] for o in por_id.values()}, set(G.GENEROS))
         for o in por_id.values():
-            self.assertEqual(list(o)[-1], 'genero')        # campo novo no fim; os antigos na mesma ordem
+            # campos novos no fim (genero e depois preco_em); os antigos na mesma ordem
+            self.assertEqual(list(o)[-2:], ['genero', 'preco_em'])
             self.assertNotIn('genero_origem', o)            # a origem fica só no /api/items
 
     def test_ca6_correcao_manual_vale_so_em_aba_com_genero(self):
@@ -773,18 +782,19 @@ class Genero(Base):
 
     def test_ca6_parametro_desconhecido_lista_genero(self):
         self.assertEqual(self.erro('generos=feminino'),
-                         'parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero)')
+                         'parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero, '
+                         'preco_max_horas)')
         for qs in ('Genero=feminino', 'publico=feminino', 'g%C3%AAnero=feminino'):
             with self.subTest(qs=qs):
                 self.assertIn('desconhecido', self.erro(qs))
 
     def test_ca6_max_pares_soma_os_4_generos(self):
-        self.assertEqual(A.MAX_PARES, 32)
-        self.assertEqual(A.MAX_PARES, A.MAX_CATS + len(D.LOJAS) + len(G.GENEROS) + 5)
+        self.assertEqual(A.MAX_PARES, 33)   # 32 com genero; preco_max_horas (atualizar-precos) soma 1
+        self.assertEqual(A.MAX_PARES, A.MAX_CATS + len(D.LOJAS) + len(G.GENEROS) + 6)
         self.gravar()
         maior = ([f'cat=c{i}' for i in range(A.MAX_CATS)] + [f'loja={l}' for l in D.LOJAS]
                  + [f'genero={g}' for g in G.GENEROS]
-                 + ['q=perfume', 'desconto_min=0', 'ordem=relevancia', 'limite=10', 'cursor=10'])
+                 + ['q=perfume', 'desconto_min=0', 'ordem=relevancia', 'limite=10', 'cursor=10', 'preco_max_horas=168'])
         self.assertEqual(len(maior), A.MAX_PARES)
         r = self.ofertas('&'.join(maior))                  # o maior pedido válido passa
         self.assertEqual((r['versao'], r['total']), (1, 0))
@@ -859,6 +869,164 @@ class Genero(Base):
         for r in (self.ofertas('genero=feminino'), self.cats()):
             self.assertEqual(r['versao'], 1)
             json.dumps(r, allow_nan=False)
+
+
+# ---------------------------------------------------------------- idade do preço (atualizar-precos, CA8)
+class PrecoEm(Base):
+    """docs/produto/planos/atualizar-precos.md, etapa 3: `preco_em` no fim da oferta e o filtro opcional
+    preco_max_horas, que só vale quando pedido (decisão P2 do dono: sem ele, nada sai da resposta)."""
+
+    # (valor gravado em items.preco_em, o que a oferta traz): fora do formato do servidor vira null
+    ESTRANHOS = ((None, None), ('', None), ('03/11/2026 12:24', None), ('2026-11-03 12:24:23', None),
+                 ('2026-11-03T12:24:23.5', None), ('2026-11-03T12:24', None), (' 2026-11-03T12:24:23', None),
+                 ('2026-11-03T12:24:23\n', None), ('2026-11-31T10:00:00', None), ('2026-11-03T25:00:00', None),
+                 ('٢٠٢٦-11-03T12:24:23', None), ('z', None),
+                 (b'2026-11-03T12:24:23', None), (20261103, None),
+                 # Q2: o fromisoformat do Python 3.14 aceita a hora 24; a regra única (disparo.ler_preco_em) não
+                 ('2026-11-02T24:00:00', None), ('2026-11-03T14:60:00', None), ('2026-11-03T14:00:60', None))
+
+    def antes(self, horas=0, segundos=0, agora=AGORA):
+        return hora(agora - timedelta(hours=horas, seconds=segundos))
+
+    def test_ca8_preco_em_sai_como_texto_ou_null_e_nunca_tira_a_oferta(self):
+        validos = {self.gravar(preco_em=ANTIGO): ANTIGO, self.gravar('ml', preco_em=hora(AGORA)): hora(AGORA),
+                   self.gravar('shopee', preco_em='2020-02-29T00:00:00'): '2020-02-29T00:00:00',
+                   # no futuro: o campo mostra a data como está; quem a trata como velha é o filtro (S2)
+                   self.gravar(preco_em='2999-12-31T23:59:59'): '2999-12-31T23:59:59'}
+        estranhos = {self.gravar(preco_em=v): esperado for v, esperado in self.ESTRANHOS}
+        r = self.ofertas('limite=200')
+        json.dumps(r, allow_nan=False)
+        self.assertEqual(r['total'], len(validos) + len(estranhos))
+        self.assertEqual({o['id']: o['preco_em'] for o in r['ofertas']}, {**validos, **estranhos})
+        for o in r['ofertas']:
+            self.assertEqual(list(o), CAMPOS_OFERTA)
+        self.assertEqual(self.cats()['total'], len(validos) + len(estranhos))
+
+    def test_ca8_sem_o_filtro_preco_em_nao_muda_nada_na_resposta(self):
+        for n in range(12):
+            loja = D.LOJAS[n % 3]
+            v = (ANTIGO, None, hora(AGORA), '03/11/2026', b'x', '2001-01-01T00:00:00')[n % 6]
+            self.gravar(loja, preco_em=v, preco=f'R$ {10 + n},00', vendas=f'+{n} vendidos', desconto=f'-{n}%')
+
+        def sem_campo(qs):
+            r = self.ofertas(qs)
+            return {**r, 'ofertas': [{k: v for k, v in o.items() if k != 'preco_em'} for o in r['ofertas']]}
+
+        consultas = [f'ordem={o}&limite=5' for o in A.ORDENS] + ['loja=ml', 'q=perfume', 'desconto_min=3']
+        com_datas = {qs: sem_campo(qs) for qs in consultas}
+        self.assertEqual(com_datas['ordem=atualizacao&limite=5']['total'], 12)
+        self.con.execute('UPDATE items SET preco_em = NULL')
+        self.con.commit()
+        for qs in consultas:
+            with self.subTest(qs=qs):
+                self.assertEqual(com_datas[qs], sem_campo(qs))
+
+    def test_ca8_filtro_na_borda_e_igual_ao_disparo_preco_recente(self):
+        gravados = {}
+        # no futuro (S2): até 5 min à frente do agora ainda vale; 5 min e 1 s ou 1 h à frente já é velho
+        mais_5min, mais_5min_1s = hora(AGORA + timedelta(minutes=5)), hora(AGORA + timedelta(minutes=5, seconds=1))
+        for v in (self.antes(0), self.antes(23), self.antes(24), self.antes(24, 1), self.antes(25),
+                  self.antes(167), self.antes(168), self.antes(168, 1), hora(AGORA + timedelta(hours=1)),
+                  mais_5min, mais_5min_1s, ANTIGO) + tuple(v for v, _ in self.ESTRANHOS):
+            gravados[self.gravar(preco_em=v)] = v
+        ida = {v: i for i, v in gravados.items() if isinstance(v, str)}
+        recentes_24 = sorted(ida[v] for v in (self.antes(0), self.antes(23), self.antes(24), ANTIGO, mais_5min))
+        self.assertEqual(sorted(self.ids('preco_max_horas=24&limite=200')), recentes_24)
+        for futuro in (mais_5min_1s, hora(AGORA + timedelta(hours=1))):
+            self.assertNotIn(ida[futuro], self.ids('preco_max_horas=168&limite=200'), futuro)
+        # 2026-02-30 e companhia passam na comparação de texto do SQL; o BLOB também (BLOB > TEXT)
+        for agora in (AGORA, AGORA + timedelta(microseconds=500000), AGORA + timedelta(hours=30)):
+            for horas in (1, 23, 24, 25, 167, 168):
+                with self.subTest(agora=agora, horas=horas):
+                    esperado = sorted(i for i, v in gravados.items() if D.preco_recente(v, agora, horas))
+                    r = self.ofertas(f'preco_max_horas={horas}&limite=200&ordem=relevancia', agora)
+                    self.assertEqual(sorted(o['id'] for o in r['ofertas']), esperado)
+                    self.assertEqual(r['total'], len(esperado))
+        # agora fracionado: o limite exato de 24 h (contado do segundo cheio) já ficou velho
+        self.assertNotIn(ida[self.antes(24)],
+                         self.ids('preco_max_horas=24&limite=200', AGORA + timedelta(microseconds=500000)))
+
+    def test_ca8_filtro_com_paginacao_total_e_os_outros_filtros(self):
+        recentes, velhos = [], []
+        for n in range(30):
+            loja = D.LOJAS[n % 3]
+            atualizado = hora(datetime(2026, 11, 2, 10, 0, 0) + timedelta(minutes=n % 7))
+            if n % 2:
+                recentes.append(self.gravar(loja, preco_em=self.antes(n % 20), atualizado_em=atualizado,
+                                            vendas=f'+{n} vendidos'))
+            else:
+                velhos.append(self.gravar(loja, preco_em=self.antes(30 + n), atualizado_em=atualizado,
+                                          vendas=f'+{n} vendidos'))
+        linha = {r['id']: r['atualizado_em'] for r in self.con.execute('SELECT id, atualizado_em FROM items')}
+        vistos, _, totais = self.percorrer('preco_max_horas=24&limite=4')
+        self.assertEqual(vistos, sorted(recentes, key=lambda i: (linha[i], i)))
+        self.assertEqual(totais, {len(recentes)})
+        vistos, _, totais = self.percorrer('preco_max_horas=24&limite=4&ordem=relevancia')
+        self.assertEqual(sorted(vistos), sorted(recentes))
+        self.assertEqual(len(vistos), len(set(vistos)))
+        self.assertEqual(totais, {len(recentes)})
+        ml = [i for n, i in enumerate(recentes) if D.LOJAS[(2 * n + 1) % 3] == 'ml']
+        self.assertEqual(sorted(self.ids('preco_max_horas=24&loja=ml&limite=200')), sorted(ml))
+        self.assertEqual(self.ids('preco_max_horas=24&q=nada-assim'), [])
+        self.assertEqual(sorted(self.ids('preco_max_horas=168&limite=200')), sorted(recentes + velhos))
+
+    def test_ca8_preco_max_horas_invalido_da_400_sem_ecoar(self):
+        for qs in ('preco_max_horas=0', 'preco_max_horas=169', 'preco_max_horas=-1', 'preco_max_horas=',
+                   'preco_max_horas=1.5', 'preco_max_horas=24h', 'preco_max_horas=+5', 'preco_max_horas=%2024',
+                   'preco_max_horas=%D9%A3', 'preco_max_horas=1e2', 'preco_max_horas=0x10',
+                   'preco_max_horas=9999', 'preco_max_horas=' + SEGREDO):
+            with self.subTest(qs=qs):
+                self.assertEqual(self.erro(qs), 'preco_max_horas deve ser um número inteiro de 1 a 168')
+        self.assertIn('preco_max_horas', self.erro('preco_max_horas=24&preco_max_horas=24'))
+        for qs in ('Preco_max_horas=24', 'preco_max=24', 'preco_max_horas[]=24'):
+            with self.subTest(qs=qs):
+                self.assertIn('desconhecido', self.erro(qs))
+        with self.assertRaises(A.ErroApi) as ctx:
+            A.rota(self.con, 'GET', '/api/v1/categorias', pares('preco_max_horas=24'), AFILIADO, AGORA)
+        self.assertEqual(ctx.exception.codigo, 400)
+
+    def test_ca8_limites_aceitos(self):
+        i = self.gravar(preco_em=self.antes(1))
+        for qs in ('preco_max_horas=1', 'preco_max_horas=01', 'preco_max_horas=168', 'preco_max_horas=024'):
+            with self.subTest(qs=qs):
+                self.assertEqual(self.ids(qs), [i])
+        self.assertEqual(self.ids('preco_max_horas=1', AGORA + timedelta(seconds=1)), [])
+
+    def test_ca8_o_sql_estreita_a_leitura(self):
+        recentes = [self.gravar(preco_em=self.antes(h)) for h in (0, 5)]
+        for h in (30, 40, 50, 60):
+            self.gravar(preco_em=self.antes(h))
+        self.gravar(preco_em=None)
+        with mock.patch.object(A, 'oferta', wraps=A.oferta) as espiao:
+            self.assertEqual(self.ids('preco_max_horas=24'), recentes)
+        self.assertEqual(espiao.call_count, 2)   # as 5 velhas nem saem do sqlite
+
+    def test_ca8_banco_de_antes_da_v3_da_null_e_o_filtro_nao_traz_nada(self):
+        # o servidor migra na subida; um retrato antigo lido direto (como o do test_api_ofertas_qa) não
+        a, b = self.gravar(preco_em=self.antes(1)), self.gravar('ml', preco_em=None)
+        self.con.execute('ALTER TABLE items DROP COLUMN preco_em')
+        self.con.commit()
+        ro = abrir(self.caminho, so_leitura=True)
+        self.addCleanup(ro.close)
+        r = self.ofertas('limite=200', con=ro)
+        self.assertEqual(({o['id']: o['preco_em'] for o in r['ofertas']}, r['total']), ({a: None, b: None}, 2))
+        self.assertEqual([list(o) for o in r['ofertas']], [CAMPOS_OFERTA] * 2)
+        for ordem in A.ORDENS:
+            with self.subTest(ordem=ordem):
+                r = self.ofertas(f'ordem={ordem}&preco_max_horas=168', con=ro)
+                self.assertEqual((r['ofertas'], r['total'], r['proximo']), ([], 0, None))
+        self.assertEqual(self.cats(con=ro)['total'], 2)
+        self.assertEqual(ro.total_changes, 0)
+
+    def test_ca8_conexao_so_leitura_com_o_filtro(self):
+        self.gravar(preco_em=self.antes(1))
+        self.gravar('ml', preco_em=b'x')
+        ro = abrir(self.caminho, so_leitura=True)
+        self.addCleanup(ro.close)
+        for ordem in A.ORDENS:
+            self.assertEqual(self.ofertas(f'ordem={ordem}&preco_max_horas=24', con=ro)['total'], 1)
+        self.assertEqual(ro.total_changes, 0)
+        self.assertFalse(ro.in_transaction)
 
 
 # ---------------------------------------------------------------- rota e CA9

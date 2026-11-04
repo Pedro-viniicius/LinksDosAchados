@@ -13,6 +13,7 @@ _chat.txt
 *.log
 coleta_amazon_feitos.txt
 coleta_shopee_feitos.txt
+atualizar_precos_feitos.txt
 # Backups do banco e do progresso (migrar_categorias.py e etapa 0 dos planos)
 backups/
 

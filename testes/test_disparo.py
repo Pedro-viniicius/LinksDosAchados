@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Testes do disparo.py (docs/produto/planos/disparo-automatico.md, etapas 1, 2 e 3).
+"""Testes do disparo.py (docs/produto/planos/disparo-automatico.md, etapas 1, 2 e 3; a idade do preço
+vem de docs/produto/planos/atualizar-precos.md, etapas 1 e 2).
 
 Uso:  python3 testes/test_disparo.py -v
 
@@ -61,8 +62,52 @@ def abrir(caminho):
     return con
 
 
+# preco_em padrão do Base.item: um marcador, não uma data. Os relógios dos testes vão de 2026 a 2030 (e as
+# threads e rotas usam o relógio real), e o disparo.preco_recente trata como velho tanto o preço de mais de
+# 168 h quanto o de mais de 5 min no futuro: nenhuma data fixa serve a todos. O Base troca o marcador, a cada
+# chamada, por PRECO_EM_FOLGA antes do `agora` que o disparo recebeu: o preço é recente no relógio de cada
+# teste. Os testes da trava (CA6 de docs/produto/planos/atualizar-precos.md) passam preco_em explícito e
+# caem direto na função de verdade.
+PRECO_EM_RECENTE = 'recente-no-relogio-do-teste'
+PRECO_EM_FOLGA = timedelta(minutes=1)
+_PRECO_RECENTE_REAL = D.preco_recente
+
+
+def preco_recente_do_teste(preco_em, agora, horas):
+    """disparo.preco_recente com o marcador PRECO_EM_RECENTE lido como PRECO_EM_FOLGA antes de `agora`."""
+    if preco_em == PRECO_EM_RECENTE:
+        preco_em = (agora - PRECO_EM_FOLGA).isoformat(timespec='seconds')
+    return _PRECO_RECENTE_REAL(preco_em, agora, horas)
+
+
 def url_amz(n):
     return f'https://www.amazon.com.br/dp/B0TESTE{n:03d}?tag=desejodemen01-20'
+
+
+# Colunas de items antes da v3 (sem preco_em): as que o INSERT do upsert de antes gravava.
+COLUNAS_ITEM_V2 = ('loja', 'item_id', 'cat', 'busca', 'url', *S.CAMPOS, 'tem_dados', 'posicao', 'criado_em',
+                   'atualizado_em')
+
+
+def items_antes_da_v3(caminho):
+    """Banco com items e config como o criar_banco de antes da v3 os deixava: sem preco_em e sem migrar."""
+    with mock.patch.object(S, 'DB', caminho), mock.patch.object(D, 'migrar'):
+        S.criar_banco()
+    con = abrir(caminho)
+    con.execute('ALTER TABLE items DROP COLUMN preco_em')
+    con.commit()
+    return con
+
+
+def item_antigo(con, item_id, loja='ml', url=None, titulo='T', preco='R$ 10,00', tem_dados=1,
+                criado_em='2026-11-03T10:00:00', atualizado_em='2026-11-04T09:30:00', **extra):
+    """Grava um item com o INSERT de antes da v3 (sem preco_em)."""
+    v = {'loja': loja, 'item_id': item_id, 'cat': extra.pop('cat', 'Casa e Decoração'),
+         'busca': extra.pop('busca', ''), 'url': url or f'https://meli.la/{item_id}',
+         **{c: '' for c in S.CAMPOS}, 'titulo': titulo, 'preco': preco, 'tem_dados': tem_dados,
+         'posicao': 1, 'criado_em': criado_em, 'atualizado_em': atualizado_em, **extra}
+    con.execute(f'INSERT INTO items ({",".join(COLUNAS_ITEM_V2)}) VALUES ({",".join("?" * len(COLUNAS_ITEM_V2))})',
+                [v[c] for c in COLUNAS_ITEM_V2])
 
 
 class Base(unittest.TestCase):
@@ -78,6 +123,9 @@ class Base(unittest.TestCase):
         D.migrar(self.con)
         self.gravar_templates(DEFAULT_TEMPLATES)
         self.seq = 0
+        patcher = mock.patch.object(D, 'preco_recente', preco_recente_do_teste)   # ver PRECO_EM_RECENTE
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def conectar(self):
         return abrir(self.caminho)
@@ -93,7 +141,7 @@ class Base(unittest.TestCase):
         dados = {'titulo': f'Produto {n}', 'preco': 'R$ 100,00', 'preco_antigo': '', 'desconto': '-10%',
                  'avaliacao': '', 'num_avaliacoes': '', 'vendas': '', 'frete': '', 'cupom': '',
                  'imagem': f'https://m.media-amazon.com/images/I/{n}.jpg', 'tem_dados': 1,
-                 'posicao': n, 'criado_em': f'2026-11-01T00:00:{n % 60:02d}'}
+                 'posicao': n, 'criado_em': f'2026-11-01T00:00:{n % 60:02d}', 'preco_em': PRECO_EM_RECENTE}
         dados.update(campos)
         if url is None:
             url = url_amz(n) if loja == 'amazon' else f'https://meli.la/T{n}'
@@ -147,10 +195,11 @@ class Migracao(unittest.TestCase):
     def test_banco_novo(self):
         con = abrir(os.path.join(self.dir, 'novo.db'))
         self.addCleanup(con.close)
-        self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertTrue(D.migrar(con))   # banco sem items: o passo v3 não tem o que fazer e não falha
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
         nomes = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index')")}
         self.assertTrue({'numeros', 'regras', 'envios', 'ix_envios_rep', 'generos_manuais'} <= nomes)
+        self.assertNotIn('items', nomes)   # a v3 não cria items: quem cria é o criar_banco
         cols = {r[1]: r for r in con.execute('PRAGMA table_info(regras)')}
         self.assertEqual(cols['repetir_apos_dias'][4], '7')
         self.assertEqual(cols['repetir_apos_dias'][3], 0)   # aceita NULL
@@ -169,21 +218,20 @@ class Migracao(unittest.TestCase):
         self.assertFalse(con.in_transaction)
 
     def test_banco_antigo_mantem_os_dados(self):
-        caminho = os.path.join(self.dir, 'antigo.db')
-        # o criar_banco de antes da etapa 4: o mesmo esquema de items/config, sem o disparo
-        with mock.patch.object(S, 'DB', caminho), mock.patch.object(D, 'migrar'):
-            S.criar_banco()
-        con = abrir(caminho)
+        # o criar_banco de antes da etapa 4: o mesmo esquema de items/config, sem o disparo nem preco_em
+        con = items_antes_da_v3(os.path.join(self.dir, 'antigo.db'))
         self.addCleanup(con.close)
-        S.upsert(con, {'loja': 'ml', 'url': 'https://meli.la/abc', 'cat': 'Casa', 'data': {'titulo': 'X'}})
+        item_antigo(con, 'abc', url='https://meli.la/abc', titulo='X')
         con.execute("INSERT INTO config VALUES ('templates', '{}')")
         con.commit()
         antes = [tuple(r) for r in con.execute('SELECT * FROM items')]
         self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
         self.assertTrue(D.migrar(con))
-        self.assertEqual([tuple(r) for r in con.execute('SELECT * FROM items')], antes)
+        # as mesmas linhas, com preco_em no fim preenchido pelo criado_em
+        self.assertEqual([tuple(r) for r in con.execute('SELECT * FROM items')],
+                         [r + ('2026-11-03T10:00:00',) for r in antes])
         self.assertEqual(con.execute("SELECT valor FROM config").fetchone()[0], '{}')
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
         self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
         self.assertIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
 
@@ -194,7 +242,9 @@ class Migracao(unittest.TestCase):
             S.criar_banco()   # de novo, como a cada início do servidor
         con = abrir(caminho)
         self.addCleanup(con.close)
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+        colunas = [r[1] for r in con.execute('PRAGMA table_info(items)')]
+        self.assertEqual((colunas.count('preco_em'), colunas[-1]), (1, 'preco_em'))
         self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='envios'").fetchone())
         self.assertIsNotNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
 
@@ -217,25 +267,28 @@ class Migracao(unittest.TestCase):
         self.addCleanup(con.close)
         con.execute(D.ESQUEMA_V1[0]); con.commit()
         self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
 
     def test_versao_maior_nao_e_tocada(self):
         con = abrir(os.path.join(self.dir, 'futuro.db'))
         self.addCleanup(con.close)
-        con.execute('PRAGMA user_version = 3')   # versão futura
+        con.execute('PRAGMA user_version = 4')   # versão futura
         self.assertFalse(D.migrar(con))
         self.assertIsNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='numeros'").fetchone())
         self.assertIsNone(con.execute("SELECT 1 FROM sqlite_master WHERE name='generos_manuais'").fetchone())
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 4)
 
     def test_versao_futura_com_regras_v1_nao_ganha_coluna(self):
         con = self.banco_v1('futuro-v1.db')
-        con.execute('PRAGMA user_version = 3')
-        esquema, mudancas = self.esquema(con), con.total_changes
+        self.semear_v1(con)
+        con.execute('PRAGMA user_version = 4')
+        esquema, dados, mudancas = self.esquema(con), self.dados(con), con.total_changes
         self.assertFalse(D.migrar(con))
         self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual(self.dados(con), dados)
         self.assertEqual(con.total_changes, mudancas)
         self.assertNotIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
+        self.assertNotIn('preco_em', {r[1] for r in con.execute('PRAGMA table_info(items)')})
 
     def test_falha_no_meio_desfaz_tudo(self):
         con = abrir(os.path.join(self.dir, 'falha.db'))
@@ -249,11 +302,8 @@ class Migracao(unittest.TestCase):
 
     # ------------------------------------------------------------ v2 (plano genero-nas-categorias, etapa 2)
     def banco_v1(self, nome):
-        """Banco como o deixa o código da v1: items/config do servidor, ESQUEMA_V1 e user_version 1."""
-        caminho = os.path.join(self.dir, nome)
-        with mock.patch.object(S, 'DB', caminho), mock.patch.object(D, 'migrar'):
-            S.criar_banco()
-        con = abrir(caminho)
+        """Banco como o deixa o código da v1: items/config do servidor (sem preco_em), ESQUEMA_V1 e user_version 1."""
+        con = items_antes_da_v3(os.path.join(self.dir, nome))
         self.addCleanup(con.close)
         for sql in D.ESQUEMA_V1:
             con.execute(sql)
@@ -263,9 +313,9 @@ class Migracao(unittest.TestCase):
 
     def semear_v1(self, con):
         """Itens, config, número, duas regras e um envio, só com as colunas da v1."""
-        S.upsert(con, {'loja': 'ml', 'url': 'https://meli.la/abc', 'cat': 'Perfumes e Perfumaria',
-                       'busca': 'perfume feminino', 'data': {'titulo': 'Perfume X Feminino 100ml'}})
-        S.upsert(con, {'loja': 'amazon', 'url': url_amz(1), 'cat': 'Casa e Decoração', 'data': {'titulo': 'Y'}})
+        item_antigo(con, 'https://meli.la/abc', url='https://meli.la/abc', cat='Perfumes e Perfumaria',
+                    busca='perfume feminino', titulo='Perfume X Feminino 100ml')
+        item_antigo(con, url_amz(1), loja='amazon', url=url_amz(1), titulo='Y', preco='')
         con.execute("INSERT INTO config VALUES ('templates', '{\"t\": \"{TITULO}\"}')")
         con.execute("INSERT INTO numeros (nome, telefone, grupo_nome) VALUES ('N', ?, 'G')", (TELEFONE,))
         for nome, repetir in (('Manhã', 7), ('Noite', None)):
@@ -286,12 +336,15 @@ class Migracao(unittest.TestCase):
         antes = self.dados(con)
         self.assertEqual({t: len(v) for t, v in antes.items()},
                          {'items': 2, 'config': 1, 'numeros': 1, 'regras': 2, 'envios': 1})
-        self.assertTrue(D.migrar(con))
+        self.assertTrue(D.migrar(con))   # v1 -> v3 numa transação só
         self.assertFalse(con.in_transaction)
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
         depois = self.dados(con)
-        for t in ('items', 'config', 'numeros', 'envios'):
+        for t in ('config', 'numeros', 'envios'):
             self.assertEqual(depois[t], antes[t], t)
+        # items: as mesmas linhas, com preco_em no fim (criado_em só no item com preço)
+        self.assertEqual([r[:-1] for r in depois['items']], antes['items'])
+        self.assertEqual([r[-1] for r in depois['items']], ['2026-11-03T10:00:00', None])
         # regras: as mesmas linhas, com a coluna nova no fim valendo '[]' (todos os gêneros)
         self.assertEqual([r[:-1] for r in depois['regras']], antes['regras'])
         self.assertEqual([r[-1] for r in depois['regras']], ['[]', '[]'])
@@ -347,8 +400,9 @@ class Migracao(unittest.TestCase):
         self.assertTrue(lenta.outra_migrou)   # a outra conexão migrou no meio
         self.assertEqual(lenta.lidas, 2)      # releu a versão dentro do BEGIN IMMEDIATE
         self.assertFalse(con.in_transaction)
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
         self.assertEqual([r[1] for r in con.execute('PRAGMA table_info(regras)')].count('generos'), 1)
+        self.assertEqual([r[1] for r in con.execute('PRAGMA table_info(items)')].count('preco_em'), 1)
 
     def test_falha_na_v2_desfaz_tudo_e_mantem_a_v1(self):
         con = self.banco_v1('falha-v2.db')
@@ -364,8 +418,9 @@ class Migracao(unittest.TestCase):
         self.assertEqual(self.esquema(con), esquema)
         self.assertEqual(self.dados(con), dados)
         self.assertNotIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
+        self.assertNotIn('preco_em', {r[1] for r in con.execute('PRAGMA table_info(items)')})
         self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
 
     def test_v0_para_v2_numa_transacao_so(self):
         con = abrir(os.path.join(self.dir, 'v0.db'))
@@ -377,7 +432,7 @@ class Migracao(unittest.TestCase):
         self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
         self.assertEqual(con.execute('SELECT COUNT(*) FROM sqlite_master').fetchone()[0], 0)
         self.assertTrue(D.migrar(con))
-        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
         self.assertIn('generos', {r[1] for r in con.execute('PRAGMA table_info(regras)')})
 
     def test_codigo_da_v1_roda_sobre_o_banco_v2(self):
@@ -402,6 +457,422 @@ class Migracao(unittest.TestCase):
         self.assertEqual(con.execute('SELECT generos FROM regras WHERE id=?', (nova,)).fetchone()[0], '[]')
         lidas = con.execute(f'SELECT id, {",".join(campos_v1)} FROM regras ORDER BY id').fetchall()
         self.assertEqual([r['nome'] for r in lidas], ['Manhã', 'Noite', 'Antiga'])
+
+    # ------------------------------------------------------------ v3 (plano atualizar-precos, etapa 1)
+    def banco_v2(self, nome):
+        """Banco como o deixa o código da v2: o banco_v1 mais ESQUEMA_V2 e user_version 2 (items sem preco_em)."""
+        con = self.banco_v1(nome)
+        for sql in D.ESQUEMA_V2:
+            con.execute(sql)
+        con.execute('PRAGMA user_version = 2')
+        con.commit()
+        return con
+
+    # item_id -> (campos do INSERT antigo, preco_em esperado depois da v3)
+    CASOS_V3 = {
+        'com-preco': ({}, '2026-11-03T10:00:00'),
+        'preco-ilegivel': ({'preco': 'indisponível'}, '2026-11-03T10:00:00'),   # o plano só exige preco != ''
+        'sem-preco': ({'preco': ''}, None),
+        'sem-dados': ({'tem_dados': 0}, None),
+        'sem-criado': ({'criado_em': None}, None),
+        'criado-vazio': ({'criado_em': ''}, None),
+        'criado-com-espaco': ({'criado_em': '2026-11-03 10:00:00'}, None),
+        'criado-com-fracao': ({'criado_em': '2026-11-03T10:00:00.123456'}, None),
+        'criado-sem-segundo': ({'criado_em': '2026-11-03T10:00'}, None),
+        'criado-com-fuso': ({'criado_em': '2026-11-03T10:00:00+00:00'}, None),
+        'criado-so-data': ({'criado_em': '2026-11-03'}, None),
+        'criado-04-11': ({'criado_em': '2026-11-04T08:15:59'}, '2026-11-04T08:15:59'),
+    }
+
+    def test_v2_vira_v3_e_preenche_preco_em_so_com_criado_em_valido(self):
+        con = self.banco_v2('v2.db')
+        for iid, (extra, _) in self.CASOS_V3.items():
+            item_antigo(con, iid, **extra)
+        con.commit()
+        antes = self.dados(con)
+        cols_antes = [tuple(r) for r in con.execute('PRAGMA table_info(items)')]
+        self.assertTrue(D.migrar(con))
+        self.assertFalse(con.in_transaction)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+        cols = [tuple(r) for r in con.execute('PRAGMA table_info(items)')]
+        # só aditiva: as colunas antigas iguais e preco_em no fim, TEXT, aceitando NULL e sem padrão
+        self.assertEqual(cols[:-1], cols_antes)
+        self.assertEqual(cols[-1][1:], ('preco_em', 'TEXT', 0, None, 0))
+        depois = self.dados(con)
+        for t in ('config', 'numeros', 'regras', 'envios'):
+            self.assertEqual(depois[t], antes[t], t)
+        # nenhuma coluna antiga muda: atualizado_em (cursor da v1), url, preço e criado_em intactos
+        self.assertEqual([r[:-1] for r in depois['items']], antes['items'])
+        lido = {r['item_id']: r['preco_em'] for r in con.execute('SELECT item_id, preco_em FROM items')}
+        self.assertEqual(lido, {iid: esperado for iid, (_, esperado) in self.CASOS_V3.items()})
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM items WHERE atualizado_em != '2026-11-04T09:30:00'")
+                         .fetchone()[0], 0)
+
+    def test_v3_repetida_sem_efeito(self):
+        con = self.banco_v2('v2-rep.db')
+        item_antigo(con, 'um')
+        con.commit()
+        self.assertTrue(D.migrar(con))
+        con.execute("UPDATE items SET preco_em = NULL")   # o que o código de agora pode gravar depois
+        con.commit()
+        esquema, dados, mudancas = self.esquema(con), self.dados(con), con.total_changes
+        self.assertFalse(D.migrar(con))
+        self.assertEqual((self.esquema(con), self.dados(con), con.total_changes), (esquema, dados, mudancas))
+        self.assertIsNone(con.execute('SELECT preco_em FROM items').fetchone()[0])   # o preenchimento não volta
+
+    def test_items_que_ja_tem_preco_em_nao_repete_o_alter_nem_preenche(self):
+        """criar_banco de agora sem chegar ao migrar (v0, items já com preco_em): a v3 só sobe a versão."""
+        caminho = os.path.join(self.dir, 'com-coluna.db')
+        with mock.patch.object(S, 'DB', caminho), mock.patch.object(D, 'migrar'):
+            S.criar_banco()
+        con = abrir(caminho)
+        self.addCleanup(con.close)
+        S.upsert(con, {'loja': 'ml', 'url': 'https://meli.la/cc', 'data': {'titulo': 'T', 'preco': 'R$ 10,00'}})
+        con.execute('UPDATE items SET preco_em = NULL')
+        con.commit()
+        antes = [tuple(r) for r in con.execute('SELECT * FROM items')]
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
+        self.assertTrue(D.migrar(con))
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+        self.assertEqual([tuple(r) for r in con.execute('SELECT * FROM items')], antes)
+        self.assertEqual([r[1] for r in con.execute('PRAGMA table_info(items)')].count('preco_em'), 1)
+
+    def test_falha_na_v3_desfaz_tudo_e_mantem_a_v2(self):
+        con = self.banco_v2('falha-v3.db')
+        item_antigo(con, 'um')
+        con.commit()
+        esquema, dados = self.esquema(con), self.dados(con)
+        # o ALTER e o UPDATE rodam e depois o passo seguinte quebra: nada pode ficar
+        with mock.patch.object(D, 'ESQUEMA_V3', D.ESQUEMA_V3 + ('CREATE TABLE quebrada (',)):
+            with self.assertRaises(sqlite3.OperationalError):
+                D.migrar(con)
+        self.assertFalse(con.in_transaction)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 2)
+        self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual(self.dados(con), dados)
+        self.assertNotIn('preco_em', {r[1] for r in con.execute('PRAGMA table_info(items)')})
+        self.assertTrue(D.migrar(con))
+        self.assertEqual(con.execute('SELECT preco_em FROM items').fetchone()[0], '2026-11-03T10:00:00')
+
+    def test_v0_para_v3_numa_transacao_so(self):
+        con = items_antes_da_v3(os.path.join(self.dir, 'v0-v3.db'))
+        self.addCleanup(con.close)
+        item_antigo(con, 'um')
+        con.commit()
+        esquema, itens = self.esquema(con), [tuple(r) for r in con.execute('SELECT * FROM items')]
+        # a v1 e a v2 inteiras rodam, a v3 quebra no fim: as três têm de ser desfeitas
+        with mock.patch.object(D, 'ESQUEMA_V3', D.ESQUEMA_V3 + ('CREATE TABLE quebrada (',)):
+            with self.assertRaises(sqlite3.OperationalError):
+                D.migrar(con)
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 0)
+        self.assertEqual(self.esquema(con), esquema)
+        self.assertEqual([tuple(r) for r in con.execute('SELECT * FROM items')], itens)
+        self.assertTrue(D.migrar(con))
+        self.assertEqual(con.execute('PRAGMA user_version').fetchone()[0], 3)
+        self.assertEqual(con.execute('SELECT preco_em FROM items').fetchone()[0], '2026-11-03T10:00:00')
+
+    def test_codigo_da_v2_roda_sobre_o_banco_v3(self):
+        """O código antigo vê user_version 3 >= 2, não migra, e grava e lê items só com as colunas dele."""
+        con = self.banco_v2('volta-v3.db')
+        item_antigo(con, 'velho')
+        con.commit()
+        self.assertTrue(D.migrar(con))
+        esquema = self.esquema(con)
+        with mock.patch.object(D, 'VERSAO_ESQUEMA', 2), mock.patch.object(D, 'ESQUEMA_V3', ()):
+            self.assertFalse(D.migrar(con))
+        self.assertEqual(self.esquema(con), esquema)
+        # INSERT do upsert antigo: preco_em fica NULL (o item parece velho, o lado seguro)
+        item_antigo(con, 'novo-pelo-antigo')
+        # UPDATE do upsert antigo: CAMPOS e atualizado_em, sem tocar preco_em
+        sets = ', '.join(f'{c}=?' for c in S.CAMPOS)
+        con.execute(f"UPDATE items SET {sets}, tem_dados=1, atualizado_em=? WHERE item_id='velho'",
+                    ['T2', 'R$ 20,00', *[''] * (len(S.CAMPOS) - 2), '2026-11-05T10:00:00'])
+        con.commit()
+        lidos = {r['item_id']: (r['preco'], r['preco_em']) for r in con.execute('SELECT * FROM items')}
+        self.assertEqual(lidos, {'velho': ('R$ 20,00', '2026-11-03T10:00:00'),
+                                 'novo-pelo-antigo': ('R$ 10,00', None)})
+
+
+# ================================================================ idade do preço (plano atualizar-precos, etapa 1)
+class IdadeDoPreco(Base):
+    AGORA = datetime(2026, 11, 4, 12, 0, 0)
+
+    def test_dentro_do_prazo_e_no_limite_exato(self):
+        for preco_em in ('2026-11-04T12:00:00', '2026-11-04T11:00:00', '2026-11-03T13:00:00',
+                         '2026-11-03T12:00:00'):   # 24 h exatas ainda valem (>=)
+            with self.subTest(preco_em=preco_em):
+                self.assertTrue(D.preco_recente(preco_em, self.AGORA, 24))
+
+    def test_fora_do_prazo(self):
+        for preco_em in ('2026-11-03T11:59:59', '2026-11-03T11:00:00', '2026-11-01T00:00:00', '1999-01-01T00:00:00'):
+            with self.subTest(preco_em=preco_em):
+                self.assertFalse(D.preco_recente(preco_em, self.AGORA, 24))
+
+    def test_outros_prazos(self):
+        self.assertTrue(D.preco_recente('2026-11-04T11:00:00', self.AGORA, 1))
+        self.assertFalse(D.preco_recente('2026-11-04T10:59:59', self.AGORA, 1))
+        self.assertTrue(D.preco_recente('2026-10-28T12:00:00', self.AGORA, 168))
+        self.assertFalse(D.preco_recente('2026-10-28T11:59:59', self.AGORA, 168))
+
+    def test_nulo_de_outro_tipo_ou_malformado_e_velho(self):
+        ruins = [None, '', 0, 20261104, 1.5, True, b'2026-11-04T11:00:00', ['2026-11-04T11:00:00'],
+                 '2026-11-04 11:00:00', '2026-11-04T11:00', '2026-11-04T11:00:00.5', '2026-11-04T11:00:00Z',
+                 '2026-11-04T11:00:00+00:00', '2026-11-04', ' 2026-11-04T11:00:00', '2026-11-04T11:00:00\n',
+                 '2026-02-30T11:00:00', '2026-11-04T25:00:00', '2026-13-04T11:00:00',
+                 '\uff12\uff10\uff12\uff16-11-04T11:00:00',   # dígitos de largura total
+                 '\u0662\u0660\u0662\u0666-11-04T11:00:00']   # dígitos arábicos (\d casaria; o fromisoformat também recusa)
+        for preco_em in ruins:
+            with self.subTest(preco_em=preco_em):
+                self.assertFalse(D.preco_recente(preco_em, self.AGORA, 24))
+
+    def test_q2_hora_24_e_minuto_ou_segundo_60_sao_velhos(self):
+        """O fromisoformat do Python 3.14 aceita T24:00:00 (meia-noite do dia seguinte); o front não."""
+        for preco_em in ('2026-11-04T24:00:00', '2026-11-03T24:00:00', '2026-11-04T24:00:01', '2026-11-04T11:60:00',
+                         '2026-11-04T11:00:60', '2026-11-04T99:99:99', '0000-11-04T11:00:00'):
+            with self.subTest(preco_em=preco_em):
+                self.assertIsNone(D.ler_preco_em(preco_em))
+                self.assertFalse(D.preco_recente(preco_em, self.AGORA, 24))
+        for preco_em in ('2026-11-04T00:00:00', '2026-11-04T23:59:59', '2026-11-04T11:59:59'):
+            with self.subTest(preco_em=preco_em):
+                self.assertEqual(D.ler_preco_em(preco_em), datetime.fromisoformat(preco_em))
+                self.assertTrue(D.preco_recente(preco_em, datetime(2026, 11, 5, 0, 0, 0), 24))
+
+    def test_s2_mais_de_5_min_no_futuro_e_velho(self):
+        self.assertEqual(D.FOLGA_FUTURO_PRECO, timedelta(minutes=5))
+        self.assertTrue(D.preco_recente('2026-11-04T12:05:00', self.AGORA, 24), '5 min exatos ainda valem')
+        self.assertTrue(D.preco_recente('2026-11-04T12:00:01', self.AGORA, 24))
+        for preco_em in ('2026-11-04T12:05:01', '2026-11-04T13:00:00', '2026-11-05T12:00:00', '2999-12-31T23:59:59'):
+            with self.subTest(preco_em=preco_em):
+                self.assertFalse(D.preco_recente(preco_em, self.AGORA, 168))
+        # agora com microssegundos (datetime.now()): a folga conta a partir dele
+        self.assertTrue(D.preco_recente('2026-11-04T12:05:00', self.AGORA.replace(microsecond=1), 24))
+        self.assertFalse(D.preco_recente('2026-11-04T12:05:01', self.AGORA.replace(microsecond=999999), 24))
+
+    def test_marcador_do_base_so_vale_pela_troca_do_teste(self):
+        """O PRECO_EM_RECENTE não é data: a função de verdade o trata como velho."""
+        self.assertFalse(_PRECO_RECENTE_REAL(PRECO_EM_RECENTE, self.AGORA, 168))
+        self.assertTrue(D.preco_recente(PRECO_EM_RECENTE, self.AGORA, 1))
+        self.assertTrue(D.preco_recente(PRECO_EM_RECENTE, datetime(2030, 1, 1), 1))
+
+    def gravar_validade(self, valor):
+        with self.con:
+            self.con.execute("INSERT OR REPLACE INTO config VALUES ('preco_validade_horas', ?)", (valor,))
+
+    def test_validade_padrao_sem_valor(self):
+        self.assertEqual((D.VALIDADE_PADRAO_HORAS, D.VALIDADE_MIN_HORAS, D.VALIDADE_MAX_HORAS), (24, 1, 168))
+        self.assertEqual(D.validade_horas(self.con), 24)
+
+    def test_validade_aceita_inteiro_de_1_a_168(self):
+        for texto, esperado in (('1', 1), ('48', 48), ('168', 168), (' 72 ', 72), ('24', 24)):
+            with self.subTest(texto=texto):
+                self.gravar_validade(texto)
+                self.assertEqual(D.validade_horas(self.con), esperado)
+
+    def test_validade_invalida_vale_24(self):
+        for texto in ('0', '169', '-5', '24.0', '1e2', 'true', 'false', '"48"', 'null', '[48]', '{"h": 48}',
+                      'abc', '', '48 48', '9' * 5000, '[' * 100000, None, b'48', 48.0):   # 48.0 vira '48.0' (TEXT)
+            with self.subTest(texto=texto if not isinstance(texto, str) or len(texto) < 20 else texto[:10] + '...'):
+                self.gravar_validade(texto)
+                self.assertEqual(D.validade_horas(self.con), 24)
+
+    def test_validade_gravada_pelo_put_do_config(self):
+        """O PUT /api/config/<chave> grava json.dumps(corpo): 48 vira '48' e é lido como 48."""
+        self.gravar_validade(json.dumps(48))
+        self.assertEqual(D.validade_horas(self.con), 48)
+
+    def test_validade_sem_tabela_config_vale_24(self):
+        con = abrir(os.path.join(self.dir, 'sem-config.db'))
+        self.addCleanup(con.close)
+        self.assertEqual(D.validade_horas(con), 24)
+
+
+# ================================================================ trava do preço velho (plano atualizar-precos, etapa 2)
+class TravaPrecoVelho(Base):
+    """CA6 (o disparo não manda nem mostra item de preço velho) e CA7 (aviso e preco_velho na prévia).
+
+    Relógio injetado: o tick roda na segunda às 9h; os preços são datados em relação a esse instante.
+    """
+    AGORA = SEGUNDA.replace(hour=9)
+    TEXTO_24 = ('Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de 24 h. '
+                'Atualize os preços.')   # texto da spec docs/produto/specs/atualizar-precos.md
+
+    def setUp(self):
+        super().setUp()
+        self.r = self.regra(por_disparo=10, max_por_dia=200)
+
+    def ha(self, horas, segundos=0):
+        return (self.AGORA - timedelta(hours=horas, seconds=segundos)).isoformat(timespec='seconds')
+
+    def validade(self, valor):
+        with self.con:
+            self.con.execute("INSERT OR REPLACE INTO config VALUES ('preco_validade_horas', ?)", (valor,))
+
+    def ids(self, info=None, agora=None):
+        return sorted(it['id'] for it in D.elegiveis(self.con, D.obter_regra(self.con, self.r['id']),
+                                                    agora or self.AGORA, AFILIADO, info))
+
+    def aviso(self):
+        return D.obter_regra(self.con, self.r['id'])['aviso']
+
+    def test_ca6_23h_passa_25h_nao_e_nulo_nao(self):
+        bom = self.item(preco_em=self.ha(23))
+        self.item(preco_em=self.ha(25))
+        self.item(preco_em=None)
+        info = {}
+        self.assertEqual(self.ids(info), [bom])
+        self.assertEqual((info['casam'], info['velhos'], info['validade_horas']), (1, 2, 24))
+
+    def test_ca6_limite_exato_de_24h(self):
+        no_limite = self.item(preco_em=self.ha(24))
+        self.item(preco_em=self.ha(24, segundos=1))
+        self.assertEqual(self.ids(), [no_limite])
+
+    def test_ca6_malformado_e_velho(self):
+        for preco_em in ('', 'ontem', '2026-11-02 08:00:00', '2026-11-02T08:00', '2026-11-02T08:00:00Z',
+                         '2026-02-30T08:00:00', '2026-11-02'):
+            self.item(preco_em=preco_em)
+        info = {}
+        self.assertEqual(self.ids(info), [])
+        self.assertEqual((info['casam'], info['velhos']), (0, 7))
+
+    def test_s2_preco_no_futuro_fica_de_fora_e_conta_como_velho(self):
+        no_limite = self.item(preco_em=(self.AGORA + timedelta(minutes=5)).isoformat())
+        self.item(preco_em=(self.AGORA + timedelta(minutes=5, seconds=1)).isoformat())
+        self.item(preco_em='2999-12-31T23:59:59')
+        self.item(preco_em='2026-11-01T24:00:00')   # Q2: o fromisoformat leria 2026-11-02T00:00, 9 h antes do AGORA
+        info = {}
+        self.assertEqual(self.ids(info), [no_limite])
+        self.assertEqual((info['casam'], info['velhos']), (1, 3))
+
+    def test_ca6_validade_da_config(self):
+        h30, h47, h49 = self.item(preco_em=self.ha(30)), self.item(preco_em=self.ha(47)), self.item(preco_em=self.ha(49))
+        h1 = self.item(preco_em=self.ha(0, segundos=3600))
+        self.assertEqual(self.ids(), [h1])
+        self.validade(json.dumps(48))
+        self.assertEqual(self.ids(), sorted([h30, h47, h1]))
+        self.validade('1')
+        self.assertEqual(self.ids(), [h1])
+        self.validade('168')
+        self.assertEqual(self.ids(), sorted([h30, h47, h49, h1]))
+        self.assertNotIn(h49, [it['id'] for it in D.elegiveis(self.con, self.r, self.AGORA + timedelta(hours=120),
+                                                               AFILIADO)])
+
+    def test_ca6_config_invalida_vale_24(self):
+        h23 = self.item(preco_em=self.ha(23))
+        self.item(preco_em=self.ha(25))
+        for valor in ('0', '169', '-1', '48.0', '"48"', 'true', 'null', '[48]', 'abc', None, b'48'):
+            with self.subTest(valor=valor):
+                self.validade(valor)
+                info = {}
+                self.assertEqual(self.ids(info), [h23])
+                self.assertEqual(info['validade_horas'], 24)
+
+    def test_ca6_so_conta_velho_o_que_passa_nos_outros_filtros(self):
+        D.atualizar_regra(self.con, self.r['id'], {'lojas': ['amazon'], 'desconto_min': 20, 'palavras': ['fone']})
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-30%')          # casa: velho
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-30%', cat='Outra')
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-5%')
+        self.item(preco_em=self.ha(30), titulo='Câmera', desconto='-30%')
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-30%', loja='ml')
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-30%', tem_dados=0)
+        self.item(preco_em=self.ha(30), titulo='Fone JBL', desconto='-30%', url='https://amzn.to/x')
+        info = {}
+        self.assertEqual(self.ids(info), [])
+        self.assertEqual((info['casam'], info['velhos']), (0, 1))
+
+    def test_ca6_validade_lida_uma_vez_por_selecao(self):
+        for i in range(5):
+            self.item(preco_em=self.ha(i))
+        with mock.patch.object(D, 'validade_horas', wraps=D.validade_horas) as m:
+            self.assertEqual(len(self.ids()), 5)
+        self.assertEqual(m.call_count, 1)
+
+    def test_ca6_validade_lida_dentro_da_transacao_do_slot(self):
+        """O prazo e os itens são lidos no mesmo BEGIN IMMEDIATE que cria os envios (agendador x rota)."""
+        self.item(preco_em=self.ha(1))
+        dentro = []
+        original = D.validade_horas
+
+        def espiao(con):
+            dentro.append(con.in_transaction)
+            return original(con)
+        with mock.patch.object(D, 'validade_horas', espiao):
+            self.assertEqual(self.tick(self.AGORA)['criados'], 1)
+        self.assertEqual(dentro, [True])
+
+    def test_ca6_tick_nao_envia_preco_velho(self):
+        bons = [self.item(preco_em=self.ha(2)), self.item(preco_em=self.ha(23))]
+        self.item(preco_em=self.ha(25)), self.item(preco_em=None)
+        self.assertEqual(self.tick(self.AGORA, Gravador())['criados'], 2)
+        self.assertEqual(sorted(e['item_pk'] for e in self.envios()), sorted(bons))
+        self.assertEqual(self.aviso(), '', 'parte velha não gera aviso')
+
+    def test_ca6_disparar_agora_nao_envia_preco_velho(self):
+        self.item(preco_em=self.ha(25))
+        self.assertEqual(D.disparar_agora(self.con, self.r['id'], self.AGORA, D.TransporteManual(), AFILIADO), [])
+        self.assertEqual(self.envios(), [])
+        self.assertEqual(self.aviso(), self.TEXTO_24)
+
+    def test_ca7_aviso_quando_todos_que_casam_sao_velhos(self):
+        self.assertEqual(D.AVISO_PRECO_VELHO.format(h=24), self.TEXTO_24)
+        for _ in range(3):
+            self.item(preco_em=self.ha(30))
+        self.item(cat='Outra')   # recente, mas não casa com a regra
+        self.assertEqual(self.tick(self.AGORA)['criados'], 0)
+        self.assertEqual(self.envios(), [])
+        self.assertEqual(self.aviso(), self.TEXTO_24)
+
+    def test_ca7_aviso_traz_a_validade_em_vigor(self):
+        self.item(preco_em=self.ha(50))
+        self.validade('48')
+        self.tick(self.AGORA)
+        self.assertEqual(self.aviso(), self.TEXTO_24.replace('24 h', '48 h'))
+
+    def test_ca7_sem_itens_velhos_continua_o_aviso_de_filtros(self):
+        self.item(preco_em=self.ha(30), cat='Outra')   # velho, mas nem casa com os filtros
+        self.tick(self.AGORA)
+        self.assertEqual(self.aviso(), D.AVISO_FILTROS)
+
+    def test_ca7_recente_ja_enviado_e_resto_velho_e_repeticao(self):
+        """Decisão 6 do plano: com algum item que casa (casam > 0), o aviso não é o do preço velho."""
+        enviado = self.item(preco_em=self.ha(1))
+        self.item(preco_em=self.ha(30))
+        self.envio_antigo(self.r, enviado, 'enviado', SEGUNDA - timedelta(days=1))
+        self.tick(self.AGORA)
+        self.assertEqual(self.aviso(), D.AVISO_REPETICAO)
+
+    def test_ca7_aviso_some_quando_o_preco_e_atualizado(self):
+        pk = self.item(preco_em=self.ha(30))
+        self.tick(self.AGORA)
+        self.assertEqual(self.aviso(), self.TEXTO_24)
+        with self.con:   # o lote atualizou o preço (sem salvar a regra, que também limparia o aviso)
+            self.con.execute('UPDATE items SET preco_em=? WHERE id=?', (self.ha(-8), pk))
+        self.assertEqual(self.tick(SEGUNDA.replace(hour=18))['criados'], 1)
+        self.assertEqual(self.aviso(), '')
+
+    def test_ca7_previa_nao_mostra_velho_e_conta_preco_velho(self):
+        bom = self.item(preco_em=self.ha(1))
+        self.item(preco_em=self.ha(30)), self.item(preco_em=None)
+        self.item(preco_em=self.ha(30), cat='Outra')   # não casa: não entra na contagem
+        dados = self.dados_regra(self.r['numero_id'])
+        info = {}
+        p = D.previa(self.con, dados, 20, self.AGORA, AFILIADO, info=info)
+        self.assertEqual([x['item_pk'] for x in p], [bom])
+        self.assertEqual(info, {'recusados': 0, 'preco_velho': 2})
+        self.assertEqual([x['item_pk'] for x in D.previa(self.con, dados, 20, self.AGORA, AFILIADO)], [bom])
+
+    def test_ca7_previa_com_info_pela_rota(self):
+        self.item(preco_em=self.ha(1)), self.item(preco_em=self.ha(30))
+        corpo = {**self.dados_regra(self.r['numero_id']), 'n': 5}
+        rota = lambda c: D.rota(self.con, 'POST', D.PREFIXO + 'previa', {}, c, AFILIADO, D.TransporteManual(),
+                                agora=self.AGORA)
+        lista = rota(corpo)
+        self.assertIsInstance(lista, list)
+        self.assertEqual(len(lista), 1)
+        com = rota({**corpo, 'com_info': True})
+        self.assertEqual(com, {'itens': lista, 'recusados': 0, 'preco_velho': 1})
+        self.assertEqual(rota({**corpo, 'com_info': 1}), lista)
+        self.assertEqual(self.envios(), [], 'a prévia não grava')
 
 
 # ================================================================ etapa 1: validação e CRUD
@@ -1800,9 +2271,10 @@ class Rotas(Base):
         self.assertEqual(com['recusados'], 1)
         self.assertEqual(com['itens'], lista)
         self.assertEqual(self.rota('POST', 'previa', {**corpo, 'com_info': 1}, agora=SABADO), lista)
+        self.assertEqual(com['preco_velho'], 0)
         info = {}
         D.previa(self.con, self.dados_regra(n['id']), 5, SEGUNDA, AFILIADO, info=info)
-        self.assertEqual(info, {'recusados': 1})
+        self.assertEqual(info, {'recusados': 1, 'preco_velho': 0})
 
     def test_404_de_id_inexistente(self):
         for metodo, resto, corpo in (('PUT', 'numeros/5', {}), ('PUT', 'regras/5', {}), ('DELETE', 'regras/5', None),

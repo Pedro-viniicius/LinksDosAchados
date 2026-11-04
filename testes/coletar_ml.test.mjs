@@ -1667,3 +1667,448 @@ describe('afiliar(): integração com o servidor.py (CA14, CA16)', () => {
     assert.deepEqual(await pendentes(), ['MLB4100000002', 'MLB4100000003', 'MLB4200000002', 'MLB4200000003']);
   });
 });
+
+// ================================================================== atualizar() (plano atualizar-precos, etapa 5)
+// CA3: lote do ML no console, só sobre itens que já existem (so_existentes), sem o corte de 30 e com progresso por dia.
+// CA5: card usado, fora do piso ou sem preço não vai no lote; o resumo conta cada um e o ausente do servidor.
+
+const CHAVE_ATUALIZAR = '__atualizarML:http://localhost:8765';
+const HOJE = () => new Date(2026, 10, 4, 10, 30);          // 2026-11-04, hora local
+const AMANHA = () => new Date(2026, 10, 5, 23, 50);        // 2026-11-05 no fim do dia local (já é dia 6 em UTC no Brasil)
+
+/** Card sintético para o atualizar(); preco null tira o componente de preço, alt '' tira a avaliação. */
+function cardAtu(mlb, { titulo = `Produto ${mlb}`, preco = 100, alt = ALT_NO_PISO, meta = {} } = {}) {
+  const components = [{ type: 'title', title: { text: titulo } }];
+  if (preco !== null) components.push({ type: 'price', price: { current_price: { value: preco } } });
+  if (alt) components.push({ type: 'review_compacted', review_compacted: { alt_text: alt } });
+  return { id: 'POLYCARD', polycard: { metadata: { id: 'MLB' + mlb, ...meta }, components } };
+}
+function paginaAtu(cards) {
+  const literal = JSON.stringify(JSON.stringify({ results: cards })).replace(/'/g, "\\'").replace(/</g, '\\x3C');
+  return `<script>_n.ctx.s["x"].q(${literal});</script>`;
+}
+
+/**
+ * Servidor falso que já entende so_existentes: os MLB de `existentes` contam como atualizados, os outros como
+ * ausentes, e nada é inserido. `pedidos` guarda os corpos recebidos.
+ */
+function servidorAtu(existentes = null) {
+  const pedidos = [];
+  const servidor = async (url, init) => {
+    const corpo = JSON.parse(init.body);
+    pedidos.push(corpo);
+    const ids = corpo.items.map((i) => i.item_id);
+    const atualizado = existentes ? ids.filter((id) => existentes.includes(id)).length : ids.length;
+    return { status: 200, corpo: { inserido: 0, atualizado, ausente: ids.length - atualizado, total: 99 } };
+  };
+  return { servidor, pedidos, lotes: () => pedidos.filter((p) => p.items.length) };
+}
+
+describe('atualizar(): guarda de origem e opções (CA3)', () => {
+  for (const origem of [WWW, 'https://example.com', 'http://localhost:8765', null]) {
+    test(`em ${origem || 'página sem location'} mostra a mensagem e não faz fetch`, async () => {
+      const ff = fetchFalso();
+      const { ML, mensagens, localStorage } = carregar({ origem, fetch: ff.f });
+      const estado = await ML.atualizar({ cat: ABA_TV, fetch: ff.f, agora: HOJE });
+      assert.match(estado.erro, /^atualizar\(\) só roda numa aba de https:\/\/lista\.mercadolivre\.com\.br/);
+      assert.equal(ff.chamadas.length, 0);
+      assert.equal(localStorage.escritas, 0);
+      assert.ok(mensagens.some((m) => m.tipo === 'error' && m.texto.includes('lista.mercadolivre.com.br')));
+      assert.equal(estado.rodando, false);
+    });
+  }
+
+  const invalidas = [
+    ['sem cat nem termos', {}, /passe cat .* ou termos/],
+    ['cat que não é aba', { cat: 'Black Friday | Eletrônicos' }, /cat deve ser uma das abas/],
+    ['cat que não é texto', { cat: 7 }, /cat deve ser uma das abas/],
+    ['cat herdada do protótipo', { cat: 'constructor' }, /cat deve ser uma das abas/],
+    ['termo de outra aba', { cat: ABA_TV, termos: ['Smart TV', 'Body splash'] }, /não são da aba "TV, Alexa e Casa Conectada": \["Body splash"\]/],
+    ['termo fora de buscas.json', { termos: ['Black Friday'] }, /termos fora de buscas\.json/],
+    ['termos vazio', { termos: [] }, /termos deve ser/],
+    ['termos texto', { termos: 'Smart TV' }, /termos deve ser/],
+    ['porBusca (atualizar lê a página inteira)', { cat: ABA_TV, porBusca: 30 }, /não use porBusca/],
+    ['ordem inválida', { cat: ABA_TV, ordem: 'vendidos' }, /ordem deve ser/],
+    ['ordem herdada do protótipo', { cat: ABA_TV, ordem: 'constructor' }, /ordem deve ser/],
+    ['servidor de fora', { cat: ABA_TV, servidor: 'https://evil.example' }, /servidor deve ser/],
+    ['enviar como texto', { cat: ABA_TV, enviar: 'false' }, /enviar deve ser/],
+    ['agora que não é função', { cat: ABA_TV, agora: '2026-11-04' }, /agora deve ser uma função/],
+    ['agora que devolve data inválida', { cat: ABA_TV, agora: () => new Date('x') }, /data válida/],
+    ['agora que devolve texto', { cat: ABA_TV, agora: () => '2026-11-04' }, /data válida/],
+    ['agora que lança', { cat: ABA_TV, agora: () => { throw new Error('x'); } }, /data válida/],
+  ];
+  for (const [nome, opcoes, erro] of invalidas) {
+    test(`recusa ${nome} sem fazer fetch`, async () => {
+      const ff = fetchFalso();
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.atualizar({ agora: HOJE, ...opcoes });
+      assert.match(estado.erro, erro);
+      assert.match(estado.erro, /Nada foi feito/);
+      assert.equal(ff.chamadas.length, 0);
+      assert.equal(localStorage.escritas, 0);
+      assert.equal(estado.rodando, false);
+    });
+  }
+
+  test('com cat e sem termos lê todos os termos da aba, mais o do ALIAS que aponta para ela', async () => {
+    const ff = fetchFalso();
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ cat: ABA_TV, enviar: false, pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    const esperados = [...BUSCAS_JSON[ABA_TV], 'Caixa inteligente assistente virtual'];
+    assert.deepEqual(js(estado.feitos), esperados);
+    assert.deepEqual(ff.doML().map((c) => c.url), esperados.map((t) => '/' + js(ML.slug(t))));
+    assert.equal(estado.cat, ABA_TV);
+  });
+
+  test('cat com espaço em volta vale; termos sem cat podem misturar abas', async () => {
+    const ff = fetchFalso();
+    const { ML } = carregar({ fetch: ff.f });
+    let estado = await ML.atualizar({ cat: ` ${ABA_TV} `, termos: ['Smart TV'], enviar: false });
+    assert.equal(estado.erro, null);
+    assert.equal(estado.cat, ABA_TV);
+    estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], enviar: false, pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.equal(estado.cat, null);
+    assert.deepEqual(js(estado.feitos), ['Smart TV', 'Body splash']);
+  });
+});
+
+describe('atualizar(): envio só de itens existentes (CA3, CA5)', () => {
+  test('contrato: confere o servidor com lote vazio e manda cada termo com so_existentes:true', async () => {
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.feitos), ['Smart TV', 'Body splash']);
+
+    const posts = ff.doServidor();
+    assert.equal(posts.length, 3);
+    // o primeiro pedido ao servidor vem antes de qualquer busca no ML
+    assert.equal(ff.chamadas[0].url, `${SERVIDOR}/api/items`);
+    assert.deepEqual(JSON.parse(posts[0].init.body), { items: [], so_existentes: true });
+    const esperado = [['Smart TV', ABA_TV], ['Body splash', 'Perfumes e Perfumaria']];
+    posts.forEach((c, i) => {
+      assert.equal(c.url, `${SERVIDOR}/api/items`);
+      assert.equal(c.init.method, 'POST');
+      assert.equal(c.init.credentials, 'omit');
+      assert.equal(c.init.referrerPolicy, 'no-referrer');
+      assert.deepEqual(js(c.init.headers), { 'Content-Type': 'application/json' });
+      const corpo = JSON.parse(c.init.body);
+      assert.deepEqual(Object.keys(corpo), ['items', 'so_existentes']);
+      assert.equal(corpo.so_existentes, true);
+      if (!i) return;
+      assert.equal(corpo.items.length, 3);
+      for (const it of corpo.items) {
+        assert.deepEqual(Object.keys(it), ['loja', 'item_id', 'cat', 'busca', 'url', 'data']);
+        assert.equal(it.loja, 'ml');
+        assert.equal(it.busca, esperado[i - 1][0]);
+        assert.equal(it.cat, esperado[i - 1][1]);
+        assert.match(it.url, /^https:\/\/produto\.mercadolivre\.com\.br\/MLB-\d+$/);
+        assert.deepEqual(Object.keys(it.data), CAMPOS);
+        assert.ok(Object.values(it.data).every((v) => typeof v === 'string'));
+      }
+    });
+    assert.deepEqual(JSON.parse(posts[1].init.body).items, [ITEM_TV, ITEM_BOX, ITEM_SUPORTE]);
+    assert.equal(estado.atualizado, 6);
+    assert.equal(estado.ausente, 0);
+    for (const c of ff.doML()) assert.equal(c.init.credentials, 'include');
+  });
+
+  test('sem o corte de 30: a página inteira vai num lote só', async () => {
+    const cards = Array.from({ length: 47 }, (_, i) => cardAtu(8000000001 + i));
+    const sa = servidorAtu();
+    const ff = fetchFalso({ pagina: () => paginaAtu(cards), servidor: sa.servidor });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.equal(sa.lotes().length, 1);
+    assert.equal(sa.lotes()[0].items.length, 47);
+    assert.equal(estado.lidos, 47);
+    assert.equal(estado.atualizado, 47);
+    assert.equal(estado.itens.length, 47);
+  });
+
+  test('usado, fora do piso e sem preço ficam fora do lote e entram no resumo; ausente vem do servidor', async () => {
+    const cards = [
+      cardAtu(8100000001, { preco: 2569 }),                                       // ok, existe
+      cardAtu(8100000002, { alt: 'Classificação 4.4 de 5 estrelas. Mais de 1000 produtos vendidos.' }), // fora do piso
+      cardAtu(8100000003, { titulo: 'Smart TV 50 Usada' }),                      // usado (título)
+      cardAtu(8100000004, { meta: { condition: 'used' } }),                       // usado (condição)
+      cardAtu(8100000005, { preco: null }),                                       // sem preço
+      cardAtu(8100000006, { preco: 0 }),                                          // preço zero
+      cardAtu(8100000007, { preco: 0.004 }),                                      // arredonda para R$ 0
+      cardAtu(8100000008, { preco: 124.2 }),                                      // ok, não está no banco
+      cardAtu(8100000001, { preco: 1 }),                                          // repetido: não conta de novo
+    ];
+    const sa = servidorAtu(['MLB8100000001']);
+    const ff = fetchFalso({ pagina: () => paginaAtu(cards), servidor: sa.servidor });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.equal(estado.erro, null);
+    const lote = sa.lotes()[0].items;
+    assert.deepEqual(lote.map((i) => i.item_id), ['MLB8100000001', 'MLB8100000008']);
+    assert.deepEqual(lote.map((i) => i.data.preco), ['R$ 2.569', 'R$ 124,20']);
+    assert.deepEqual({ lidos: estado.lidos, foraDoPiso: estado.foraDoPiso, usados: estado.usados, semPreco: estado.semPreco,
+      atualizado: estado.atualizado, ausente: estado.ausente }, { lidos: 8, foraDoPiso: 3, usados: 2, semPreco: 3, atualizado: 1, ausente: 1 });
+    assert.deepEqual(js(estado.itens).map((i) => i.item_id), ['MLB8100000001', 'MLB8100000008']);
+    const linhas = mensagens.map((m) => m.texto);
+    assert.ok(linhas.some((l) => l.includes('8 lidos, 2 no lote (atualizado 1, ausente 1), 3 fora do piso (2 usados), 3 sem preço')),
+      linhas.join('\n'));
+    assert.ok(linhas.some((l) => l.includes('fim da atualização de 2026-11-04') && l.includes('3 sem preço') &&
+      l.includes('atualizado 1, ausente 1')), linhas.join('\n'));
+  });
+
+  test('termo sem nenhum card que sirva não manda POST, mas conta como lido hoje', async () => {
+    const ruins = [cardAtu(8200000001, { preco: null }), cardAtu(8200000002, { titulo: 'Tablet Usado' })];
+    const sa = servidorAtu();
+    const ff = fetchFalso({ pagina: (url) => (url === '/smart-tv' ? paginaAtu(ruins) : FIXTURE), servidor: sa.servidor });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(sa.lotes().map((p) => p.items[0].busca), ['Body splash']);
+    assert.deepEqual(js(estado.feitos), ['Smart TV', 'Body splash']);
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV', '2026-11-04|relevancia|Body splash']);
+    assert.equal(estado.semPreco, 1);
+    assert.equal(estado.usados, 1);
+  });
+
+  test('servidor antigo (sem so_existentes) é recusado antes de qualquer busca ou item enviado', async () => {
+    // o servidor.py de antes da etapa 1 ignora so_existentes e responde sem "ausente"
+    const antigo = async (url, init) => ({ status: 200,
+      corpo: { inserido: JSON.parse(init.body).items.length, atualizado: 0, total: 9 } });
+    const ff = fetchFalso({ servidor: antigo });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.match(estado.erro, /não conhece so_existentes/);
+    assert.match(estado.erro, /Nada foi enviado/);
+    assert.equal(ff.doML().length, 0);
+    assert.equal(ff.doServidor().length, 1);
+    assert.deepEqual(JSON.parse(ff.doServidor()[0].init.body).items, []);
+    assert.equal(localStorage.escritas, 0);
+    assert.equal(estado.rodando, false);
+  });
+
+  const respostasRuins = [
+    ['que inseriu itens', { status: 200, corpo: { inserido: 1, atualizado: 2, ausente: 0, total: 9 } }, /resposta inesperada/],
+    ['sem ausente', { status: 200, corpo: { inserido: 0, atualizado: 3, total: 9 } }, /resposta inesperada/],
+    ['com ausente em texto', { status: 200, corpo: { inserido: 0, atualizado: 3, ausente: '0', total: 9 } }, /resposta inesperada/],
+    ['que recusa', { status: 400, corpo: { error: 'so_existentes deve ser true ou false' } }, /recusou "Smart TV" com 400: so_existentes/],
+    ['fora do ar', null, /não consegui falar com o servidor/],
+  ];
+  for (const [nome, resp, erro] of respostasRuins) {
+    test(`servidor ${nome} no lote para a atualização e não marca o termo`, async () => {
+      const servidor = async (url, init) => {
+        if (!JSON.parse(init.body).items.length) return { status: 200, corpo: { inserido: 0, atualizado: 0, ausente: 0, total: 9 } };
+        if (!resp) throw new TypeError('Failed to fetch');
+        return resp;
+      };
+      const ff = fetchFalso({ servidor });
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+      assert.match(estado.erro, erro);
+      assert.deepEqual(js(estado.feitos), []);
+      assert.equal(ff.doML().length, 1);
+      assert.equal(localStorage.lista(CHAVE_ATUALIZAR), null);
+    });
+  }
+
+  test('teste do servidor recusado ou fora do ar para sem buscar nada no ML', async () => {
+    for (const servidor of [async () => ({ status: 403, corpo: { error: 'origem não permitida' } }),
+      async () => { throw new TypeError('Failed to fetch'); }]) {
+      const ff = fetchFalso({ servidor });
+      const { ML } = carregar({ fetch: ff.f });
+      const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+      assert.match(estado.erro, /recusou o teste do so_existentes com 403: origem não permitida|não consegui falar com o servidor/);
+      assert.equal(ff.doML().length, 0);
+    }
+  });
+
+  test('captcha, página sem polycard e erro do ML param sem enviar nada do termo', async () => {
+    const casos = [
+      [{ urlFinal: 'https://www.mercadolivre.com.br/gz/account-verification' }, /captcha/],
+      [{ pagina: () => '<html>nada</html>' }, /sem polycard.*A atualização parou/],
+      [{ statusML: 503 }, /respondeu 503/],
+    ];
+    for (const [opcoes, erro] of casos) {
+      const sa = servidorAtu();
+      const ff = fetchFalso({ ...opcoes, servidor: sa.servidor });
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+      assert.match(estado.erro, erro);
+      assert.equal(sa.lotes().length, 0);
+      assert.equal(localStorage.lista(CHAVE_ATUALIZAR), null);
+    }
+  });
+
+  test('com enviar:false não fala com o servidor, nem para o teste, e não mexe no progresso', async () => {
+    const ff = fetchFalso();
+    const { ML, localStorage, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], enviar: false, agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.equal(ff.doServidor().length, 0);
+    assert.equal(localStorage.escritas, 0);
+    assert.deepEqual(js(estado.itens), [ITEM_TV, ITEM_BOX, ITEM_SUPORTE]);
+    assert.ok(mensagens.some((m) => m.texto.includes('Nada foi enviado')));
+  });
+});
+
+describe('atualizar(): progresso por dia, ordem e concorrência (CA3)', () => {
+  test('chave própria por servidor e por dia; no mesmo dia pula, no dia seguinte lê de novo e esquece o dia velho', async () => {
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    let estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV']);
+    assert.equal(localStorage.lista('__coletaML:http://localhost:8765'), null, 'o progresso da coleta não muda');
+
+    const n = ff.doML().length;
+    estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.deepEqual(js(estado.pulados), ['Smart TV']);
+    assert.deepEqual(js(estado.feitos), ['Body splash']);
+    assert.equal(ff.doML().length, n + 1);
+
+    estado = await ML.atualizar({ termos: ['Smart TV'], agora: AMANHA });
+    assert.equal(estado.dia, '2026-11-05');
+    assert.deepEqual(js(estado.pulados), []);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-05|relevancia|Smart TV']);
+
+    await ML.atualizar({ termos: ['Smart TV'], servidor: 'http://127.0.0.1:8766', agora: AMANHA });
+    assert.deepEqual(localStorage.lista('__atualizarML:http://127.0.0.1:8766'), ['2026-11-05|relevancia|Smart TV']);
+
+    assert.equal(ML.zerar('http://localhost:8765', localStorage), true);
+    assert.equal(localStorage.lista(CHAVE_ATUALIZAR), null);
+    assert.deepEqual(localStorage.lista('__atualizarML:http://127.0.0.1:8766'), ['2026-11-05|relevancia|Smart TV']);
+  });
+
+  test('o progresso da coleta não faz o atualizar() pular termo, e o do atualizar não faz a coleta pular', async () => {
+    const arm = memoria({ '__coletaML:http://localhost:8765': JSON.stringify(['Smart TV', 'caros|Smart TV']) });
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor });
+    const { ML } = carregar({ fetch: ff.f, localStorage: arm });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.deepEqual(js(estado.pulados), []);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    const coleta = await ML.coletar({ termos: ['Body splash'] });
+    assert.equal(coleta.erro, null);
+    assert.deepEqual(arm.lista('__coletaML:http://localhost:8765'), ['Smart TV', 'caros|Smart TV', 'Body splash']);
+    assert.deepEqual(arm.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV']);
+  });
+
+  test("ordem 'caros' busca a listagem ordenada e tem progresso separado da relevância", async () => {
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], ordem: 'caros', agora: HOJE });
+    assert.equal(estado.ordem, 'caros');
+    assert.deepEqual(js(estado.pulados), []);
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/smart-tv', '/smart-tv_OrderId_PRICE*DESC']);
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV', '2026-11-04|caros|Smart TV']);
+  });
+
+  test('progresso ilegível ou com lixo é tolerado; entradas de outros dias são descartadas', async () => {
+    for (const lixo of ['{lixo', JSON.stringify({ a: 1 }), JSON.stringify(['2026-11-04|relevancia|Smart TV', 7, null, '2026-11-03|relevancia|Body splash'])]) {
+      const arm = memoria({ [CHAVE_ATUALIZAR]: lixo });
+      const ff = fetchFalso({ servidor: servidorAtu().servidor });
+      const estado = await carregar({ fetch: ff.f, localStorage: arm }).ML
+        .atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+      assert.equal(estado.erro, null);
+      const pulouTv = lixo.startsWith('[');
+      assert.deepEqual(js(estado.pulados), pulouTv ? ['Smart TV'] : []);
+      // a entrada de 03/11 e o lixo somem; a de hoje fica
+      assert.deepEqual(arm.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV', '2026-11-04|relevancia|Body splash']);
+    }
+  });
+
+  test('parar() durante a busca termina o termo atual e não começa o próximo', async () => {
+    let ML;
+    const ff = fetchFalso({ aoBuscar: () => ML.parar(), servidor: servidorAtu().servidor });
+    ({ ML } = carregar({ fetch: ff.f }));
+    const t0 = Date.now();
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [10000, 10000], agora: HOJE });
+    assert.ok(Date.now() - t0 < 2000, 'esperou a pausa mesmo com parar() pedido');
+    assert.equal(estado.parado, true);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    assert.equal(ff.doML().length, 1);
+    assert.equal(ML.estado.rodando, false);
+  });
+
+  test('atualizar() e coletar() não rodam ao mesmo tempo', async () => {
+    let soltar;
+    const trava = new Promise((r) => { soltar = r; });
+    const ff = fetchFalso({ aoBuscar: () => trava, servidor: servidorAtu().servidor });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const primeira = ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    await new Promise((r) => setTimeout(r, 10));
+    const coleta = await ML.coletar({ termos: ['Body splash'] });
+    const outra = await ML.atualizar({ termos: ['Body splash'], agora: HOJE });
+    assert.equal(coleta.rodando, true);
+    assert.equal(outra, coleta);
+    assert.equal(mensagens.filter((m) => m.tipo === 'error' && m.texto.includes('já há uma coleta rodando')).length, 2);
+    soltar();
+    const estado = await primeira;
+    assert.equal(estado.erro, null);
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/smart-tv']);
+  });
+});
+
+describe('atualizar(): integração com o servidor.py (CA3, CA5)', () => {
+  const srv = usarServidor();
+
+  test('só atualiza quem existe: não insere, preserva o meli.la, renova o preco_em e não apaga o preço de card sem preço', async () => {
+    const { porta, servidor } = srv;
+    const lista = fetchNode(porta, LISTA);
+    const json = { 'Content-Type': 'application/json' };
+    // semeia com a própria coleta: os 3 itens da TV da fixture
+    const semear = async (url, init = {}) => (String(url).startsWith('/')
+      ? resposta(200, FIXTURE, LISTA + url) : lista(url, init));
+    const coleta = await carregar({ fetch: semear }).ML.coletar({ servidor, termos: ['Smart TV'] });
+    assert.equal(coleta.inserido, 3);
+    const lerItens = async () => new Map((await (await lista(`${servidor}/api/items`)).json()).map((i) => [i.item_id, i]));
+    let porMLB = await lerItens();
+    const tv = porMLB.get('MLB4100000001');
+    let r = await lista(`${servidor}/api/items/${tv.id}`,
+      { method: 'PATCH', headers: json, body: JSON.stringify({ url: 'https://meli.la/1AbC234' }) });
+    assert.equal(r.status, 200);
+    const boxAntes = porMLB.get('MLB4100000002');
+    assert.ok(boxAntes.preco_em);
+    await new Promise((res) => setTimeout(res, 1100));   // o agora() do servidor tem resolução de segundo
+
+    // a página nova: TV com preço novo, TV Box sem preço, suporte usado e um produto que não está no banco
+    const cards = [
+      cardAtu(4100000001, { titulo: 'Smart TV Samsung 50" Crystal UHD 4K', preco: 2199 }),
+      cardAtu(4100000002, { titulo: 'TV Box 4K', preco: null }),
+      cardAtu(4100000003, { titulo: 'Suporte de parede para TV usado' }),
+      cardAtu(4100000099, { titulo: 'TV nova que nunca foi coletada', preco: 999 }),
+    ];
+    const chamadas = [];
+    const f = async (url, init = {}) => {
+      chamadas.push({ url: String(url), init });
+      return String(url).startsWith('/') ? resposta(200, paginaAtu(cards), LISTA + url) : lista(url, init);
+    };
+    const estado = await carregar({ fetch: f }).ML.atualizar({ servidor, cat: ABA_TV, termos: ['Smart TV'], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual({ atualizado: estado.atualizado, ausente: estado.ausente, semPreco: estado.semPreco, usados: estado.usados },
+      { atualizado: 1, ausente: 1, semPreco: 1, usados: 1 });
+
+    porMLB = await lerItens();
+    assert.equal(porMLB.size, 3, 'o produto novo não pode ser inserido');
+    assert.ok(!porMLB.has('MLB4100000099'));
+    const tvDepois = porMLB.get('MLB4100000001');
+    assert.equal(tvDepois.url, 'https://meli.la/1AbC234');
+    assert.equal(tvDepois.data.preco, 'R$ 2.199');
+    assert.ok(tvDepois.preco_em > tv.preco_em, `${tvDepois.preco_em} devia ser mais novo que ${tv.preco_em}`);
+    assert.equal(tvDepois.cat, ABA_TV);
+    // card sem preço e card usado ficaram fora do lote: dados e preco_em antigos
+    assert.deepEqual(porMLB.get('MLB4100000002').data, boxAntes.data);
+    assert.equal(porMLB.get('MLB4100000002').preco_em, boxAntes.preco_em);
+    assert.equal(porMLB.get('MLB4100000003').data.titulo, ITEM_SUPORTE.data.titulo);
+
+    const posts = chamadas.filter((c) => !c.url.startsWith('/'));
+    assert.deepEqual(posts.map((c) => JSON.parse(c.init.body).items.map((i) => i.item_id)),
+      [[], ['MLB4100000001', 'MLB4100000099']]);
+  });
+});

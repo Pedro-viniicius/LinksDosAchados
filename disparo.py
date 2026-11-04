@@ -26,7 +26,7 @@ import genero
 
 log = logging.getLogger('disparo')
 
-VERSAO_ESQUEMA = 2
+VERSAO_ESQUEMA = 3
 ESQUEMA_V1 = (
     '''CREATE TABLE IF NOT EXISTS numeros (id INTEGER PRIMARY KEY AUTOINCREMENT,
       nome TEXT NOT NULL, telefone TEXT NOT NULL DEFAULT '', grupo_nome TEXT NOT NULL,
@@ -55,6 +55,15 @@ ESQUEMA_V2 = (
       genero TEXT NOT NULL CHECK (genero IN ('feminino','masculino','unissex','sem')),
       atualizado_em TEXT NOT NULL)''',
     "ALTER TABLE regras ADD COLUMN generos TEXT NOT NULL DEFAULT '[]'",
+)
+# v3 (docs/produto/planos/atualizar-precos.md, CA1): items.preco_em, o momento em que o preço do item foi
+# confirmado pela última vez. Só roda se a tabela items existe e ainda não tem a coluna (o criar_banco de
+# agora já cria items com ela). O preenchimento usa criado_em, um limite inferior seguro, e não toca
+# atualizado_em nem url. Só aditiva: o código da v2 ignora a coluna (o INSERT dele grava NULL, item "velho").
+ESQUEMA_V3 = (
+    'ALTER TABLE items ADD COLUMN preco_em TEXT',
+    "UPDATE items SET preco_em = criado_em WHERE tem_dados = 1 AND preco != '' "
+    "AND criado_em GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'",
 )
 
 ORDENS = ('relevancia', 'desconto', 'menor_preco', 'maior_preco', 'cupom', 'recentes', 'aleatoria')
@@ -105,10 +114,11 @@ def _agora_iso(agora=None):
 
 # ---------------------------------------------------------------- esquema (etapa 1)
 def migrar(con):
-    """Leva o banco até PRAGMA user_version 2. Aditiva e idempotente.
+    """Leva o banco até PRAGMA user_version 3. Aditiva e idempotente.
 
-    v1: numeros, regras e envios. v2: generos_manuais e regras.generos. Um banco em v0 passa pelas
-    duas numa transação só; banco já em v2 ou mais (versão futura) não é tocado.
+    v1: numeros, regras e envios. v2: generos_manuais e regras.generos. v3: items.preco_em (só se
+    items existe sem a coluna). Um banco em v0 passa pelas três numa transação só; banco já em v3 ou
+    mais (versão futura) não é tocado.
     Faz commit do que a conexão tiver pendente (como o executescript). Devolve True se migrou.
     O BEGIN IMMEDIATE e a releitura da versão impedem dois processos de migrar ao mesmo tempo.
     """
@@ -122,17 +132,27 @@ def migrar(con):
         if versao >= VERSAO_ESQUEMA:
             con.rollback()
             return False
-        # Os passos leem ESQUEMA_V1/ESQUEMA_V2 na hora da chamada (os testes trocam um deles).
-        for de, passos in ((1, ESQUEMA_V1), (2, ESQUEMA_V2)):
-            if versao < de:
-                for sql in passos:
-                    con.execute(sql)
+        # Os passos leem ESQUEMA_V1/V2/V3 na hora da chamada (os testes trocam um deles).
+        for de, passos in ((1, ESQUEMA_V1), (2, ESQUEMA_V2), (3, ESQUEMA_V3)):
+            if versao >= de or de == 3 and not _items_sem_preco_em(con):
+                continue
+            for sql in passos:
+                con.execute(sql)
         con.execute(f'PRAGMA user_version = {VERSAO_ESQUEMA}')
         con.commit()
     except BaseException:
         con.rollback()
         raise
     return True
+
+
+def _items_sem_preco_em(con):
+    """True se a tabela items existe e ainda não tem a coluna preco_em (o passo v3 tem o que fazer).
+
+    Banco sem items (só o disparo, nos testes) ou já criado pelo criar_banco de agora: nada a fazer.
+    """
+    colunas = [r[1] for r in con.execute('PRAGMA table_info(items)')]
+    return bool(colunas) and 'preco_em' not in colunas
 
 
 # ---------------------------------------------------------------- validação (etapa 1)
@@ -718,6 +738,64 @@ def nota(texto):
     return float(m.group(0).replace(',', '.')) if m else 0.0
 
 
+# ---------------------------------------------------------------- idade do preço (atualizar-precos, etapa 1)
+# Validade do preço, em horas (CA6 de docs/produto/planos/atualizar-precos.md): config.preco_validade_horas.
+VALIDADE_PADRAO_HORAS = 24
+VALIDADE_MIN_HORAS, VALIDADE_MAX_HORAS = 1, 168
+# Formato que o servidor grava em items.preco_em (agora() com timespec='seconds'), sem fuso. A regra é
+# a mesma do front (precoVelho no index.html): hora de 00 a 23, minuto e segundo de 00 a 59, data real.
+# O regex barra a hora 24, que o datetime.fromisoformat do Python 3.14 aceita (meia-noite do dia seguinte).
+_RX_PRECO_EM = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]')
+# preco_em mais à frente do agora do que esta folga conta como velho: sem ela, um valor no futuro
+# (relógio adiantado, gravação errada) valeria como fresco para sempre.
+FOLGA_FUTURO_PRECO = timedelta(minutes=5)
+
+
+def ler_preco_em(preco_em):
+    """datetime de um preco_em no formato estrito AAAA-MM-DDTHH:MM:SS, ou None.
+
+    None para valor nulo, de outro tipo, fora do formato (fuso, frações, hora 24, 99:99:99) ou com
+    data impossível (2026-02-30). Quem recebe None trata o preço como velho.
+    """
+    if not isinstance(preco_em, str) or not _RX_PRECO_EM.fullmatch(preco_em):
+        return None
+    try:
+        return datetime.fromisoformat(preco_em)
+    except ValueError:   # 2026-02-30, ano 0000
+        return None
+
+
+def preco_recente(preco_em, agora, horas):
+    """True se o preço foi confirmado há no máximo `horas` horas (preco_em >= agora - horas).
+
+    `agora` é um datetime local sem fuso, como o agora() do servidor. preco_em que o ler_preco_em
+    recusa ou mais de FOLGA_FUTURO_PRECO à frente do agora dá False: na dúvida, o preço é velho.
+    """
+    quando = ler_preco_em(preco_em)
+    if quando is None or quando > agora + FOLGA_FUTURO_PRECO:
+        return False
+    return quando >= agora - timedelta(hours=horas)
+
+
+def validade_horas(con):
+    """config.preco_validade_horas como int de VALIDADE_MIN_HORAS a VALIDADE_MAX_HORAS.
+
+    O PUT /api/config grava qualquer JSON: valor ausente, malformado, que não seja inteiro (bool,
+    float e texto não valem) ou fora da faixa dá VALIDADE_PADRAO_HORAS.
+    """
+    try:
+        r = con.execute("SELECT valor FROM config WHERE chave='preco_validade_horas'").fetchone()
+    except sqlite3.OperationalError:   # banco sem a tabela config
+        return VALIDADE_PADRAO_HORAS
+    try:
+        v = json.loads(r[0]) if r and isinstance(r[0], str) else None
+    except (ValueError, RecursionError):   # inclui inteiro com dígitos demais
+        return VALIDADE_PADRAO_HORAS
+    if isinstance(v, bool) or not isinstance(v, int) or not VALIDADE_MIN_HORAS <= v <= VALIDADE_MAX_HORAS:
+        return VALIDADE_PADRAO_HORAS
+    return v
+
+
 def _item(r):
     """Linha de items no formato do /api/items, mais posicao e criado_em para a ordenação."""
     return {'id': r['id'], 'loja': r['loja'], 'item_id': r['item_id'], 'cat': r['cat'], 'busca': r['busca'],
@@ -745,11 +823,17 @@ def elegiveis(con, regra, agora, eh_afiliado, info=None):
     Com `info` (dict), conta em info['casam'] os itens que passam nos filtros antes da regra de
     repetição: separa "nada casa com os filtros" de "tudo já foi enviado no prazo".
 
+    Item que passa nos filtros mas tem preço velho (preco_em nulo, malformado ou mais antigo que
+    config.preco_validade_horas, CA6 de docs/produto/planos/atualizar-precos.md) fica de fora e é
+    contado em info['velhos'], não em info['casam']. info['validade_horas'] traz o prazo usado.
+
     O público (`generos`, vazio = todos) só filtra itens das abas de genero.ABAS_COM_GENERO; os das
     outras categorias marcadas passam inteiros. As correções manuais são lidas uma vez por chamada.
     """
     info = {} if info is None else info
-    info['casam'] = 0
+    info['casam'] = info['velhos'] = 0
+    # lido aqui, dentro da transação de quem chama (o processar_slot está em BEGIN IMMEDIATE)
+    horas = info['validade_horas'] = validade_horas(con)
     cats, lojas = regra['cats'], regra['lojas']
     if not cats or not lojas:
         return []
@@ -773,6 +857,9 @@ def elegiveis(con, regra, agora, eh_afiliado, info=None):
                 continue
         if generos and r['cat'] in genero.ABAS_COM_GENERO \
                 and genero.do_item(r['id'], r['cat'], r['busca'], r['titulo'], manuais)[0] not in generos:
+            continue
+        if not preco_recente(r['preco_em'], agora, horas):   # depois dos filtros, fora do casam
+            info['velhos'] += 1
             continue
         info['casam'] += 1
         if r['id'] in fora:
@@ -810,7 +897,8 @@ def _escolher(con, regra, texto_tpl, agora, eh_afiliado, quantos, rng=None):
     """Os `quantos` primeiros itens elegíveis cuja mensagem só tem o link de afiliado do item.
 
     Devolve (escolhidos, info). info['recusados'] conta as mensagens descartadas pela conferência
-    de links ou pelo tamanho; info['casam'] e info['elegiveis'] vêm da seleção (para o aviso).
+    de links ou pelo tamanho; info['casam'], info['velhos'], info['validade_horas'] e
+    info['elegiveis'] vêm da seleção (para o aviso).
     """
     saida, recusados, info = [], 0, {}
     lista = elegiveis(con, regra, agora, eh_afiliado, info)
@@ -835,7 +923,8 @@ def _escolher(con, regra, texto_tpl, agora, eh_afiliado, quantos, rng=None):
 def previa(con, regra, n, agora, eh_afiliado, rng=None, info=None):
     """Próximos itens de uma regra ainda não salva, sem gravar nada (CA10).
 
-    Com `info` (dict), devolve nele 'recusados': mensagens descartadas pela conferência de links.
+    Com `info` (dict), devolve nele 'recusados' (mensagens descartadas pela conferência de links)
+    e 'preco_velho' (itens que casam com os filtros, mas ficaram de fora por preço velho).
     """
     if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_PREVIA:
         raise _invalido(f'n deve ser um número inteiro de 1 a {MAX_PREVIA}')
@@ -844,6 +933,7 @@ def previa(con, regra, n, agora, eh_afiliado, rng=None, info=None):
     escolhidos, dados = _escolher(con, v, texto_tpl, agora, eh_afiliado, n, rng)
     if info is not None:
         info['recusados'] = dados['recusados']
+        info['preco_velho'] = dados['velhos']
     return [{'item_pk': it['id'], 'loja': it['loja'], 'titulo': it['data']['titulo'], 'mensagem': msg, 'imagem': img}
             for it, msg, img in escolhidos]
 
@@ -988,6 +1078,9 @@ AVISO_FILTROS = 'Nenhum item casa com os filtros desta regra (categorias, loja, 
 AVISO_REPETICAO = 'Todos os itens elegíveis já foram enviados no prazo de repetição.'
 AVISO_LINK = ('Nenhuma mensagem saiu: o template ou os títulos têm link que não é o de afiliado do item. '
               'Confira o template.')
+# {h} é a validade em vigor (config.preco_validade_horas); texto da spec docs/produto/specs/atualizar-precos.md
+AVISO_PRECO_VELHO = ('Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de {h} h. '
+                     'Atualize os preços.')
 # Mensagens recusadas pela conferência de links no último processamento de cada regra (regra_id → n).
 # Só em memória, neste processo (agendador e rotas): é uma dica para a tela; zera ao reiniciar.
 RECUSADOS = {}
@@ -997,12 +1090,23 @@ def _avisar(con, regra_id, aviso):
     con.execute('UPDATE regras SET aviso=? WHERE id=? AND aviso!=?', (aviso, regra_id, aviso))
 
 
+def _aviso_sem_mensagem(info):
+    """Por que um horário com vagas ficou sem mensagem, a partir do info do _escolher.
+
+    Nada casa: preço velho se algum item só ficou de fora por isso (CA7), senão os filtros.
+    """
+    if not info['casam']:
+        return AVISO_PRECO_VELHO.format(h=info['validade_horas']) if info['velhos'] else AVISO_FILTROS
+    return AVISO_REPETICAO if not info['elegiveis'] else AVISO_LINK
+
+
 def processar_slot(con, regra, slot, agora, transporte, eh_afiliado, rng=None, so_ativa=False):
     """Cria os envios de um horário da regra e os entrega ao transporte. Devolve a lista de envios.
 
     Serializado pelo _LOCK e feito em BEGIN IMMEDIATE: a thread do agendador e a rota "agora"
     (e outro processo) não criam envio duplicado. Slot que já tem envio não é reprocessado (CA7).
-    Respeita por_disparo, max_por_dia e limite_diario (CA6), repetição (CA5) e afiliado (CA4).
+    Respeita por_disparo, max_por_dia e limite_diario (CA6), repetição (CA5), afiliado (CA4) e a
+    validade do preço (CA6 de docs/produto/planos/atualizar-precos.md).
     `so_ativa` (o tick usa) ignora a regra pausada entre a listagem e o processamento.
     """
     regra_id = regra['id']
@@ -1039,8 +1143,7 @@ def processar_slot(con, regra, slot, agora, transporte, eh_afiliado, rng=None, s
                     log.info('disparo: %d mensagem(ns) recusada(s) por link fora do afiliado do item',
                              info['recusados'])
                 if not escolhidos:
-                    _avisar(con, regra_id, AVISO_FILTROS if not info['casam'] else
-                            AVISO_REPETICAO if not info['elegiveis'] else AVISO_LINK)
+                    _avisar(con, regra_id, _aviso_sem_mensagem(info))
             status = 'enviando' if transporte.automatico else 'pendente'
             for it, msg, img in escolhidos:
                 cur = con.execute(
@@ -1266,8 +1369,10 @@ def rota(con, metodo, caminho, query, corpo, eh_afiliado, transporte, agendador=
             raise _invalido('envie um objeto JSON')
         info = {}
         itens = previa(con, corpo, corpo.get('n', PREVIA_PADRAO), agora, eh_afiliado, rng, info)
-        # a tela atual lê uma lista; com "com_info": true, vem também a contagem de recusados
-        return {'itens': itens, 'recusados': info['recusados']} if corpo.get('com_info') is True else itens
+        # a tela atual lê uma lista; com "com_info": true, vêm também as contagens de recusados e de preço velho
+        if corpo.get('com_info') is True:
+            return {'itens': itens, 'recusados': info['recusados'], 'preco_velho': info['preco_velho']}
+        return itens
     if resto == 'fila':
         aceita('GET')
         return listar_fila(con)

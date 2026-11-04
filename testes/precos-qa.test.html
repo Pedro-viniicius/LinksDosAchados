@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes de QA: Preço sempre atualizado</title>
+<!--
+  Testes de QA do front de "preço sempre atualizado" (docs/produto/planos/atualizar-precos.md, CA9; spec CA-P1 a CA-P10).
+  Complementa testes/precos.test.html (do dev) com dados hostis e bordas: preco_em e títulos com marcação, categoria fora das
+  17 abas no quadro, clique duplo em "Salvar prazo", relógio adiantado e "Atualizar preço" que perde o preço. Mesma regra de
+  segurança da página do dev: o iframe é o /index.html real, só GET sai para a API real, toda escrita é atendida por um servidor
+  FALSO em memória, e os itens falsos (ids 9xxxxxxxx) só existem no iframe. Sobe sobre uma cópia do banco:
+
+    ACHADINHOS_DB=<copia> ACHADINHOS_PORTA=8790 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe ACHADINHOS_DISPARO=0 python3 servidor.py
+    PORTA=8790 node testes/rodar.mjs precos-qa
+
+  As palavras de resultado ficam montadas por concatenação no script, e fora deste comentário.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes de QA: Preço sempre atualizado</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+let W, FETCH_ORIG, API_ANTES = null;
+const VIOL = [];       // escrita na API real (deve ficar vazia)
+const REG = [];        // tudo que o iframe chamou: { url, metodo, corpo }
+const FALSO = {};      // 'METODO /caminho' -> (corpo, url) => Response | objeto | Promise; atende no lugar do servidor real
+const COPIADOS = [];   // texto que o app mandou para a área de transferência (falsa)
+
+const q = s => W.document.querySelector(s);
+// Identidade de nó do DOM: o igual() compara por JSON e veria qualquer nó como {}
+const mesmoNo = (a, b, msg) => { if (a !== b) throw new Falha(msg || 'não é o mesmo nó do DOM'); };
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => el.textContent.replace(/\s+/g, ' ').trim();
+const visivel = el => !!el && el.checkVisibility() && W.getComputedStyle(el).visibility !== 'hidden' && el.getClientRects().length > 0;   // checkVisibility pega o <details> fechado (content-visibility)
+const semRolagemHorizontal = () => { const d = W.document.documentElement; return d.scrollWidth <= d.clientWidth + 1; };
+const ev = expr => W.eval(expr);
+const json = o => new W.Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
+
+async function largura(px) { document.getElementById('app').style.width = px + 'px'; await dormir(150); }
+
+async function abrirApp(sufixo = '') {
+  document.getElementById('app').style.width = '1100px';
+  localStorage.removeItem('activeCat');
+  for (const k of Object.keys(FALSO)) delete FALSO[k];
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now() + sufixo; });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  REG.length = 0; COPIADOS.length = 0;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    const corpo = opcoes && opcoes.body !== undefined ? opcoes.body : undefined;
+    const caminho = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+    REG.push({ url, metodo, corpo, caminho });
+    const f = FALSO[metodo + ' ' + caminho];
+    if (f) return Promise.resolve().then(() => f(corpo === undefined ? undefined : JSON.parse(corpo), url));
+    if (metodo !== 'GET' && /\/api\//.test(url)) { VIOL.push(metodo + ' ' + url); return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real')); }
+    if (/\/api\/fetch\b/.test(url)) { VIOL.push(metodo + ' ' + url); return Promise.reject(new W.TypeError('bloqueado pelo teste')); }   // a rede da Amazon nunca sai; GET de /api/disparo/* (leitura) vai ao servidor real
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  Object.defineProperty(W.navigator, 'clipboard', { configurable: true, value: { writeText: async t => { COPIADOS.push(t); }, write: async () => {} } });
+  await esperar(() => ev('ofertasProntas === true') && ev('items.length') > 0, 'o index.html carregar os itens (PORTA=... aponta para o servidor da cópia?)');
+  await dormir(30);
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+// ---- itens falsos: ids 9xxxxxxxx, só na memória do iframe
+let SEQ = 900000000;
+const URLS = { amazon: n => 'https://www.amazon.com.br/dp/B0FALSO' + n + '?tag=desejodemen01-20', ml: n => 'https://meli.la/F' + n, shopee: n => 'https://s.shopee.com.br/F' + n };
+const CAT = 'Pets';
+const iso = d => { const p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
+const haHoras = h => iso(new Date(Date.now() - h * 36e5 - 1500));   // 1,5 s a mais: não encosta no limite durante o teste
+const falso = (loja, preco_em, extra = {}, data = {}) => {
+  const n = ++SEQ;
+  return { id: n, loja, item_id: 'F' + n, cat: CAT, busca: 'termo falso', url: URLS[loja](n), preco_em,
+    data: { titulo: 'Produto falso ' + n, preco: 'R$ 10,00', ...data }, genero: 'sem', genero_origem: '', genero_auto: 'sem', ...extra };
+};
+function usarItens(lista, validade = 24) {
+  ev('precoValidade = ' + validade + '; validadeAviso = false; activeCat = ' + JSON.stringify(CAT) + '; items = ' + JSON.stringify(lista) + '; page = 1;'
+    + " for (const s of ['#fLoja','#fBusca','#fPreco','#fOrdem','#fTexto']) $(s).value = ''; render();");
+}
+const cartoes = () => qa('#grid .card');
+const cartao = i => cartoes()[i];
+function escolher(sel, valor) { sel.value = valor; sel.dispatchEvent(new W.Event('change', { bubbles: true })); }
+const toastTexto = () => q('#toast').textContent;
+// Clica e espera o toast novo (o #toast nasce com "Copiado!" fixo no HTML: limpa antes para não ler o resto de um aviso anterior)
+async function clicarEEsperarToast(botao) {
+  const t = q('#toast'); t.textContent = ''; t.classList.remove('show');
+  botao.click();
+  await esperar(() => t.classList.contains('show') && t.textContent !== '', 'o toast depois do clique');
+  return t.textContent;
+}
+
+// ================================================================ preco_em e títulos hostis
+const HOSTIS = ['"><img src=x onerror="window.__pwn=1">', '<scr' + 'ipt>window.__pwn=1</scr' + 'ipt>', "' onmouseover='window.__pwn=1", '2026-11-04T10:00:00"><b id=pwn>', '${alert(1)}', '&lt;b&gt;'];
+
+teste('preco_em hostil (marcação, aspas, tipos errados) nunca vira HTML nem atributo: o cartão mostra "Idade do preço desconhecida" e o selo, e nada executa', async () => {
+  await abrirApp();
+  const lista = [...HOSTIS, 12345, true, [], {}, { a: 1 }].map(v => falso('amazon', v));
+  usarItens(lista);
+  W.__pwn = 0;
+  igual(cartoes().length, lista.length, 'um cartão por item');
+  for (const c of cartoes()) {
+    const idade = c.querySelector('.idade-preco');
+    afirma(idade, 'linha de idade');
+    igual(txt(idade.querySelector('.velho')), 'Desatualizado');
+    afirma(/Idade do preço desconhecida/.test(txt(idade)), 'texto de idade desconhecida: ' + txt(idade));
+    igual(idade.querySelectorAll('time').length, 0, 'sem <time datetime> quando a data não é válida');
+    igual(idade.querySelectorAll('img, script, b, [onerror], [onmouseover]').length, 0, 'marcação injetada na linha de idade');
+  }
+  igual(qa('#grid img[src="x"], #grid #pwn').length, 0);
+  await dormir(80);
+  igual(W.__pwn, 0, 'algum código do preco_em executou');
+});
+
+teste('título e loja hostis no nome acessível de "Atualizar preço" (aria-label) e na linha de idade ficam como texto', async () => {
+  await abrirApp();
+  const titulo = '"><img src=x onerror="window.__pwn=1"> Perfume \'\'';
+  usarItens([falso('amazon', haHoras(40), {}, { titulo })]);
+  W.__pwn = 0;
+  const b = cartao(0).querySelector('.idade-preco .fetch');
+  afirma(b, 'botão Atualizar preço na linha');
+  igual(b.getAttribute('aria-label'), 'Atualizar preço de ' + titulo);
+  igual(cartao(0).querySelectorAll('.idade-preco img').length, 0);
+  await dormir(60);
+  igual(W.__pwn, 0);
+});
+
+// ================================================================ quadro
+teste('Q4: categoria fora das 17 abas ("Outras") aparece no seletor do quadro como texto, e o comando gerado para ela é aceito pelo atualizar_precos.py (aba do buscas.json)', async () => {
+  await abrirApp();
+  const hostil = '<b id="pwn">x</b>"; touch PWNED';
+  usarItens([falso('amazon', haHoras(40)), falso('amazon', haHoras(40), { cat: 'Geral' }), falso('amazon', haHoras(40), { cat: hostil })]);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  const abas17 = ev('ORDEM_ABAS');
+  const opcoes = [...q('#qpCat').options].map(o => o.value).filter(Boolean);
+  igual(qa('#quadroPrecosCorpo #pwn').length, 0, 'marcação do nome da categoria virou elemento');
+  const fora = opcoes.filter(v => !abas17.includes(v));
+  // o script só atualiza aba do buscas.json (exit 2 para o resto): não se oferece comando que ele recusa
+  for (const v of fora) {
+    escolher(q('#qpCat'), v);
+    const cmd = txt(q('.qp-loja[data-loja="amazon"] [data-f="cmd"]'));
+    igual(cmd, '', 'a categoria "' + v + '" não é aba do buscas.json: o comando gerado seria recusado com saída 2');
+  }
+});
+
+teste('clique duplo em "Salvar prazo" manda um PUT só (o botão fica ocupado) e o resultado fica em role=status', async () => {
+  await abrirApp();
+  usarItens([falso('amazon', haHoras(1))]);
+  q('#quadroPrecos').open = true; ev('atualizarQuadroPrecos()');
+  let puts = 0, liberar;
+  FALSO['PUT /api/config/preco_validade_horas'] = () => { puts++; return new Promise(r => { liberar = () => r(json(null)); }); };
+  const campo = q('#qpHoras');
+  campo.value = '48'; campo.dispatchEvent(new W.Event('input', { bubbles: true }));
+  const b = q('#qpSalvarPrazo');
+  b.click(); b.click(); b.click();
+  await dormir(40);
+  igual(puts, 1, 'três cliques viraram ' + puts + ' PUT');
+  liberar();
+  await esperar(() => /Prazo salvo: 48 h/.test(txt(q('#qpPrazoMsg'))), 'mensagem de prazo salvo');
+  igual(ev('precoValidade'), 48);
+  igual(q('#qpPrazoMsg').getAttribute('role'), 'status');
+});
+
+// ================================================================ relógio
+teste('relógio do navegador atrás dos dados (S2): preco_em mais de 5 min no futuro é velho (selo, contagem e aviso), sem "há -1 dias"; até 5 min à frente ainda é em dia', async () => {
+  await abrirApp();
+  const futuro = iso(new Date(Date.now() + 3 * 864e5));
+  usarItens([falso('amazon', futuro), falso('amazon', iso(new Date(Date.now() + 4 * 6e4)))]);
+  const longe = cartao(0).querySelector('.idade-preco'), perto = cartao(1).querySelector('.idade-preco');
+  igual(txt(longe).includes('Desatualizado'), true, 'preço 3 dias à frente do relógio é suspeito: velho');
+  igual(/-\d|NaN|undefined/.test(txt(longe)), false, 'texto de idade com número estranho: ' + txt(longe));
+  igual(txt(perto).includes('Desatualizado'), false, '4 min à frente é só relógio um pouco adiantado');
+  igual(ev('contarPrecos(items).velhos'), 1);
+  const agora = new W.Date(2026, 10, 4, 12, 0, 0);
+  igual(W.precoVelho('2026-11-04T12:05:00', 24, agora), false, 'exatamente 5 min à frente é inclusivo');
+  igual(W.precoVelho('2026-11-04T12:05:01', 24, agora), true, '5 min e 1 s à frente já é velho');
+});
+
+teste('R1: "Atualizar preço" sem preço legível na página não envia PATCH, mantém o preço e a idade antigos e diz que a Amazon não trouxe o preço', async () => {
+  await abrirApp();
+  const it = falso('amazon', haHoras(40));
+  usarItens([it]);
+  const preco_em = it.preco_em;
+  let patches = 0;
+  FALSO['GET /api/fetch'] = () => json({ titulo: 'Produto', preco: '', asin: it.item_id });
+  FALSO['PATCH /api/items/' + it.id] = () => { patches++; return json({ ...it, preco_em: null }); };
+  cartao(0).querySelector('.idade-preco .fetch').click();
+  await esperar(() => /não trouxe o preço/.test(txt(cartao(0))), 'mensagem de preço ausente');
+  igual(patches, 0, 'o PATCH não pode sair: ele apagaria o preço que já estava');
+  igual(ev('items[0].data.preco'), 'R$ 10,00');
+  igual(ev('items[0].preco_em'), preco_em);
+  afirma(txt(cartao(0).querySelector('.idade-preco')).includes('Desatualizado'), 'continua velho');
+  igual(cartao(0).querySelector('.idade-preco .fetch').hasAttribute('aria-busy'), false, 'o botão volta ao normal');
+});
+
+teste('S4: página com asin diferente do item não envia PATCH e avisa "A página abriu outro produto; confira o link."; sem asin na resposta segue o fluxo normal', async () => {
+  await abrirApp();
+  const it = falso('amazon', haHoras(40));
+  usarItens([it]);
+  let patches = 0;
+  FALSO['GET /api/fetch'] = () => json({ titulo: 'Outro produto', preco: 'R$ 99,00', asin: 'B0OUTRO001' });
+  FALSO['PATCH /api/items/' + it.id] = () => { patches++; return json(it); };
+  cartao(0).querySelector('.idade-preco .fetch').click();
+  await esperar(() => /abriu outro produto/.test(txt(cartao(0))), 'mensagem de outro produto');
+  igual(patches, 0, 'dados de outro produto nunca podem ser gravados no item');
+  igual(ev('items[0].data.titulo'), it.data.titulo);
+  igual(txt(cartao(0).querySelector('.idade-msg')), 'A página abriu outro produto; confira o link.');
+});
+
+teste('"Atualizar preço" com preço legível e o mesmo asin: PATCH com os dados da página, o cartão fica em dia ("Preço atualizado.")', async () => {
+  await abrirApp();
+  const it = falso('amazon', haHoras(40));
+  usarItens([it]);
+  let corpo = null;
+  FALSO['GET /api/fetch'] = () => json({ titulo: 'Produto novo', preco: 'R$ 12,34', asin: it.item_id });
+  FALSO['PATCH /api/items/' + it.id] = c => { corpo = c; return json({ ...it, preco_em: iso(new Date()), data: { ...it.data, ...c.data } }); };
+  cartao(0).querySelector('.idade-preco .fetch').click();
+  await esperar(() => /Preço atualizado\./.test(txt(cartao(0))), 'mensagem de sucesso');
+  igual(corpo.data.preco, 'R$ 12,34');
+  igual(txt(cartao(0).querySelector('.idade-preco')).includes('Desatualizado'), false);
+});
+
+teste('Q1: o prazo da config escrito como 48.0 ou 1e2 vale 24 no front, como no servidor (o texto cru é que decide), e 48 vale 48', async () => {
+  await abrirApp();
+  for (const [texto, esperado] of [['48.0', 24], ['1e2', 24], ['2.5e1', 24], ['72.00', 24], ['48', 48], ['168', 168], ['169', 24], ['"48"', 24], ['true', 24]]) {
+    FALSO['GET /api/config/preco_validade_horas'] = () => new W.Response(texto, { headers: { 'Content-Type': 'application/json' } });
+    await ev('lerValidade()');
+    igual(ev('precoValidade'), esperado, 'config ' + texto);
+  }
+});
+
+// ================================================================ fecho: a API real não mudou
+teste('só GET saiu para a API real, nada saiu para /api/fetch nem /api/disparo, e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita ou de rede (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+  const prazo = await (await fetch('/api/config/preco_validade_horas')).json();
+  afirma(prazo === null || prazo === PRAZO_ANTES, 'a config do prazo mudou no servidor real: ' + JSON.stringify(prazo));
+});
+
+// ================================================================ execução
+let PRAZO_ANTES = null;
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    const lista = JSON.parse(API_ANTES);
+    afirma(Array.isArray(lista) && lista.length > 0, '/api/items vazio');
+    afirma(lista.every(i => 'preco_em' in i), 'o servidor não traz preco_em (etapa 1 do plano não está no ar nesta porta?)');
+    PRAZO_ANTES = await (await fetch('/api/config/preco_validade_horas')).json();
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

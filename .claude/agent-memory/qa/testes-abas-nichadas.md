@@ -19,6 +19,8 @@ Verificado em 2026-11-04 (rodada 1; etapas 11-15 são operação do lead e ficam
 - O banco real não tem `sqlite3` CLI neste ambiente: use python.
 - Chrome real: palavra única de ~31+ letras num chip do formulário da regra estoura a 320 px (Q1 abaixo); na barra/seletor o `overflow-wrap:anywhere` segura.
 
+**Atualização 2026-11-04 tarde:** `abas-qa` passa 15/15 (Q1 do chip parece corrigido); o banco real já tem as 17 abas e não existe mais "Casa e Decoração" (virou "Casa, Móveis e Ferramentas").
+
 **Bugs abertos (rodada 1, baixos)**
 - Q1: chip de categoria legada de uma palavra só (≥ ~31 letras) estoura a tela a 320 px no formulário da regra (`abas-qa::Q1`, vermelho de propósito).
 - Q2: `PATCH /api/items/<id>` com `data` grava `preco_antigo` implausível (só o `upsert` aplica `preco_antigo_plausivel`); `test_servidor_qa::test_q2_patch_de_data_tambem_nao_grava_antigo_implausivel`.

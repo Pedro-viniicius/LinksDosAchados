@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Página de busca da Amazon MONTADA para testes/test_atualizar_precos.py (não é cópia de página real:
+     imita o markup que o coletar_amazon.parse_busca lê, como o card() de testes/test_coletar_amazon.py).
+     Seis resultados, um por caso do lote:
+       B0ATUAL001  no banco, no piso, preço novo            -> atualizado
+       B0USADO002  no banco, título de usado                -> usado (não grava)
+       B0PISO0003  no banco, nota 4,1                       -> fora do piso (não grava)
+       B0SEMPR004  no banco, sem preço no card              -> sem preço (não grava, mantém o antigo)
+       B0NOVO0005  fora do banco                            -> nunca inserido
+       B0OUTRA006  no banco com outro termo (busca), no piso -> atualizado por esta página -->
+<html lang="pt-br"><head><meta charset="utf-8"><title>Amazon.com.br : Perfume Floral</title></head>
+<body><div class="s-main-slot">
+
+<div data-component-type="s-search-result" data-asin="B0ATUAL001">
+  <h2><span>Perfume Floral Feminino 100ml Eau de Parfum</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0ATUAL001.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,7 de 5 estrelas</span>
+    <a href="/dp/B0ATUAL001#customerReviews"><span class="a-size-base s-underline-text">2.345</span></a>
+  </div>
+  <span class="a-size-base a-color-secondary">Mais de 1 mil compras no mês passado</span>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">R$ 89,90</span></span>
+  <span class="a-price a-text-price" data-a-size="b" data-a-strike="true"><span class="a-offscreen">R$ 129,90</span></span>
+  <span class="a-price a-text-price" data-a-size="b" data-a-color="secondary"><span class="a-offscreen">R$ 899,00</span></span><span>/litro</span>
+  <span>Frete GRÁTIS</span>
+</div>
+
+<div data-component-type="s-search-result" data-asin="B0USADO002">
+  <h2><span>Perfume Floral 50ml Usado</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0USADO002.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,8 de 5 estrelas</span>
+    <a href="/dp/B0USADO002#customerReviews"><span class="a-size-base s-underline-text">500</span></a>
+  </div>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">R$ 39,90</span></span>
+</div>
+
+<div data-component-type="s-search-result" data-asin="B0PISO0003">
+  <h2><span>Perfume Floral Infantil 30ml</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0PISO0003.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,1 de 5 estrelas</span>
+    <a href="/dp/B0PISO0003#customerReviews"><span class="a-size-base s-underline-text">812</span></a>
+  </div>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">R$ 19,90</span></span>
+</div>
+
+<div data-component-type="s-search-result" data-asin="B0SEMPR004">
+  <h2><span>Perfume Floral Intenso 75ml</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0SEMPR004.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,6 de 5 estrelas</span>
+    <a href="/dp/B0SEMPR004#customerReviews"><span class="a-size-base s-underline-text">1.020</span></a>
+  </div>
+  <span class="a-size-base a-color-base">Ver opções de compra</span>
+</div>
+
+<div data-component-type="s-search-result" data-asin="B0NOVO0005">
+  <h2><span>Perfume Floral Novo no Catálogo 100ml</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0NOVO0005.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,9 de 5 estrelas</span>
+    <a href="/dp/B0NOVO0005#customerReviews"><span class="a-size-base s-underline-text">3.400</span></a>
+  </div>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">R$ 149,90</span></span>
+</div>
+
+<div data-component-type="s-search-result" data-asin="B0OUTRA006">
+  <h2><span>Perfume Amadeirado Floral 100ml</span></h2>
+  <img class="s-image" src="https://m.media-amazon.com/images/I/B0OUTRA006.jpg">
+  <div data-cy="reviews-block">
+    <span class="a-icon-alt">4,5 de 5 estrelas</span>
+    <a href="/dp/B0OUTRA006#customerReviews"><span class="a-size-base s-underline-text">(1,2 mil)</span></a>
+  </div>
+  <span class="a-price" data-a-size="xl"><span class="a-offscreen">R$ 1.299,90</span></span>
+</div>
+
+</div></body></html>

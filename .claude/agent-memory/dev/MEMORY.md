@@ -1,15 +1,18 @@
 - [Chrome headless nos testes do front](chrome-headless-testes.md) — virtual-time trava decode de imagem; runner `node testes/rodar.mjs`; clipboard real com grantPermissions
 - [Testes do servidor.py](servidor-testes.md) — rede só via proxy morto; mutantes numa cópia; órfãos; `//` no 3.14; front na 8766 com cópia
 - [Escapes \u nas ferramentas](escapes-unicode-ferramentas.md) — Write/Edit gravam \uXXXX como caractere literal; grave via node e confira com grep -P
-- [Testes do coletar_ml.js](coletar-ml-testes.md) — vm e realms, timer do Promise.race segura 5 s, node:http ignora proxy, mutantes
+- [Testes do coletar_ml.js](coletar-ml-testes.md) — vm e realms, timer do Promise.race, node:http ignora proxy, mutantes, atualizar() e "token" proibido no fonte
 - [Backup sqlite e migração](sqlite-backup-migracao.md) — backup trava com BEGIN IMMEDIATE; `ls|tail -1` erra; gatilho prova a conferência; 33 preços da perfumaria
 - [Testes do disparo.py](disparo-testes.md) — paridade gerada no node; manual expira; migração v2 e patch de ESQUEMA_V*; test_ca6 lê literais /api/
 - [Tela Disparo e seu teste](disparo-tela-testes.md) — servidor falso no iframe; corrida de hash no abrir(); dialog close atrasado; classes que colidem
 - [Testes do coletar_shopee.py](coletar-shopee-testes.md) — dois pontos de rede mockados; ID vazio; Secret no subprocesso; espião do os.environ; FIFO; mutantes
 - [Shopee no front e nos testes](shopee-front-testes.md) — LOJA em 1 linha p/ o test_disparo_qa; chips de loja; itens falsos; HOSTS_FOTO exato
-- [API v1: api_ofertas.py e servidor](api-ofertas-testes.md) — ORDER BY/índice; afinidade TEXT; inf; literais /api/ no fonte; undici; log cru; token em teste; campo novo quebra chaves exatas em 3 arquivos
+- [API v1: api_ofertas.py e servidor](api-ofertas-testes.md) — ORDER BY/índice; afinidade TEXT; inf; undici; campo novo quebra chaves exatas; qa lê banco real sem migrar; curl e no_proxy
 - [Testes do genero.py e da rota PUT](genero-testes.md) — regex homens? do plano; guarda vinho/bota; scratchpad compartilhado: subpasta por etapa
 - [Front do público e genero.test.html](genero-front-testes.md) — flooding de navegação do Chrome, igual() vs nó do DOM, foco em campo desabilitado
 - [Estados da lista e foco (M3/M5)](estados-foco-front-testes.md) — srcdoc com fetch trocado; corrida do 2º script; render() guardado; mutantes
 - [Piso na coleta da Amazon](coletar-amazon-piso-testes.md) — NO_PISO nos parses falsos; HTML de busca montado; termo 0 no piso não marca feito
 - [17 abas no front (etapa 8)](abas-nichadas-front-testes.md) — cópia migrada só na cópia; abas fixas quebram testes velhos; iframe com largura; render em lugar
+- [Cota do /tmp](cota-tmp.md) — df mente; sqlite "disk I/O error" é cota; meça a folga; test_genero_qa em grupos de classes
+- [preco_em, migração v3, trava e lote](atualizar-precos-testes.md) — DROP COLUMN; marcador relativo no Base.item; relógio fixo x S2; pedir manda str cru; genero_qa
+- [Front da idade do preço](precos-front-testes.md) — [hidden] vs display; item falso sem preco_em; recortes do qa por marcador; D1 quebra contadores velhos; mutantes
