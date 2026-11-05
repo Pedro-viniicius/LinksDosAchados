@@ -10,3 +10,5 @@
 - [Gênero/público (backend)](testes-genero-backend.md) — test_genero_qa.py: migração na cópia real, paridade 3 consumidores, código antigo por commit, mutantes
 - [Abas por nicho (17 abas, etapas 1-10)](testes-abas-nichadas.md) — abas-qa, Q1/Q2 abertos, fatos da cópia migrada, mutantes e lacunas de usado
 - [Preço sempre atualizado (preco_em, trava, v1, lote)](testes-atualizar-precos.md) — test_atualizar_precos_qa.py, precos-qa, Q1-Q4 baixos, bug do undici >64 KB, mutantes
+- [Painel PHP /painel/ (repo Pagina_desejoMenina)](testes-painel-hostinger.md) — Docker, TLS local, layout CDP, hook só aceita *.test.*, Q1-Q3 corrigidos (rodada 2 aprovada)
+- [API oficial do ML (ml_api.py)](testes-ml-api.md) — test_ml_api_qa.py, socket local com no_proxy, 401 concorrente, SIGKILL na gravação, mutantes, Q1 aberto

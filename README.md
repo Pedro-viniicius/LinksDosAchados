@@ -19,6 +19,8 @@ Variáveis de ambiente (todas opcionais):
 
 O `coletar_shopee.py` e o `atualizar_precos.py shopee` também leem `ACHADINHOS_SHOPEE_APP_ID` e `ACHADINHOS_SHOPEE_SECRET` (veja "Coleta da Shopee"). O servidor não usa essas duas.
 
+O `ml_api.py` lê `ACHADINHOS_ML_SECRET` e `ACHADINHOS_ML_TOKENS` (veja "API oficial do Mercado Livre"). O servidor também não usa essas duas.
+
 ## Abas
 
 São 17 abas, na ordem do `buscas.json` (mapa termo → aba; é a mesma ordem da barra do site, e o front a repete em `ORDEM_ABAS`). A página as agrupa em 4 faixas só de apresentação (Tecnologia: 1 a 4; Casa: 5 a 9; Beleza e consumo: 10 a 13; Família e estilo: 14 a 17).
@@ -70,12 +72,13 @@ Use sempre proxies mortos, para nenhum teste sair para a rede:
 
 ```
 export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 ftp_proxy=http://127.0.0.1:9
-python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py atualizar_precos.py
+python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py atualizar_precos.py ml_api.py
 python3 testes/test_servidor.py -v
 python3 testes/test_migrar_categorias.py -v
 python3 testes/test_coletar_amazon.py -v
 python3 testes/test_coletar_shopee.py -v
 python3 testes/test_atualizar_precos.py -v
+python3 testes/test_ml_api.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
 python3 testes/test_genero.py -v
@@ -241,6 +244,76 @@ Cuidados:
 - Contrato com o servidor: só JSON, só as origens `https://lista.mercadolivre.com.br` e `https://www.mercadolivre.com.br`, e nenhum DELETE.
 - **Piso:** `coletar()` só envia o card com nota 4,5 ou mais e "Mais de 50 produtos vendidos" (ou mais) e recusa usado (veja "Piso de qualidade das coletas"). O que ficou de fora aparece em `ColetaML.estado.foraDoPiso` (e `usados`); o termo sem nenhum item no piso não entra no progresso.
 - **Plano B:** se o Chrome continuar bloqueando o "Acesso à rede local" (as chamadas ao `localhost` ficam presas mesmo com a permissão dada), **o Mercado Livre fica para depois**: a Amazon e a Shopee seguem sem ele, e a meta de itens do ML vira risco aceito. Não há caminho alternativo recomendado (uma ponte manual também precisaria do mesmo acesso no `afiliar()`).
+
+## API oficial do Mercado Livre
+
+O `ml_api.py` (só biblioteca padrão) fala com a API oficial do ML pelo app **Etiqueta** do DevCenter (Client ID `3553760734310605`), com OAuth 2.0 e PKCE, **só para leitura**. Hoje ele só autoriza, confere e testa o acesso (`autorizar`, `conferir`, `sondar` e `sair`). A atualização de preços e a coleta pela API só entram depois que o `sondar` mostrar o que a API libera para afiliado (portão G1 do plano `docs/produto/planos/api-oficial-ml.md`). Até lá, o ML continua no console (seção acima), e o link `meli.la` continua vindo só do `ColetaML.afiliar()`.
+
+**Etapa 0 (uma vez, antes do primeiro `autorizar`):**
+
+1. Publique na Hostinger a página de retorno `https://desejodemenina.com/ml/callback/` (`public_html/ml/callback/index.html` e `.htaccess`; o conteúdo exato está no plano, em "Conteúdo exato da etapa 0"). Ela não tem JS e só pede para você copiar o endereço. Para conferir: `curl -sI 'https://desejodemenina.com/ml/callback?code=T&state=T'` dá 301 para `/ml/callback/?code=T&state=T`, e o `curl -sI` nesse endereço dá 200 com `Cache-Control: no-store`.
+2. No DevCenter, no app Etiqueta: o endereço de retorno tem de ser `https://desejodemenina.com/ml/callback`, e a permissão funcional **"Publicação e sincronização"** tem de estar em **somente leitura**. Não habilite escrita. Sem essa permissão, todo endpoint de item responde 403 `PolicyAgent`.
+3. Pegue o **Secret** no DevCenter com o plugin do Chrome desconectado ou fora daquela aba: o plugin lê a tela, e o Secret iria para a conversa.
+
+**Autorizar (a cada 6 meses, ou quando o comando pedir):**
+
+```
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py autorizar; unset S
+```
+
+1. O comando imprime um endereço `https://auth.mercadolivre.com.br/authorization?...`. Abra-o no navegador, entre na conta do Mercado Livre e autorize o app Etiqueta.
+2. O ML volta para a página "Autorização recebida". Copie o endereço **inteiro** da barra (Ctrl+L e depois Ctrl+C).
+3. Cole no terminal e tecle Enter. A colagem fica invisível, como numa senha: o endereço não aparece enquanto você cola (ele traz o código da autorização). O código vale uma vez e por pouco tempo (a validade exata não está na documentação): cole logo. Se demorar ou der erro, rode o comando de novo.
+
+O comando só aceita o endereço da página de retorno (`https://desejodemenina.com/ml/callback`, com ou sem a barra final) com o `state` desta autorização. Endereço de outro site, de outra tentativa ou com `error=` é recusado, e nada é gravado. O endereço colado nunca aparece na tela.
+
+**Conferir e sondar:**
+
+```
+python3 ml_api.py conferir
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py sondar; unset S
+```
+
+- `conferir` chama `GET /users/me` e mostra só "OK" e os escopos. Se aparecer `write`, ele avisa: deixe o app em somente leitura e rode o `autorizar` de novo.
+- `sondar` testa os endpoints candidatos (F0 a F6 do plano): `/users/me`, a busca `/sites/MLB/search`, `/products/search` e `/products/{id}/items`, `/items/bulk` (com e sem `attributes`), `/items/{id}` e `/reviews/item/{id}`. Ele usa o termo fixo "perfume" e 3 ids `MLB` lidos do banco (`ACHADINHOS_DB`, só leitura; sem banco, pula os endpoints de item). Para cada um, imprime só o status, o código de erro e os **nomes** de campo de uma lista fixa (`price`, `original_price`, `sold_quantity`, `condition`, `status`, `rating_average`, `catalog_product_id`, `thumbnail`), nunca os valores. Mande a saída ao lead: é ela que decide o G1. Um 403 num endpoint é resposta, não falha (a saída continua 0).
+- O access_token vale 6 horas. Enquanto vale, `conferir` e `sondar` rodam sem o Secret. Quando faltam menos de 5 minutos, o comando renova sozinho, e aí **precisa** do Secret: sem ele, sai com 2 e mostra o prefixo `read -rs S; ...` do próprio comando. Por isso o `sondar` acima já vai com o prefixo.
+
+**Sair:**
+
+```
+python3 ml_api.py sair
+```
+
+Apaga o arquivo de tokens deste computador. Para cortar o acesso também do lado do ML, remova o app Etiqueta na conta do Mercado Livre, em Segurança > Aplicativos (caminho não verificado).
+
+**Variáveis:**
+
+- `ACHADINHOS_ML_SECRET`: o Secret do app. Só no ambiente do comando, com o prefixo `read -rs S; ...; unset S`, nunca com `export`. O script o tira do próprio ambiente assim que o lê, e ele vai só no corpo do pedido de token ao host fixo `api.mercadolibre.com`.
+- `ACHADINHOS_ML_TOKENS`: arquivo dos tokens (padrão `ml_tokens.json` ao lado do `ml_api.py`).
+- `ACHADINHOS_DB`: o banco de onde o `sondar` lê os 3 ids, como no `servidor.py`.
+
+Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O `servidor.py` não lê `ACHADINHOS_ML_SECRET`, `ACHADINHOS_ML_TOKENS` nem o arquivo de tokens.
+
+**Arquivo de tokens:** `ml_tokens.json` (e a trava `ml_tokens.json.lock`) ficam no `.gitignore`, com modo 600, gravados de uma vez (escrita atômica). Se o comando morrer no meio de uma gravação, pode sobrar um `.ml_tokens.json.<16 letras e números>.tmp` com os tokens: ele também está no `.gitignore`, e o próximo `autorizar` ou `sair` o apaga. O comando recusa o arquivo se ele for um link, se outro usuário for o dono, se grupo ou outros tiverem qualquer permissão (`chmod 600 ml_tokens.json` resolve) ou se passar de 4 KB. **Nunca copie, mande ou versione esse arquivo**, nem cole o conteúdo dele numa conversa. Dois comandos ao mesmo tempo não atrapalham: a renovação roda sob trava, e o segundo usa o token que o primeiro acabou de gravar.
+
+**Códigos de saída:**
+
+| Código | Quando | O que fazer |
+|---|---|---|
+| 0 | tudo certo | nada |
+| 1 | a API recusou (a mensagem traz só o status HTTP e o código do ML), resposta fora do formato, falha de rede, endereço colado errado ou autorização negada (`error=`) | rede ou endereço: rode de novo; recusa da API: mande o status e o código ao lead |
+| 2 | sem tokens ou autorização vencida ("rode `ml_api.py autorizar`"), renovação que voltou fora do formato ou sem `refresh_token` (confira o fluxo "Refresh Token" do app no DevCenter), Secret ausente ou recusado, permissão funcional que falta no DevCenter (403 `PolicyAgent`) ou arquivo de tokens recusado | siga a mensagem: rode o `autorizar`, passe o Secret com o prefixo, ative "Publicação e sincronização" em somente leitura ou corrija o arquivo (`chmod 600`) |
+| 3 | limite de requisições da API (429 depois de 3 tentativas com espera crescente) | espere de 15 a 30 min e rode de novo |
+| 130 | interrompido com Ctrl+C | o arquivo de tokens nunca fica pela metade; rode o comando de novo |
+
+**Quando refazer o `autorizar` (cerca de 2 min):** a autorização dura **6 meses**. Ela cai antes se o app passar **4 meses sem chamar a API**, se a senha da conta mudar, se o Secret for renovado no DevCenter ou se o acesso for revogado. Em todos esses casos, o comando sai com 2 e pede o `autorizar`.
+
+**Segurança:**
+
+- Nesse terminal, **nunca rode `set` ou `declare -p` antes do `unset S`** (eles mostram o Secret), nem `env` ou `printenv`. Se o comando for interrompido no meio, rode `unset S` ou feche o terminal.
+- O Secret, os tokens e o código da autorização nunca aparecem na tela, em argumento, em log ou em mensagem de erro. Erro inesperado mostra só o tipo.
+- Se o Secret vazar, renove-o no DevCenter (isso derruba os tokens) e rode o `autorizar` de novo.
+- Nenhum teste chama a API de verdade: `python3 testes/test_ml_api.py -v` usa respostas falsas.
 
 ## Ordens da coleta
 

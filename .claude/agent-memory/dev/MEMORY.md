@@ -16,3 +16,5 @@
 - [Cota do /tmp](cota-tmp.md) — df mente; sqlite "disk I/O error" é cota; meça a folga; test_genero_qa em grupos de classes
 - [preco_em, migração v3, trava e lote](atualizar-precos-testes.md) — DROP COLUMN; marcador relativo no Base.item; relógio fixo x S2; pedir manda str cru; genero_qa
 - [Front da idade do preço](precos-front-testes.md) — [hidden] vs display; item falso sem preco_em; recortes do qa por marcador; D1 quebra contadores velhos; mutantes
+- [Painel PHP no Pagina_desejoMenina](painel-php-hostinger-testes.md) — Docker sem rede; sessão no CLI; OPcache; FilesMatch e /painel; Chrome < 500 px; conflitos com o QA
+- [ml_api.py e test_ml_api.py](ml-api-testes.md) — check-ignore -q com vários caminhos falha; HTTPError reusado; default ligado na definição; prova de concorrência com 2 processos; paridade com node; mutantes com finally; getpass x /dev/tty e prova de eco em pty (rodada 2)

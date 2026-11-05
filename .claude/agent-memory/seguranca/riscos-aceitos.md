@@ -16,4 +16,8 @@ metadata:
 - Conferido em 2026-11-04 (atualizar-precos, E1-E6, rodada 1): gatilhos não dispararam (`so_existentes` só estreita o POST; origens, `ROTAS_ML`, `METODOS_ML`, bind iguais; config fora de `ROTAS_ML`). Impacto novo: a origem do ML carimba `preco_em` (POST/PATCH `data`) e fura a trava de preço velho com preço falso, ou zera o `preco_em` (tira item do disparo); `cat` plantada chegava a comando de terminal copiado (S1 BAIXA, fechado na rodada 2). Lead levaria os dois impactos ao dono no resumo final.
 - Volta como achado se: a allowlist de origens crescer, `ROTAS_ML`/`METODOS_ML` ganharem DELETE/PUT/config/fetch, CA7 deixar de valer, ou o servidor escutar fora de 127.0.0.1.
 
+**R2 (PROPOSTO, aguardando o dono; não é aceito ainda) — `code` do OAuth do ML no log de acesso da Hostinger e no histórico do navegador** (plano api-oficial-ml, "Pontos para o seguranca"; levado ao lead em 2026-11-05).
+- Mitigação declarada: code de uso único e curto, exige o verifier PKCE (só em memória do `autorizar`) e o Secret (só no env do dono); página sem JS, CSP `default-src 'none'`, `no-store`, `no-referrer`, `noindex`, `frame-ancestors 'none'`.
+- Volta como achado se: o PKCE não for obrigatório no app do DevCenter E o Secret ficar em algum lugar além do env do comando; a página ganhar JS/recurso externo; o verifier for para disco.
+
 Ver [[problemas-recorrentes]], [[areas-sensiveis]].

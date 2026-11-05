@@ -13,6 +13,7 @@ _chat.txt
 *.log
 coleta_amazon_feitos.txt
 coleta_shopee_feitos.txt
+coleta_ml_feitos.txt
 atualizar_precos_feitos.txt
 # Backups do banco e do progresso (migrar_categorias.py e etapa 0 dos planos)
 backups/
@@ -27,6 +28,11 @@ __pycache__/
 # Token da API v1 para o Achadinho Turbo (servidor.py, ACHADINHOS_API_TOKEN_ARQUIVO)
 api_token.txt
 api_cabecalho.txt
+# Tokens da API oficial do Mercado Livre (ml_api.py, ACHADINHOS_ML_TOKENS) e a trava da renovação
+ml_tokens.json
+ml_tokens.json.lock
+# sobra da escrita atômica (.ml_tokens.json.<16 hex>.tmp) quando o processo morre no meio: tem os tokens
+.ml_tokens.json.*.tmp
 
 # Estado local do Claude Code
 .claude/scheduled_tasks.lock

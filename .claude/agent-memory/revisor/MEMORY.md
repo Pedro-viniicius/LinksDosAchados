@@ -10,3 +10,5 @@
 - [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
 - [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente
+- [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
+- [API oficial do ML](padroes-ml-api.md) — etapas 1-3 aprovadas na r2; borda .lock existente + pasta sem escrita gasta o code; check-ignore -q com vários dá 128; mutantes precisam do README na cópia

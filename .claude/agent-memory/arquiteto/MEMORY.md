@@ -8,3 +8,5 @@
 - [Gênero nas categorias](decisao-genero-categorias.md) — gênero derivado em genero.py, generos_manuais (user_version 2), só Perfumaria, medições por aba
 - [Abas nichadas](decisao-abas-nichadas.md) — 17 abas, migrar com SUBTEMAS_LISTA, piso por coleta, preço antigo no upsert, Shopee importar
 - [Preço sempre atualizado](decisao-atualizar-precos.md) — items.preco_em (v3, backfill criado_em), validade em config, atualizar_precos.py com FONTES, trava no disparo
+- [Painel Hostinger (outro repo)](decisao-painel-hostinger.md) — /painel em PHP no Pagina_desejoMenina (hoje em ~/Documentos/lande_pages/Lange_meninas), painel-dados fora do public_html; hook bloqueia docs/equipe
+- [API oficial do ML](decisao-api-oficial-ml.md) — ml_api.py CLI OAuth PKCE, callback estático Hostinger, tokens 0600+flock, portão G1/sondar, fatos dos endpoints
