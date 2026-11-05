@@ -1,0 +1,947 @@
+#!/usr/bin/env python3
+"""Testes do `ml_api.py sondar --catalogo` (docs/produto/planos/api-oficial-ml-catalogo.md, etapa 1: CA1, CA2, CA6).
+
+Uso:  python3 testes/test_ml_api_catalogo.py -v
+
+Nenhum teste fala com o Mercado Livre: o catálogo é um ML falso (MLFalso) atrás do OpenerFalso do
+test_ml_api.py, e qualquer saída acidental bate no proxy morto que aquele módulo fixa no import. O banco é
+temporário (servidor.criar_banco numa pasta própria) e traz títulos e preços-marcador, procurados em toda saída.
+"""
+import collections
+import contextlib
+import io
+import json
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_ml_api as T   # noqa: E402  (fixa proxies, ACHADINHOS_ML_TOKENS e ACHADINHOS_DB temporários)
+
+M = T.M
+RAIZ = T.RAIZ
+import servidor as S   # noqa: E402  (só para criar o banco temporário e conferir o ler_preco)
+
+assert os.path.dirname(S.DB) == T.TMP, 'o teste não pode tocar o banco real'
+
+ABAS = {'Celulares e Informática': ['iPhone 17', 'Notebook', 'Monitor'],
+        'Perfumes e Perfumaria': ['Perfume feminino', 'Perfume masculino', 'Body splash'],
+        'Casa e Cozinha': ['Air fryer']}
+TERMOS = [t for lista in ABAS.values() for t in lista]
+
+
+def tearDownModule():
+    T.tearDownModule()
+
+
+def preco_br(v):
+    """98765.43 → 'R$ 98.765,43' (como o console grava)."""
+    return M.formatar_preco(v)
+
+
+def titulo(n):
+    return f'TITULO-MARCADOR-{n:03d} Perfume Ação Nº{n}, 100ml!'
+
+
+def prod(pid, bbw_item=None, preco=None, moeda='BRL', status='active', filhos=None, categoria=None, nulo=False,
+         condicao='new', **extra):
+    """Produto de catálogo falso. bbw_item: item_id do buy_box_winner; nulo: buy_box_winner null."""
+    p = {'id': pid, 'name': 'NOME-PRODUTO-MARCADOR', 'status': status, 'permalink': f'https://x/p/{pid}',
+         'pictures': [{'id': '123456-MLA1234567890_012026', 'url': 'https://http2.mlstatic.com/MARCADOR.jpg'}],
+         'children_ids': filhos or []}
+    if nulo:
+        p['buy_box_winner'] = None
+    elif bbw_item is not None:
+        p['buy_box_winner'] = {'item_id': bbw_item, 'price': preco, 'original_price': None, 'currency_id': moeda,
+                               'condition': condicao, 'shipping': {'free_shipping': True}, 'seller_id': 55555}
+    if categoria is not None:
+        p['category_id'] = categoria
+    p.update(extra)
+    return p
+
+
+class MLFalso:
+    """Catálogo falso. buscas: q → lista de resultados; produtos: pid → dict; listas: pid → [páginas de linhas];
+    erros: prefixo de caminho → (status, corpo); outros: prefixo → dict. Erro é um HTTPError novo a cada chamada."""
+
+    def __init__(self):
+        self.buscas, self.produtos, self.listas, self.erros, self.outros = {}, {}, {}, {}, {}
+        self.op = T.OpenerFalso(T.api_padrao(gets=self.responder))
+
+    def responder(self, c):
+        for prefixo, erro in self.erros.items():
+            if c.caminho.startswith(prefixo):
+                return T.erro_http(*erro)
+        if c.caminho == '/products/search':
+            v = self.buscas.get(c.query.get('q'), [])
+            return T.erro_http(*v) if isinstance(v, tuple) else {'results': v, 'paging': {'total': len(v),
+                                                                                         'limit': 50}}
+        m = re.fullmatch(r'/products/(MLB[0-9]+)/items', c.caminho)
+        if m:
+            paginas = self.listas.get(m.group(1))
+            if paginas is None:
+                return T.erro_http(404, {'error': 'not_found'})
+            if isinstance(paginas, tuple):
+                return T.erro_http(*paginas)
+            offset, inicio = int(c.query.get('offset', '0')), 0
+            total = sum(len(p) for p in paginas)
+            for pagina in paginas:
+                if inicio == offset:
+                    return {'results': pagina, 'paging': {'total': total, 'offset': offset, 'limit': len(pagina)}}
+                inicio += len(pagina)
+            return {'results': [], 'paging': {'total': total, 'offset': offset, 'limit': 0}}
+        m = re.fullmatch(r'/products/(MLB[0-9]+)', c.caminho)
+        if m:
+            v = self.produtos.get(m.group(1))
+            return T.erro_http(404, {'error': 'not_found'}) if v is None else v
+        for prefixo, v in self.outros.items():
+            if c.caminho.startswith(prefixo):
+                return v
+        return T.erro_http(404, {'error': 'not_found'})
+
+    def q(self, n):
+        return M.consulta_do_titulo(titulo(n))
+
+    def gets(self, caminho=None, prefixo=None):
+        return [c for c in self.op.gets() if (caminho is None or c.caminho == caminho)
+                and (prefixo is None or c.caminho.startswith(prefixo))]
+
+
+def linha_lista(item_id, preco, moeda='BRL'):
+    return {'item_id': item_id, 'price': preco, 'original_price': None, 'currency_id': moeda, 'condition': 'new',
+            'seller_id': 77777, 'title': 'TITULO-LISTA-MARCADOR'}
+
+
+class Catalogo(T.Cli):
+    def setUp(self):
+        super().setUp()
+        self.buscas = os.path.join(self.dir, 'buscas.json')
+        with open(self.buscas, 'w', encoding='utf-8') as f:
+            json.dump(ABAS, f, ensure_ascii=False)
+        self.pasta_db = tempfile.mkdtemp(dir=self.dir)
+        self.db = os.path.join(self.pasta_db, 'achadinhos.db')
+        self.agora_real = time.time()
+
+    def banco(self, itens, modo='wal'):
+        """itens: [(n, cat, preco_float|texto|None, preco_em|None)] → item ml MLB<9000000000+n>."""
+        with mock.patch.object(S, 'DB', self.db):
+            S.criar_banco()
+        con = sqlite3.connect(self.db)
+        for n, cat, preco, preco_em in itens:
+            texto = preco_br(preco) if isinstance(preco, float) else (preco or '')
+            con.execute('INSERT INTO items (loja, item_id, cat, busca, url, titulo, preco, tem_dados, preco_em) '
+                        "VALUES ('ml', ?, ?, '', 'https://meli.la/x', ?, ?, 1, ?)",
+                        (self.mlb(n), cat, titulo(n), texto, preco_em))
+        con.execute("INSERT INTO items (loja, item_id, cat, url, titulo, preco) VALUES ('amazon', 'B0AAAAAAAA', "
+                    "'Casa e Cozinha', 'https://www.amazon.com.br/dp/B0AAAAAAAA?tag=desejodemen01-20', "
+                    "'TITULO-AMAZON-MARCADOR', 'R$ 1,00')")
+        con.commit()
+        if modo == 'delete':
+            con.execute('PRAGMA journal_mode=DELETE')
+        con.close()
+        return self.db
+
+    @staticmethod
+    def mlb(n):
+        return f'MLB{9000000000 + n}'
+
+    def recente(self, horas=1):
+        return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(self.agora_real - horas * 3600))
+
+    def rodar_cat(self, argv, ml, secret=None):
+        with mock.patch.object(M, 'PAUSA_MIN', 0.0), mock.patch.object(M, 'PAUSA_MAX', 0.0), \
+                mock.patch.object(M, 'BUSCAS', self.buscas):
+            return self.rodar(argv, ml.op, secret=secret, db=self.db)
+
+    def direto(self, ml, **kw):
+        """sondar_catalogo no mesmo processo, com a Sessao do Base (relógio e dormir falsos)."""
+        self.gravar()
+        sessao = self.sessao(ml.op)
+        out = io.StringIO()
+        kw.setdefault('buscas', self.buscas)
+        kw.setdefault('agora', self.agora_real)
+        with contextlib.redirect_stdout(out):
+            codigo = M.sondar_catalogo(sessao, self.db, **kw)
+        return codigo, out.getvalue()
+
+    def assertSemTituloNemPreco(self, texto, precos=()):
+        self.assertNotIn('MARCADOR', texto.upper())
+        for nome in ('perfume acao', 'Ação', 'NOME-PRODUTO', 'mlstatic', '55555', '77777'):
+            self.assertNotIn(nome, texto)
+        for v in precos:
+            centavos = f'{v:.2f}'
+            inteiro = centavos.split('.')[0]
+            for forma in (preco_br(v), centavos, centavos.replace('.', ','), inteiro,
+                          f'{int(v):,}'.replace(',', '.')):
+                self.assertNotIn(forma, texto, forma)
+        T.sem_marcadores(self, texto)
+
+
+# ---------- funções puras ----------
+class TestFuncoes(unittest.TestCase):
+    def test_consulta_do_titulo(self):
+        self.assertEqual(M.consulta_do_titulo('Perfume Ação Nº5, 100ml! Coração—Pêssego'),
+                         'perfume acao no5 100ml coracao pessego')
+        doze = ' '.join(f'p{i}' for i in range(20))
+        self.assertEqual(M.consulta_do_titulo(doze), ' '.join(f'p{i}' for i in range(12)))
+        self.assertEqual(M.consulta_do_titulo('  ...  '), '')
+        self.assertEqual(M.consulta_do_titulo('Smart TV 55" 4K (LG) / Wi‑Fi'), 'smart tv 55 4k lg wi fi')
+        for ruim in (None, 123, b'x', ['a']):
+            self.assertEqual(M.consulta_do_titulo(ruim), '')
+
+    def test_ler_preco_igual_ao_do_servidor(self):
+        casos = ['R$ 1.299,90', 'R$ 4.285', 'R$ 69,90', '69.9', '69.90', '1.000', '1.000.000', 'R$ 0', '0,00', '',
+                 None, True, 'R$ 10 - R$ 20', 'abc', '12,5', 'R$ 1.234,56', '1.23.4', '٣٤', 12, 12.5]
+        for c in casos:
+            self.assertEqual(M.ler_preco(c), S.ler_preco(c), repr(c))
+
+    def test_faixa_de_preco(self):
+        D = M.decimal.Decimal
+        self.assertEqual(M._faixa_de_preco(124.2, D('124.20')), 'igual')
+        self.assertEqual(M._faixa_de_preco(2569, D('2569')), 'igual')
+        self.assertEqual(M._faixa_de_preco(102.0, D('100')), 'ate2')
+        self.assertEqual(M._faixa_de_preco(98.0, D('100')), 'ate2')
+        self.assertEqual(M._faixa_de_preco(102.01, D('100')), 'acima')
+        self.assertEqual(M._faixa_de_preco(50.0, D('100')), 'acima')
+
+
+class TestCandidatos(T.Base):
+    def test_pai_vai_para_os_filhos(self):
+        ml = MLFalso()
+        ml.buscas['abc'] = [
+            {'id': 'MLB100', 'status': 'inactive', 'children_ids': ['MLB101', '../x', 'MLB102', 'MLB103', 'MLB104']},
+            {'id': 'MLB200', 'status': 'active'},
+            {'id': 'MLB300', 'status': 'active', 'children_ids': ['MLB301', 'MLB200']},
+            {'id': 'MLB400', 'status': 'active'}]   # o 4º passa do k=3
+        self.gravar()
+        pids = M.candidatos(self.sessao(ml.op), 'abc')
+        self.assertEqual(pids, ['MLB101', 'MLB102', 'MLB103', 'MLB200', 'MLB301'])
+        self.assertEqual(ml.op.gets()[0].query, {'site_id': 'MLB', 'status': 'active', 'q': 'abc', 'limit': '3'})
+
+    def test_ids_estranhos_nao_viram_candidato(self):
+        ml = MLFalso()
+        ml.buscas['abc'] = [{'id': '../../users/me', 'status': 'active'}, {'id': 12345, 'status': 'active'},
+                            {'id': 'MLB', 'status': 'active'}, 'x']
+        self.gravar()
+        self.assertEqual(M.candidatos(self.sessao(ml.op), 'abc'), [])
+        op = T.OpenerFalso(T.api_padrao(gets=lambda c: {'sem_results': 1}))
+        with self.assertRaises(M.RespostaInvalida):
+            M.candidatos(self.sessao(op), 'abc')
+
+    def test_produto_valida_o_id_antes_do_caminho(self):
+        ml = MLFalso()
+        self.gravar()
+        for ruim in ('../users/me', 'MLB1/../x', None, 123, 'MLB'):
+            with self.assertRaises(ValueError):
+                M.produto(self.sessao(ml.op), ruim)
+        self.assertEqual(ml.op.gets(), [])
+
+
+# ---------- a sonda ----------
+class TestSonda(Catalogo):
+    def cenario(self):
+        """5 itens: 1 e 2 provados pelo bbw, 3 pela lista (2ª página, depois de um 404 noutro candidato),
+        4 com título igual mas sem pertença, 5 sem candidato. Preços-marcador no banco e na API."""
+        p = {1: 91234.56, 2: 92345.67, 3: 93456.78, 4: 94567.89, 5: 95678.91}
+        self.precos = list(p.values())
+        self.banco([(1, 'Celulares e Informática', p[1], self.recente()),
+                    (2, 'Perfumes e Perfumaria', p[2], self.recente()),
+                    (3, 'Perfumes e Perfumaria', p[3], self.recente(72)),
+                    (4, 'CAT-MARCADOR-ESTRANHA', p[4], self.recente()),
+                    (5, 'Casa e Cozinha', p[5], None)])
+        ml = MLFalso()
+        ml.buscas[ml.q(1)] = [{'id': 'MLB11', 'status': 'active'}]
+        ml.produtos['MLB11'] = prod('MLB11', self.mlb(1), p[1], categoria='MLB1055')
+        ml.buscas[ml.q(2)] = [{'id': 'MLB21', 'status': 'active'}, {'id': 'MLB22', 'status': 'active'}]
+        ml.produtos['MLB21'] = prod('MLB21', 'MLB8888888888', 11111.11)
+        ml.listas['MLB21'] = [[linha_lista('MLB8888888888', 11111.11)]]
+        ml.produtos['MLB22'] = prod('MLB22', self.mlb(2), p[2] * 1.01)        # até 2%
+        ml.buscas[ml.q(3)] = [{'id': 'MLB31', 'status': 'active'}, {'id': 'MLB32', 'status': 'active'}]
+        ml.produtos['MLB31'] = prod('MLB31', nulo=True)                      # sem /items: 404
+        ml.produtos['MLB32'] = prod('MLB32', 'MLB7777777777', 22222.22)
+        ml.listas['MLB32'] = [[linha_lista('MLB7777777777', 1.0)], [linha_lista(self.mlb(3), p[3] * 1.5)]]
+        ml.buscas[ml.q(4)] = [{'id': 'MLB41', 'status': 'active'}]
+        ml.produtos['MLB41'] = prod('MLB41', 'MLB6666666666', p[4], name=titulo(4))   # título igual, outro anúncio
+        ml.listas['MLB41'] = [[linha_lista('MLB6666666666', p[4])]]
+        ml.outros['/reviews/item/'] = {'rating_average': 4.87, 'paging': {'total': 321}}
+        ml.outros['/highlights/'] = {'content': [{'id': 'MLB5555555555', 'type': 'ITEM'}]}
+        ml.erros['/sites/'] = (403, {'message': 'forbidden', 'error': 'forbidden'})
+        return ml
+
+    def test_conta_provados_por_bbw_e_por_lista(self):
+        ml = self.cenario()
+        codigo, out = self.direto(ml, amostra=5)
+        self.assertEqual(codigo, 0, out)
+        self.assertIn('Catálogo: amostra de 5 de 5 itens do ML no banco', out)
+        self.assertIn('F7 /products/search (título): 200: 5; itens com candidato: 4 de 5; média de candidatos: 1.5',
+                      out)
+        self.assertIn('F8 /products/{id}: 200: 6; lidos: 6; buy_box_winner: objeto 5, nulo 1, ausente 0; campos do '
+                      'buy_box_winner: condition, currency_id, item_id, original_price, price, seller_id, shipping; '
+                      'shipping.free_shipping: 5; pictures[].id: 6; children_ids: 0; status active: 6, outro: 0; '
+                      'category_id: 1', out)
+        self.assertIn('F9 /products/{id}/items: 200: 4, 404 not_found: 1; 404: 1 (bbw nulo 1, bbw de outro anúncio 0, '
+                      'bbw ausente 0, sem produto 0); campos em results[]: condition, currency_id, item_id, '
+                      'original_price, price, seller_id; paging: limit, offset, total', out)
+        self.assertIn(f'F10 provados: 3 de 5 (60%) (bbw: 2, lista: 1)', out)
+        exemplos = re.search(r'F10 exemplos: (.*)', out).group(1).split(', ')
+        self.assertEqual(sorted(exemplos), [self.mlb(1), self.mlb(2), self.mlb(3)])
+        self.assertIn('F10 aba Celulares e Informática: 1 de 1', out)
+        self.assertIn('F10 aba Perfumes e Perfumaria: 2 de 2', out)
+        self.assertIn('F10 aba Casa e Cozinha: 0 de 1', out)
+        self.assertIn('F10 aba (outra aba): 0 de 1', out)
+        self.assertNotIn('CAT-', out)
+        self.assertIn('F11 preço do banco até 48 h: igual 1, até 2% 1, acima de 2% 0', out)
+        self.assertIn('F11 preço do banco mais antigo ou sem data: igual 0, até 2% 0, acima de 2% 1', out)
+        self.assertIn(f'F11 acima de 2%: {self.mlb(3)}', out)
+        self.assertIn('F13 /reviews/item/{id}: 200', out)
+        self.assertIn('F14 /highlights/MLB/category/{cat}: 200', out)
+        self.assertIn('F15 /sites/MLB/search?product_id: 403 forbidden', out)
+        self.assertRegex(out, r'chamadas: \d+, 429: 0, tempo: \d+\.\ds\n\Z')
+        # F14 usa o category_id do produto; F15 o 1º produto candidato; F13 o 1º item da amostra
+        self.assertEqual([c.caminho for c in ml.gets(prefixo='/highlights/')], ['/highlights/MLB/category/MLB1055'])
+        f15 = ml.gets('/sites/MLB/search')
+        self.assertEqual(len(f15), 1)
+        self.assertEqual(f15[0].query['limit'], '1')
+        self.assertTrue(M.RE_PRODUTO.fullmatch(f15[0].query['product_id']))
+        self.assertEqual(len(ml.gets(prefixo='/reviews/item/MLB')), 1)
+        # cada linha F<n> com no máximo 5 ids MLB, e todo id que sai é do banco
+        for linha in out.splitlines():
+            ids = re.findall(r'MLB[0-9]+', linha)
+            self.assertLessEqual(len(ids), 5, linha)
+            for i in ids:
+                self.assertIn(i, {self.mlb(n) for n in range(1, 6)}, linha)
+        self.assertSemTituloNemPreco(out, self.precos + [11111.11, 22222.22])
+        # o título vira só a consulta: nenhum título cru vai para a API
+        self.assertFalse(any('MARCADOR' in c.query.get('q', '') for c in ml.op.gets()))
+
+    def test_cada_f_numa_linha_propria(self):
+        ml = self.cenario()
+        codigo, out = self.direto(ml, amostra=5)
+        prefixos = {re.match(r'F([0-9]+) ', l).group(1) for l in out.splitlines() if re.match(r'F[0-9]+ ', l)}
+        self.assertEqual(prefixos, {str(n) for n in range(7, 16)})
+
+    def test_titulo_igual_sem_pertenca_nao_prova(self):
+        self.banco([(4, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        ml.buscas[ml.q(4)] = [{'id': 'MLB41', 'status': 'active'}]
+        ml.produtos['MLB41'] = prod('MLB41', 'MLB6666666666', 100.0, name=titulo(4))
+        ml.listas['MLB41'] = [[linha_lista('MLB6666666666', 100.0)]]
+        codigo, out = self.direto(ml, amostra=1)
+        self.assertIn('F10 provados: 0 de 1 (0%) (bbw: 0, lista: 0)', out)
+        self.assertIn('F11 preço do banco até 48 h: igual 0, até 2% 0, acima de 2% 0', out)
+
+    def test_pai_na_busca_vai_para_os_filhos(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        ml.buscas[ml.q(1)] = [{'id': 'MLB10', 'status': 'inactive', 'children_ids': ['MLB11', 'MLB12']}]
+        ml.produtos['MLB11'] = prod('MLB11', 'MLB6666666666', 1.0)
+        ml.produtos['MLB12'] = prod('MLB12', self.mlb(1), 100.0)
+        codigo, out = self.direto(ml, amostra=1)
+        self.assertIn('F10 provados: 1 de 1 (100%) (bbw: 1, lista: 0)', out)
+        caminhos = [c.caminho for c in ml.op.gets()]
+        self.assertNotIn('/products/MLB10', caminhos)
+        self.assertIn('/products/MLB12', caminhos)
+
+    def test_404_no_items_nao_derruba(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente()),
+                    (2, 'Perfumes e Perfumaria', 200.0, self.recente())])
+        ml = MLFalso()
+        for n in (1, 2):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB{n}1', 'status': 'active'}, {'id': f'MLB{n}2', 'status': 'active'}]
+            ml.produtos[f'MLB{n}1'] = prod(f'MLB{n}1', 'MLB6666666666', 1.0)   # /items: 404
+            ml.produtos[f'MLB{n}2'] = prod(f'MLB{n}2', 'MLB6666666666', 1.0)
+            ml.listas[f'MLB{n}2'] = [[linha_lista(self.mlb(n), 100.0 * n)]]
+        codigo, out = self.direto(ml, amostra=2)
+        self.assertEqual(codigo, 0)
+        self.assertIn('F9 /products/{id}/items: 200: 2, 404 not_found: 2; 404: 2 (bbw nulo 0, bbw de outro anúncio 2, '
+                      'bbw ausente 0, sem produto 0);', out)
+        self.assertIn('F10 provados: 2 de 2 (100%) (bbw: 0, lista: 2)', out)
+        self.assertIn('F11 preço do banco até 48 h: igual 2, até 2% 0, acima de 2% 0', out)
+
+    def test_preco_sem_comparacao(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 'R$ 10 - R$ 20', self.recente()),
+                    (2, 'Perfumes e Perfumaria', 100.0, 'data-ruim'),
+                    (3, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        for n, (preco, moeda) in {1: (100.0, 'BRL'), 2: (100.0, 'BRL'), 3: (100.0, 'USD')}.items():
+            ml.buscas[ml.q(n)] = [{'id': f'MLB{n}1', 'status': 'active'}]
+            ml.produtos[f'MLB{n}1'] = prod(f'MLB{n}1', self.mlb(n), preco, moeda=moeda)
+        codigo, out = self.direto(ml, amostra=3)
+        self.assertIn('F10 provados: 3 de 3', out)
+        self.assertIn('F11 preço do banco mais antigo ou sem data: igual 1, até 2% 0, acima de 2% 0', out)
+        self.assertIn('F11 sem comparação: sem preço legível no banco 1, sem preço BRL na API 1', out)
+
+    def test_limit_50_uma_vez(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        ml.buscas[ml.q(1)] = [{'id': f'MLB{n}', 'status': 'active'} for n in range(10, 40)]
+        codigo, out = self.direto(ml, amostra=1)
+        limites = [c.query['limit'] for c in ml.gets('/products/search')]
+        self.assertEqual(limites.count('50'), 1)
+        self.assertEqual(limites[0], '50')
+        self.assertIn('F7 /products/search limit=50: 200; resultados: 30; paging.limit: 50', out)
+
+    def test_ids_por_linha_no_maximo_5(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0 + n, self.recente()) for n in range(1, 9)])
+        ml = MLFalso()
+        for n in range(1, 9):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB{n}1', 'status': 'active'}]
+            ml.produtos[f'MLB{n}1'] = prod(f'MLB{n}1', self.mlb(n), 300.0 + n)
+        codigo, out = self.direto(ml, amostra=8)
+        self.assertIn('F10 provados: 8 de 8', out)
+        for linha in out.splitlines():
+            self.assertLessEqual(len(re.findall(r'MLB[0-9]+', linha)), 5, linha)
+        self.assertEqual(len(re.findall(r'MLB[0-9]+', re.search(r'F11 acima de 2%: .*', out).group())), 5)
+
+    def test_para_no_teto_de_500(self):
+        """Todo item explode em 3 pais × 3 filhos, nenhum prova e toda lista tem 3 páginas: para em 500."""
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 51)])
+        ml = MLFalso()
+        outro = [[linha_lista('MLB6666666666', 1.0)]] * 3
+        for n in range(1, 51):
+            pais = []
+            for j in range(3):
+                filhos = [f'MLB{n}{j}{k}' for k in range(1, 4)]
+                pais.append({'id': f'MLB{n}{j}0', 'status': 'inactive', 'children_ids': filhos})
+                for f in filhos:
+                    ml.produtos[f] = prod(f, 'MLB6666666666', 1.0, categoria='MLB1055')
+                    ml.listas[f] = outro
+            ml.buscas[ml.q(n)] = pais
+        for termo in TERMOS:   # 2 pais × 3 filhos: 6 candidatos, o F12 lê 5
+            ml.buscas[termo] = [{'id': f'MLB770{i}000', 'status': 'inactive',
+                                 'children_ids': [f'MLB770{i}00{k}' for k in range(1, 4)]} for i in range(2)]
+        for i in range(2):
+            for k in range(1, 4):
+                ml.produtos[f'MLB770{i}00{k}'] = prod(f'MLB770{i}00{k}', 'MLB6666666666', 1.0)
+        codigo, out = self.direto(ml, amostra=50)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(len(ml.op.gets()), 500)
+        self.assertIn('Parcial (teto de 500 chamadas', out)
+        self.assertIn('chamadas: 500, 429: 0', out)
+        # a reserva garante F12 a F15 mesmo com o laço no teto
+        self.assertIn('F13 /reviews/item/{id}: 404 not_found', out)
+        self.assertIn('F14 /highlights/MLB/category/{cat}: 404 not_found', out)
+        self.assertIn('F15 /sites/MLB/search?product_id: 404 not_found', out)
+        # com um teto menor, nada passa dele
+        ml2 = MLFalso()
+        ml2.buscas, ml2.produtos, ml2.listas = ml.buscas, ml.produtos, ml.listas
+        codigo, out = self.direto(ml2, amostra=50, teto=40)
+        self.assertEqual(len(ml2.op.gets()), 40)
+        self.assertIn('chamadas: 40,', out)
+
+    def test_pausa_entre_chamadas(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 4)])
+        for sorteio, esperado in ((0.0, 0.3), (0.5, 0.55), (0.999999, 0.8)):
+            ml = MLFalso()
+            dormidas = []
+            codigo, out = self.direto(ml, amostra=3, dormir=dormidas.append, aleatorio=lambda: sorteio)
+            n = len(ml.op.gets())
+            self.assertEqual(len(dormidas), n - 1)
+            for d in dormidas:
+                self.assertAlmostEqual(d, esperado, places=5)
+                self.assertTrue(0.3 <= d <= 0.8)
+
+    def test_amostra_deterministica_com_semente(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 31)])
+
+        def consultas(semente):
+            ml = MLFalso()
+            self.direto(ml, amostra=5, semente=semente)
+            return [c.query['q'] for c in ml.gets('/products/search') if c.query['limit'] == '3']
+        a, b, c = consultas(7), consultas(7), consultas(8)
+        self.assertEqual(len(a), 5 + M.TERMOS_F12)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a[:5], c[:5])
+        self.assertEqual(len(set(a[:5])), 5)
+
+    def test_saida_nunca_traz_titulo_nem_preco(self):
+        ml = self.cenario()
+        self.gravar_real()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '5'], ml)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(err, '')
+        self.assertIn('F10 provados: 3 de 5', out)
+        self.assertSemTituloNemPreco(out + err, self.precos + [11111.11, 22222.22])
+        self.assertNotIn(T.ACCESS, ''.join(c.url for c in ml.op.chamadas))
+        self.assertTrue(all(c.metodo == 'GET' and c.host == 'api.mercadolibre.com' for c in ml.op.chamadas))
+
+    def test_limite_da_3_com_o_parcial(self):
+        ml = self.cenario()
+        ml.erros['/products/MLB2'] = (429, {})   # o 2º item da amostra estoura
+        self.gravar_real()
+        with mock.patch.object(M, 'BACKOFF_BASE', 0.0):
+            codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '5', '--semente', '1'], ml)
+        self.assertEqual(codigo, 3, err)
+        self.assertTrue(err.startswith('PAROU: '), err)
+        self.assertIn('Parcial (limite de requisições (429))', out)
+        self.assertIn('F10 provados:', out)
+        self.assertRegex(out, r'chamadas: \d+, 429: 3, tempo: ')
+        self.assertNotIn('F12', out)
+        self.assertSemTituloNemPreco(out + err, self.precos)
+
+    def test_sem_permissao_na_lista_nao_para_os_outros(self):
+        ml = self.cenario()
+        policy = (403, {'blocked_by': 'PolicyAgent', 'code': 'PA_UNAUTHORIZED_RESULT_FROM_POLICIES'})
+        for pid in list(ml.listas):
+            ml.listas[pid] = policy
+        ml.erros['/reviews/'] = policy
+        codigo, out = self.direto(ml, amostra=5)
+        self.assertEqual(codigo, 0)
+        # a lista dá 403 uma vez e não é chamada de novo; o bbw continua provando
+        self.assertEqual(len([c for c in ml.op.gets() if c.caminho.endswith('/items')]), 1)
+        self.assertIn('F9 /products/{id}/items: 403 PA_UNAUTHORIZED_RESULT_FROM_POLICIES: 1', out)
+        self.assertIn('(bbw: 2, lista: 0)', out)
+        self.assertIn('F12 /products/search', out)
+        self.assertIn('F13 /reviews/item/{id}: 403 PA_UNAUTHORIZED_RESULT_FROM_POLICIES (falta permissão', out)
+        self.assertIn('F14 /highlights/MLB/category/{cat}: 200', out)
+        self.assertIn('F15 /sites/MLB/search?product_id: 403 forbidden', out)
+
+    def test_sem_permissao_na_busca_nao_para_os_outros(self):
+        ml = self.cenario()
+        ml.erros['/products/search'] = (403, {'blocked_by': 'PolicyAgent', 'code': 'PA_UNAUTHORIZED'})
+        codigo, out = self.direto(ml, amostra=5)
+        self.assertEqual(codigo, 0)
+        self.assertIn('Parcial (403 na busca de produtos)', out)
+        # limit=50, o 1º item (para o laço) e os 5 termos do F12
+        self.assertEqual(len(ml.gets('/products/search')), 1 + 1 + 1)
+        self.assertIn('F12 /products/search (5 termos): 403 PA_UNAUTHORIZED: 1', out)
+        self.assertIn('F13 /reviews/item/{id}: 200', out)
+        self.assertIn('F14 /highlights/MLB/category/{cat}: pulado (sem category_id)', out)
+        self.assertIn('F15 /sites/MLB/search?product_id: pulado (sem id de produto)', out)
+
+    def test_banco_vazio_ou_ausente(self):
+        ml = MLFalso()
+        codigo, out = self.direto(ml, amostra=5)   # o banco nem existe
+        self.assertEqual(codigo, 0)
+        self.assertFalse(os.path.exists(self.db))
+        self.assertIn('amostra de 0 de 0', out)
+        self.assertIn('F7-F11: pulados (sem item do ML no banco)', out)
+        self.assertIn('F13 /reviews/item/{id}: pulado', out)
+        self.assertIn('F12 /products/search (5 termos): 200: 5', out)
+        self.assertEqual(len(ml.op.gets()), 5)
+
+    def test_buscas_ausente_pula_o_f12_e_toda_aba_e_outra(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        codigo, out = self.direto(ml, amostra=1, buscas=os.path.join(self.dir, 'nao-existe.json'))
+        self.assertIn('F12 /products/search (termos): pulado', out)
+        self.assertIn('F10 aba (outra aba): 0 de 1', out)
+        self.assertNotIn('Perfumes', out)
+
+
+# ---------- rodada 2 (achados R1, R2, R3, R5, R6, R8, S1/R4, S3) ----------
+class TestRodada2(Catalogo):
+    def tres_por_bbw(self):
+        """3 itens provados pelo bbw: cada um custa 2 chamadas (busca + produto), mais o limit=50 no início."""
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0 + n, self.recente()) for n in range(1, 4)])
+        ml = MLFalso()
+        for n in range(1, 4):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB60{n}', 'status': 'active'}]
+            ml.produtos[f'MLB60{n}'] = prod(f'MLB60{n}', self.mlb(n), 100.0 + n)
+        return ml
+
+    def test_r1_item_cortado_pelo_teto_nao_entra_nas_contagens(self):
+        ml = self.tres_por_bbw()
+        # laço com 6 chamadas: limit=50, 2 itens inteiros e a busca do 3º (o produto dele não cabe)
+        codigo, out = self.direto(ml, amostra=3, teto=6 + M.RESERVA_FINAIS)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(len([c for c in ml.op.gets()[:6] if c.caminho == '/products/search']), 4)
+        self.assertIn('Parcial (teto de 39 chamadas, com 33 guardadas para F12 a F15): itens vistos 2 de 3', out)
+        self.assertIn('itens com candidato: 2 de 2;', out)
+        self.assertIn('F10 provados: 2 de 2 (100%) (bbw: 2, lista: 0)', out)
+        self.assertIn('F10 aba Perfumes e Perfumaria: 2 de 2', out)
+        self.assertIn('F11 preço do banco até 48 h: igual 2,', out)
+
+    def test_r1_item_cortado_pelo_limite_nao_entra_nas_contagens(self):
+        ml = self.tres_por_bbw()
+        lidos = []
+        responder = ml.responder
+
+        def gets(c):
+            if re.fullmatch(r'/products/MLB60[0-9]', c.caminho):
+                if c.caminho not in lidos:
+                    lidos.append(c.caminho)
+                if len(lidos) >= 3 and c.caminho == lidos[2]:
+                    return T.erro_http(429, {})
+            return responder(c)
+        ml.op.responder = T.api_padrao(gets=gets)
+        self.gravar_real()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '3'], ml)
+        self.assertEqual(codigo, 3, err)
+        self.assertIn('Parcial (limite de requisições (429)): itens vistos 2 de 3', out)
+        self.assertIn('itens com candidato: 2 de 2;', out)
+        self.assertIn('F10 provados: 2 de 2 (100%)', out)
+        self.assertIn('F10 aba Perfumes e Perfumaria: 2 de 2', out)
+
+    def test_r2_404_da_lista_separado_pelo_estado_do_produto(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 5)])
+        ml = MLFalso()
+        for n in range(1, 5):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB61{n}', 'status': 'active'}]
+        ml.produtos['MLB611'] = prod('MLB611', nulo=True)                     # bbw nulo
+        ml.produtos['MLB612'] = prod('MLB612', 'MLB6666666666', 1.0)          # bbw de outro anúncio
+        # MLB613: sem produto (404 no /products/{id})
+        ml.produtos['MLB614'] = prod('MLB614')                                # sem a chave buy_box_winner
+        codigo, out = self.direto(ml, amostra=4)
+        self.assertEqual(codigo, 0)
+        self.assertIn('F9 /products/{id}/items: 404 not_found: 4; 404: 4 (bbw nulo 1, bbw de outro anúncio 1, '
+                      'bbw ausente 1, sem produto 1); campos', out)
+
+    def test_r2_404_com_produto_bloqueado_conta_como_sem_produto(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 3)])
+        ml = MLFalso()
+        for n in range(1, 3):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB62{n}', 'status': 'active'}]
+        # a ordem dos prefixos importa: os /items vêm antes do /products/MLB62 (403 PolicyAgent no produto)
+        ml.erros = {'/products/MLB621/items': (404, {'error': 'not_found'}),
+                    '/products/MLB622/items': (404, {'error': 'not_found'}),
+                    '/products/MLB62': (403, {'blocked_by': 'PolicyAgent', 'code': 'PA_UNAUTHORIZED'})}
+        codigo, out = self.direto(ml, amostra=2)
+        self.assertIn('; 404: 2 (bbw nulo 0, bbw de outro anúncio 0, bbw ausente 0, sem produto 2);', out)
+
+    def renovacao_500(self, gets=None, falta=10, n_itens=10):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, n_itens + 1)])
+        self.gravar_real(falta=falta)
+        ml = MLFalso()
+        ml.op = T.OpenerFalso(T.api_padrao(gets=gets or ml.responder,
+                                           token=lambda c: T.erro_http(500, {'error': 'internal_error'})))
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', str(n_itens)], ml, secret=T.SECRET)
+        return ml, codigo, out, err
+
+    def test_s1_token_vencido_e_renovacao_500_para_no_primeiro_post(self):
+        ml, codigo, out, err = self.renovacao_500()
+        self.assertEqual(codigo, 2, err)
+        self.assertEqual((len(ml.op.posts()), len(ml.op.gets())), (1, 0))
+        self.assertEqual(err, f'ERRO: {M.RenovacaoFalhou(500)}\n')
+        self.assertIn('renovação do acesso', err)
+        self.assertIn('HTTP 500', err)
+        self.assertEqual(out, '')
+        T.sem_marcadores(self, out, err)
+
+    def test_s1_401_e_renovacao_500_no_meio_para_sem_contar_no_catalogo(self):
+        def gets(c):
+            return T.erro_http(401, {'error': 'invalid_token'})
+        ml, codigo, out, err = self.renovacao_500(gets=gets, falta=3600)
+        self.assertEqual(codigo, 2, err)
+        self.assertEqual((len(ml.op.posts()), len(ml.op.gets())), (1, 1))
+        self.assertIn('renovação do acesso', err)
+        self.assertNotRegex(out, r'F[0-9]+ [^\n]*500')   # a falha do POST não vira status de endpoint do catálogo
+        self.assertIn('Parcial (erro)', out)
+        self.assertRegex(out, r'chamadas: 1, 429: 0, tempo: ')
+
+    def test_s1_token_vence_no_meio_e_renovacao_500_para_e_nao_conta_chamada(self):
+        ml = self.tres_por_bbw()
+        responder = ml.responder
+
+        def gets(c):
+            if len(ml.op.gets()) == 3:            # limit=50 e o 1º item inteiro: o token passa da validade
+                self.agora[0] = T.AGORA + 7200
+            return responder(c)
+        ml.op.responder = T.api_padrao(gets=gets, token=lambda c: T.erro_http(503, {}))
+        self.gravar()
+        sessao = self.sessao(ml.op)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(M.RenovacaoFalhou) as cm:
+            M.sondar_catalogo(sessao, self.db, amostra=3, buscas=self.buscas, agora=self.agora_real)
+        out = out.getvalue()
+        self.assertEqual(cm.exception.saida, 2)
+        self.assertIn('[HTTP 503]', str(cm.exception))
+        self.assertEqual((len(ml.op.posts()), len(ml.op.gets())), (1, 3))
+        self.assertIn('Parcial (erro): itens vistos 1 de 3', out)
+        self.assertIn('chamadas: 3, 429: 0', out)   # o POST que falhou não é chamada do catálogo
+        self.assertNotRegex(out, r'F[0-9]+ [^\n]*503')
+        self.assertIs(sessao.opener, ml.op)
+
+    def test_s1_401_persistente_sai_2_e_renova_uma_vez(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 11)])
+        self.gravar_real()
+        ml = MLFalso()
+        ml.op = T.OpenerFalso(T.api_padrao(gets=lambda c: T.erro_http(401, {'error': 'invalid_token'})))
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '10'], ml, secret=T.SECRET)
+        self.assertEqual(codigo, 2, err)
+        self.assertEqual((len(ml.op.posts()), len(ml.op.gets())), (1, 2))
+        self.assertIn('rode `ml_api.py autorizar`', err)
+        self.assertNotIn('401', out)
+        self.assertIn('Parcial (erro)', out)
+        T.sem_marcadores(self, out, err)
+
+    def test_s1_401_persistente_no_f13_tambem_para(self):
+        ml = self.tres_por_bbw()
+        ml.erros['/reviews/'] = (401, {'error': 'invalid_token'})
+        self.gravar_real()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '3'], ml, secret=T.SECRET)
+        self.assertEqual(codigo, 2, err)
+        self.assertEqual(len(ml.op.posts()), 1)
+        self.assertNotIn('F13', out)
+        self.assertNotIn('F14', out)
+
+    def test_r5_sem_tokens_nada_sai_no_stdout(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo'], ml)
+        self.assertEqual(codigo, 2)
+        self.assertEqual(out, '')
+        self.assertEqual(ml.op.chamadas, [])
+
+    def test_q2_receita_do_secret_com_as_flags_usadas(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        self.gravar_real(falta=10)
+        for argv, comando in ((['sondar', '--catalogo'], 'sondar --catalogo'),
+                              (['sondar', '--catalogo', '--amostra', '7', '--semente', '-3'],
+                               'sondar --catalogo --amostra 7 --semente -3'),
+                              (['sondar', '--catalogo', '--semente', '9'], 'sondar --catalogo --semente 9')):
+            ml = MLFalso()
+            codigo, out, err = self.rodar_cat(argv, ml)
+            self.assertEqual(codigo, 2, err)
+            self.assertIn(f'ACHADINHOS_ML_SECRET="$S" python3 ml_api.py {comando}; unset S', err)
+            self.assertEqual(ml.op.chamadas, [])
+        # o sondar sem flag continua com a receita de antes
+        codigo, out, err = self.rodar(['sondar'], T.OpenerFalso(T.api_padrao()))
+        self.assertIn('python3 ml_api.py sondar; unset S', err)
+
+    def test_r3_resultado_sem_status_vira_candidato_e_descartados_sao_contados(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        ml.buscas[ml.q(1)] = [{'id': 'MLB631'},                                    # sem status: candidato
+                              {'id': 'MLB632', 'status': 'inactive'},              # inativo sem filhos: descartado
+                              'nao-e-dict']                                       # descartado
+        ml.produtos['MLB631'] = prod('MLB631', self.mlb(1), 100.0)
+        codigo, out = self.direto(ml, amostra=1)
+        self.assertIn('itens com candidato: 1 de 1; média de candidatos: 1.0; sem título utilizável: 0; '
+                      'descartados: 2', out)
+        self.assertIn('F10 provados: 1 de 1', out)
+        self.assertNotIn('/products/MLB632', [c.caminho for c in ml.op.gets()])
+
+    def test_r3_candidatos_conta_descartados(self):
+        ml = MLFalso()
+        ml.buscas['abc'] = [{'id': 'MLB100', 'children_ids': ['MLB101']},     # pai sem status: filhos
+                            {'id': 'MLB200'},                                  # sem status: candidato
+                            {'id': 'MLB300', 'status': 'closed', 'children_ids': []},
+                            {'id': 'MLB400', 'status': 'active'}]              # o 4º passa do k=3
+        self.gravar()
+        sessao = self.sessao(ml.op)
+        self.assertEqual(M._candidatos(sessao, 'abc'), (['MLB101', 'MLB200'], 1))
+        self.assertEqual(M.candidatos(sessao, 'abc'), ['MLB101', 'MLB200'])
+        ml.buscas['xyz'] = [{'id': '../x', 'status': 'active'}, {'id': 'MLB1', 'children_ids': ['../y']}, 7]
+        self.assertEqual(M._candidatos(sessao, 'xyz'), ([], 3))
+
+    def test_r6_opener_volta_ao_original_depois_da_sonda(self):
+        ml = self.tres_por_bbw()
+        self.gravar()
+        sessao = self.sessao(ml.op)
+        with contextlib.redirect_stdout(io.StringIO()):
+            M.sondar_catalogo(sessao, self.db, amostra=3, buscas=self.buscas, agora=self.agora_real)
+        self.assertIs(sessao.opener, ml.op)
+        # também quando a sonda para com erro
+        ml.erros['/products/search'] = (429, {})
+        sessao = self.sessao(ml.op)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(M.Limite):
+            M.sondar_catalogo(sessao, self.db, amostra=3, buscas=self.buscas, agora=self.agora_real)
+        self.assertIs(sessao.opener, ml.op)
+
+    def test_r6_preco_em_10_min_no_futuro_e_mais_antigo(self):
+        futuro = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(self.agora_real + 600))
+        quase = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(self.agora_real + 240))
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, futuro), (2, 'Perfumes e Perfumaria', 100.0, quase)])
+        ml = MLFalso()
+        for n in (1, 2):
+            ml.buscas[ml.q(n)] = [{'id': f'MLB64{n}', 'status': 'active'}]
+            ml.produtos[f'MLB64{n}'] = prod(f'MLB64{n}', self.mlb(n), 100.0)
+        codigo, out = self.direto(ml, amostra=2)
+        self.assertIn('F11 preço do banco até 48 h: igual 1,', out)
+        self.assertIn('F11 preço do banco mais antigo ou sem data: igual 1,', out)
+
+    def test_r8_reserva_vem_do_numero_de_termos(self):
+        self.assertEqual(M._reserva(M.TERMOS_F12), M.RESERVA_FINAIS)
+        self.assertEqual(M._reserva(1), 1 * (1 + M.PRODUTOS_F12) + 3)
+        self.assertEqual(M._reserva(0), 3)
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 21)])
+        ml = MLFalso()   # nada prova: cada item custa 1 busca (sem candidato)
+        codigo, out = self.direto(ml, amostra=20, termos=1, teto=15)
+        self.assertIn('Parcial (teto de 15 chamadas, com 9 guardadas para F12 a F15): itens vistos 5 de 20', out)
+        self.assertEqual(len(ml.op.gets()), 6 + 1 + 1)   # laço (limit=50 + 5 itens), F12 de 1 termo, F13
+        # sem buscas.json, a reserva é só a de F13 a F15
+        ml = MLFalso()
+        codigo, out = self.direto(ml, amostra=20, teto=15, buscas=os.path.join(self.dir, 'nao-existe.json'))
+        self.assertIn('Parcial (teto de 15 chamadas, com 3 guardadas para F12 a F15): itens vistos 11 de 20', out)
+
+    def test_s3_consulta_cortada_em_200_caracteres(self):
+        palavra = 'a' * 30
+        q = M.consulta_do_titulo(' '.join([palavra] * 12))
+        self.assertLessEqual(len(q), M.MAX_CONSULTA)
+        self.assertEqual(M.MAX_CONSULTA, 200)
+        self.assertRegex(q, r'\A[0-9a-z]+(?: [0-9a-z]+)*\Z')   # sem espaço no fim depois do corte
+        self.assertEqual(M.consulta_do_titulo('b' * 500), 'b' * 200)
+        self.assertEqual(M.consulta_do_titulo('d' * 199 + ' ' + 'e' * 10), 'd' * 199)   # corte no espaço
+        self.assertEqual(M.consulta_do_titulo(' '.join([palavra] * 6) + ' ' + 'c' * 40),
+                         ' '.join([palavra] * 6) + ' ' + 'c' * 14)
+
+
+class TestBancoSoLeitura(Catalogo):
+    def conteudo(self, pasta):
+        """{nome: bytes} dos arquivos comuns da pasta (o -shm do SQLite fica só pelo nome: leitor mexe nele)."""
+        saida = {}
+        for nome in sorted(os.listdir(pasta)):
+            if not os.path.isfile(os.path.join(pasta, nome)):
+                continue
+            if nome.endswith('-shm'):
+                saida[nome] = None
+                continue
+            with open(os.path.join(pasta, nome), 'rb') as f:
+                saida[nome] = f.read()
+        return saida
+
+    def rodar_e_comparar(self):
+        ml = MLFalso()
+        ml.buscas[ml.q(1)] = [{'id': 'MLB11', 'status': 'active'}]
+        ml.produtos['MLB11'] = prod('MLB11', self.mlb(1), 100.0)
+        self.gravar_real()
+        antes, tokens_antes = self.conteudo(self.pasta_db), self.conteudo(self.dir)
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '3'], ml)
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('F10 provados: 1 de 2', out)
+        return antes, self.conteudo(self.pasta_db), tokens_antes, self.conteudo(self.dir)
+
+    def test_nenhum_arquivo_criado_com_o_banco_em_uso(self):
+        """Como no uso real (o servidor no ar segura o banco em WAL): a pasta do banco fica igual, byte a byte."""
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente()), (2, 'Casa e Cozinha', 50.0, None)])
+        servidor = sqlite3.connect(self.db)
+        servidor.execute('SELECT count(*) FROM items').fetchall()
+        try:
+            antes, depois, t_antes, t_depois = self.rodar_e_comparar()
+        finally:
+            servidor.close()
+        self.assertEqual(antes, depois)
+        self.assertEqual(t_antes, t_depois)   # nem cache, nem progresso ao lado dos tokens
+
+    def test_nenhum_arquivo_criado_com_banco_sem_wal(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente()), (2, 'Casa e Cozinha', 50.0, None)],
+                   modo='delete')
+        antes, depois, t_antes, t_depois = self.rodar_e_comparar()
+        self.assertEqual(antes, depois)
+        self.assertEqual(t_antes, t_depois)
+
+    def test_banco_em_wal_parado_so_ganha_os_arquivos_do_sqlite(self):
+        """Limite conhecido do SQLite: abrir em mode=ro um banco WAL sem -wal/-shm (servidor parado) cria os dois
+        (vazios); o ids_do_banco do `sondar` já fazia o mesmo. O banco em si não muda."""
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente()), (2, 'Casa e Cozinha', 50.0, None)])
+        antes, depois, _, _ = self.rodar_e_comparar()
+        self.assertEqual(antes[os.path.basename(self.db)], depois[os.path.basename(self.db)])
+        self.assertLessEqual(set(depois) - set(antes), {'achadinhos.db-wal', 'achadinhos.db-shm'})
+
+    def test_abre_em_mode_ro_com_query_only(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        abertos, comandos = [], []
+        conectar = sqlite3.connect
+
+        class Espiao:
+            def __init__(self, con):
+                self.con = con
+
+            def execute(self, sql, *a):
+                comandos.append(sql)
+                return self.con.execute(sql, *a)
+
+            def close(self):
+                self.con.close()
+
+        def espiar(alvo, *a, **kw):
+            abertos.append((alvo, kw))
+            return Espiao(conectar(alvo, *a, **kw))
+        with mock.patch.object(M.sqlite3, 'connect', espiar):
+            itens = M.itens_do_banco(self.db)
+        self.assertEqual([i['item_id'] for i in itens], [self.mlb(1)])
+        self.assertEqual(len(abertos), 1)
+        self.assertTrue(abertos[0][0].endswith('?mode=ro') and abertos[0][1] == {'uri': True}, abertos)
+        self.assertEqual(comandos[0], 'PRAGMA query_only = ON')
+        self.assertTrue(comandos[1].startswith('SELECT item_id, titulo, cat, preco, preco_em FROM items'))
+        # escrita é recusada mesmo com a permissão do arquivo
+        os.chmod(self.db, 0o400)
+        self.assertEqual(len(M.itens_do_banco(self.db)), 1)
+
+    def test_banco_ilegivel_da_lista_vazia(self):
+        with open(self.db, 'w') as f:
+            f.write('nao e banco')
+        self.assertEqual(M.itens_do_banco(self.db), [])
+        self.assertEqual(M.itens_do_banco(os.path.join(self.dir, 'nao', 'existe.db')), [])
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'nao')))
+
+
+class TestCli(Catalogo):
+    def test_amostra_acima_de_100_e_recusada(self):
+        self.gravar_real()
+        for valor in ('101', '1000', '0', '-5'):
+            ml = MLFalso()
+            codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', valor], ml)
+            self.assertEqual(codigo, 2, valor)
+            self.assertEqual(err, f'ERRO: --amostra vai de 1 a 100\n')
+            self.assertEqual(out, '')
+            self.assertEqual(ml.op.chamadas, [])
+
+    def test_amostra_e_semente_so_com_catalogo(self):
+        self.gravar_real()
+        for argv in (['sondar', '--amostra', '5'], ['sondar', '--semente', '3']):
+            ml = MLFalso()
+            codigo, out, err = self.rodar_cat(argv, ml)
+            self.assertEqual(codigo, 2)
+            self.assertEqual(err, 'ERRO: --amostra e --semente só valem com --catalogo\n')
+            self.assertEqual(ml.op.chamadas, [])
+
+    def test_padrao_50_e_semente_fixa(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 61)])
+        self.gravar_real()
+        rodadas = []
+        for _ in range(2):
+            ml = MLFalso()
+            codigo, out, err = self.rodar_cat(['sondar', '--catalogo'], ml)
+            self.assertEqual(codigo, 0, err)
+            self.assertIn(f'amostra de 50 de 60 itens do ML no banco (semente {M.SEMENTE_PADRAO})', out)
+            rodadas.append([c.query['q'] for c in ml.gets('/products/search')])
+        self.assertEqual(rodadas[0], rodadas[1])
+        self.assertEqual(len(rodadas[0]), 1 + 50 + M.TERMOS_F12)
+
+    def test_amostra_100_aceita(self):
+        self.banco([(n, 'Perfumes e Perfumaria', 100.0, self.recente()) for n in range(1, 121)])
+        self.gravar_real()
+        ml = MLFalso()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo', '--amostra', '100'], ml)
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('amostra de 100 de 120', out)
+
+    def test_sem_tokens_da_2(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        ml = MLFalso()
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo'], ml)
+        self.assertEqual(codigo, 2)
+        self.assertIn('rode `ml_api.py autorizar`', err)
+        self.assertEqual(ml.op.chamadas, [])
+        self.assertEqual(out, '')   # R5: nem cabeçalho nem parcial vazio
+
+    def test_renovacao_fora_do_formato_da_2(self):
+        self.banco([(1, 'Perfumes e Perfumaria', 100.0, self.recente())])
+        self.gravar_real(falta=10)
+        op = T.OpenerFalso(T.api_padrao(token=lambda c: T.resposta_token(1, refresh_token=None)))
+        ml = MLFalso()
+        ml.op = op
+        codigo, out, err = self.rodar_cat(['sondar', '--catalogo'], ml, secret=T.SECRET)
+        self.assertEqual(codigo, 2, err)
+        self.assertEqual((len(op.posts()), len(op.gets())), (1, 0))
+        T.sem_marcadores(self, out, err)
+
+    def test_sondar_sem_flag_nao_le_a_amostra(self):
+        """O `sondar` sem --catalogo segue igual: não chama a sonda do catálogo."""
+        self.gravar_real()
+        with mock.patch.object(M, 'sondar_catalogo', side_effect=AssertionError('não devia')):
+            codigo, out, err = self.rodar(['sondar'], T.OpenerFalso(T.api_padrao()))
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('F0 /users/me: 200', out)
+        self.assertNotIn('Catálogo', out)
+
+
+if __name__ == '__main__':
+    unittest.main()

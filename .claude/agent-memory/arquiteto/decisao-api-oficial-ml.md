@@ -24,4 +24,4 @@ O plano está em `docs/produto/planos/api-oficial-ml.md` (2026-11-05). Não tem 
 
 **Why:** a viabilidade da API não está provada. Se o G1 der 403, o ML segue no console.
 
-**How to apply:** quando o lead trouxer o resultado do `sondar`, revise só as etapas 4 e 5 e a P1. Veja [[decisao-atualizar-precos]] e [[decisao-shopee-perfumaria]].
+**How to apply:** G1 concluído (05/11): F1/F2/F5 403, F3 200. A continuação está em [[decisao-api-oficial-ml-catalogo]]. Veja [[decisao-atualizar-precos]] e [[decisao-shopee-perfumaria]].

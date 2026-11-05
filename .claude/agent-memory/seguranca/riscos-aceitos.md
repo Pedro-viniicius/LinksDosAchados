@@ -20,4 +20,11 @@ metadata:
 - Mitigação declarada: code de uso único e curto, exige o verifier PKCE (só em memória do `autorizar`) e o Secret (só no env do dono); página sem JS, CSP `default-src 'none'`, `no-store`, `no-referrer`, `noindex`, `frame-ancestors 'none'`.
 - Volta como achado se: o PKCE não for obrigatório no app do DevCenter E o Secret ficar em algum lugar além do env do comando; a página ganhar JS/recurso externo; o verifier for para disco.
 
+**R3 (PROPOSTO, aguardando o dono) — termos de uso do ML para afiliado que usa dados de catálogo (`/products/*`) para atualizar preço** (plano api-oficial-ml-catalogo, "Pontos para o seguranca"; ninguém leu os termos; levado ao lead em 2026-11-05, E1 rodada 1).
+- Mitigação declarada: só leitura, teto de chamadas por rodada, pausa 0,3-0,8 s, nada de scraping; nenhum dado de terceiro (seller_id) sai ou é gravado.
+- Pior caso: app suspensa/bloqueada no DevCenter; o console continua como fallback.
+
+**Q1 / pendência INFORMATIVA — aceita pelo lead em 2026-11-05 (catálogo E1, rodada 2; não precisa do dono por ser INFORMATIVA):** abrir o banco WAL em `mode=ro` com servidor parado (`itens_do_banco`, `ids_do_banco`, `test_ml_api_qa` sobre o banco real) deixa `achadinhos.db-wal` (0 B) e `-shm` (32 KB, sem dado de linha; medido) 0644 na raiz, cobertos por `*.db-wal`/`*.db-shm` no `.gitignore`; `/home/ufla` é 0750.
+- Volta como achado se: os arquivos saírem do `.gitignore`, o servidor passar a servir a pasta, ou o `-wal` passar a ter conteúdo gravado por esses leitores (abrir com escrita).
+
 Ver [[problemas-recorrentes]], [[areas-sensiveis]].

@@ -4,9 +4,11 @@
 Uso:  python3 ml_api.py autorizar   (pede o Secret no ambiente do comando)
       python3 ml_api.py conferir
       python3 ml_api.py sondar
+      python3 ml_api.py sondar --catalogo [--amostra N] [--semente S]
       python3 ml_api.py sair
 
-Plano: docs/produto/planos/api-oficial-ml.md, etapas 1 e 2 (CA2 a CA6, CA9).
+Plano: docs/produto/planos/api-oficial-ml.md, etapas 1 e 2 (CA2 a CA6, CA9); o `sondar --catalogo` é a etapa 1 de
+docs/produto/planos/api-oficial-ml-catalogo.md (CA1, CA2).
 
 Este é o único módulo que fala com a API do ML. Ele não importa o servidor.py: nenhum código do servidor
 toca o arquivo de tokens, e os tokens nunca vão para a tabela config, para rota, página ou log.
@@ -17,7 +19,8 @@ Ambiente:
       vai só no corpo do POST /oauth/token ao host fixo. Num terminal só para isso, sem export:
         read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py autorizar; unset S
   ACHADINHOS_ML_TOKENS  arquivo dos tokens (padrão ml_tokens.json ao lado deste arquivo, no .gitignore).
-  ACHADINHOS_DB  banco de onde o `sondar` lê 3 ids MLB, em modo só leitura (como no servidor.py).
+  ACHADINHOS_DB  banco de onde o `sondar` lê 3 ids MLB (e o `sondar --catalogo`, a amostra), em modo só leitura
+      (como no servidor.py).
 Nenhuma variável troca o host da API, o Client ID ou o endereço de retorno.
 
 Arquivo de tokens (JSON, até 4 KB, modo 0600, gravado por escrita atômica):
@@ -33,8 +36,8 @@ refresh_token; Secret ausente ou recusado; permissão funcional que falta no Dev
 3 limite de requisições da API; 130 interrompido (Ctrl+C).
 As mensagens são fixas: token, code, verifier e Secret nunca saem na tela nem em mensagem de exceção.
 """
-import argparse, base64, contextlib, fcntl, getpass, hashlib, hmac, http.client, json, math, os, pathlib, random, re
-import secrets, sqlite3, stat, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
+import argparse, base64, collections, contextlib, decimal, fcntl, getpass, hashlib, hmac, http.client, json, math, os
+import pathlib, random, re, secrets, sqlite3, stat, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = os.environ.get('ACHADINHOS_ML_TOKENS') or os.path.join(BASE, 'ml_tokens.json')
@@ -193,6 +196,18 @@ class ErroApi(ErroML):
         self.codigo = codigo if isinstance(codigo, str) and RE_CODIGO_ERRO.fullmatch(codigo) else None
         super().__init__(f'a API do Mercado Livre recusou: HTTP {self.status}'
                          + (f' ({self.codigo})' if self.codigo else ' (sem código)'))
+
+
+class RenovacaoFalhou(ErroML):
+    """A renovação (POST /oauth/token) foi recusada com um status sem tratamento próprio (5xx, por exemplo). Na
+    sonda do catálogo, para tudo: sem isso cada chamada tentaria renovar de novo e o erro sairia como do catálogo."""
+    saida = 2
+    mensagem = ('a renovação do acesso ao Mercado Livre falhou. Nada foi gravado: espere alguns minutos e rode de '
+                'novo; se repetir, rode `ml_api.py autorizar`')
+
+    def __init__(self, status=None):
+        ok = isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599
+        super().__init__(self.mensagem + (f' [HTTP {status}]' if ok else ''))
 
 
 # ---------- funções puras de mapeamento ----------
@@ -864,6 +879,619 @@ def sondar(sessao, db=None):
     return 0
 
 
+# ---------- sondar --catalogo (docs/produto/planos/api-oficial-ml-catalogo.md, etapa 1: F7 a F15) ----------
+AMOSTRA_PADRAO = 50
+AMOSTRA_MAX = 100
+SEMENTE_PADRAO = 20261105
+TETO_CHAMADAS = 500
+PAUSA_MIN, PAUSA_MAX = 0.3, 0.8       # s entre duas chamadas da sonda
+CANDIDATOS_K = 3                      # primeiros resultados da busca por título
+FILHOS_POR_PAI = 3                    # filhos de um produto pai que viram candidatos
+PAGINAS_LISTA = 3                     # páginas de /products/{id}/items procurando o item
+PALAVRAS_CONSULTA = 12
+MAX_CONSULTA = 200                    # caracteres do q depois da normalização
+LIMIT_F7 = 50                         # teste único do teto do `limit` da busca
+TERMOS_F12 = 5
+PRODUTOS_F12 = 5                      # produtos lidos por termo no F12
+JANELA_F11 = 48 * 3600                # s: preço do banco "recente" no F11
+FUTURO_TOLERADO = 300                 # s: preco_em até 5 min no futuro ainda conta como recente
+MAX_IDS_LINHA = 5
+MAX_BUSCAS = 1024 * 1024              # bytes do buscas.json
+
+
+def _reserva(termos):
+    """Chamadas guardadas para o fim (F12: termos e produtos; F13, F14 e F15: uma cada): o laço da amostra para
+    antes delas."""
+    return termos * (1 + PRODUTOS_F12) + 3
+
+
+RESERVA_FINAIS = _reserva(TERMOS_F12)
+BUSCAS = os.path.join(BASE, 'buscas.json')
+MSG_AMOSTRA = f'--amostra vai de 1 a {AMOSTRA_MAX}'
+MSG_SO_CATALOGO = '--amostra e --semente só valem com --catalogo'
+# nomes de campo que a sonda pode mostrar (só o nome, nunca o valor)
+CAMPOS_BBW = ('item_id', 'price', 'original_price', 'currency_id', 'condition', 'shipping', 'seller_id',
+              'listing_type_id', 'category_id')
+CAMPOS_LISTA = ('item_id', 'price', 'original_price', 'currency_id', 'condition', 'shipping', 'seller_id',
+                'listing_type_id', 'official_store_id', 'category_id')
+CAMPOS_PAGING = ('total', 'offset', 'limit')
+_CENTAVO = decimal.Decimal('0.01')
+
+# sem re.A, como no servidor.py (porte fiel)
+_PRECO_MILHAR = re.compile(r'\d{1,3}(?:\.\d{3})+')
+_PRECO_BR = re.compile(r'\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:,\d+)?|\d+\.\d{1,2}')
+
+
+def ler_preco(texto):
+    """Porte fiel do servidor.ler_preco (este módulo não importa o servidor; o teste amarra os dois):
+    "R$ 1.299,90" → Decimal('1299.90'); None se vazio, ilegível ou <= 0."""
+    if texto is None or isinstance(texto, bool):
+        return None
+    t = re.sub(r'R\$|\s', '', str(texto))
+    if not _PRECO_BR.fullmatch(t):
+        return None
+    if ',' in t:
+        t = t.replace('.', '').replace(',', '.')
+    elif _PRECO_MILHAR.fullmatch(t):
+        t = t.replace('.', '')
+    v = decimal.Decimal(t)
+    return v if v > 0 else None
+
+
+def consulta_do_titulo(titulo):
+    """q da busca de produtos a partir do título: sem acento (NFKD), sem pontuação, minúsculas, até 12 palavras e
+    até MAX_CONSULTA caracteres."""
+    if not isinstance(titulo, str):
+        return ''
+    q = ' '.join(re.sub(r'[^0-9a-z]+', ' ', sem_acento(titulo)).split()[:PALAVRAS_CONSULTA])
+    return q[:MAX_CONSULTA].rstrip()
+
+
+def _pid(v):
+    """id de produto (ou de categoria) da resposta, só se casar com RE_PRODUTO; senão None."""
+    return v if isinstance(v, str) and RE_PRODUTO.fullmatch(v) else None
+
+
+def _eh_pai(p):
+    filhos = p.get('children_ids')
+    return isinstance(filhos, list) and len(filhos) > 0
+
+
+def _candidatos(sessao, q, k=CANDIDATOS_K):
+    """(pids, descartados). Um resultado com children_ids não vazio é pai e vira até FILHOS_POR_PAI filhos; sem
+    filhos, vale o próprio id se o status for active ou faltar (a busca já pede status=active). Descartado: o
+    resultado entre os k primeiros que não rende id válido (não é objeto, status de inativo, id fora do formato)."""
+    resposta = sessao.get('/products/search', {'site_id': 'MLB', 'status': 'active', 'q': q, 'limit': k})
+    resultados = resposta.get('results') if isinstance(resposta, dict) else None
+    if not isinstance(resultados, list):
+        raise RespostaInvalida()
+    pids, descartados = [], 0
+    for r in resultados[:k]:
+        if not isinstance(r, dict):
+            novos = []
+        elif _eh_pai(r):
+            novos = [p for p in (_pid(f) for f in r['children_ids']) if p][:FILHOS_POR_PAI]
+        elif r.get('status', 'active') == 'active':
+            novos = [p for p in (_pid(r.get('id')),) if p]
+        else:
+            novos = []
+        if not novos:
+            descartados += 1
+        pids.extend(p for p in novos if p not in pids)
+    return pids, descartados
+
+
+def candidatos(sessao, q, k=CANDIDATOS_K):
+    """ids de produto candidatos para a consulta: os k primeiros resultados da busca de produtos (pai vira até
+    FILHOS_POR_PAI filhos; ver _candidatos). Só ids que casam com RE_PRODUTO, sem repetição. Candidato não é
+    vínculo: a prova é o item no produto."""
+    return _candidatos(sessao, q, k)[0]
+
+
+def _get_dict(sessao, caminho, params=None):
+    resposta = sessao.get(caminho, params)
+    if not isinstance(resposta, dict):
+        raise RespostaInvalida()
+    return resposta
+
+
+def produto(sessao, pid):
+    """GET /products/{pid}. O pid passa por RE_PRODUTO antes de entrar no caminho."""
+    if not _pid(pid):
+        raise ValueError('id de produto inválido')
+    return _get_dict(sessao, f'/products/{pid}')
+
+
+def itens_do_banco(db=None):
+    """Itens do ML com id MLB (item_id, titulo, cat, preco, preco_em), em ordem de id, com o banco em modo só
+    leitura (mode=ro e query_only). Banco ausente, ilegível ou sem as colunas: lista vazia."""
+    db = db or DB
+    try:
+        uri = pathlib.Path(db).absolute().as_uri() + '?mode=ro'
+        con = sqlite3.connect(uri, uri=True)
+    except (sqlite3.Error, ValueError, OSError):
+        return []
+    try:
+        con.execute('PRAGMA query_only = ON')
+        linhas = con.execute("SELECT item_id, titulo, cat, preco, preco_em FROM items WHERE loja = 'ml' "
+                             "AND item_id GLOB 'MLB[0-9]*' ORDER BY id").fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    def texto(v):
+        return v if isinstance(v, str) else ''
+    return [{'item_id': i, 'titulo': texto(t), 'cat': texto(c), 'preco': texto(p), 'preco_em': texto(e)}
+            for (i, t, c, p, e) in linhas if isinstance(i, str) and RE_MLB.fullmatch(i)]
+
+
+def _abas_e_termos(caminho=None):
+    """(abas, termos) do buscas.json ({aba: [termos]}). Arquivo ausente ou fora do formato: (set(), [])."""
+    try:
+        with open(caminho or BUSCAS, 'rb') as f:
+            bruto = f.read(MAX_BUSCAS + 1)
+        dados = json.loads(bruto) if len(bruto) <= MAX_BUSCAS else None
+    except (OSError, ValueError, RecursionError):
+        return set(), []
+    if not isinstance(dados, dict):
+        return set(), []
+    abas, termos = set(), []
+    for aba, lista in dados.items():
+        if isinstance(aba, str) and isinstance(lista, list):
+            abas.add(aba)
+            termos.extend(t for t in lista if isinstance(t, str) and t.strip() and t not in termos)
+    return abas, termos
+
+
+class _TetoAtingido(Exception):
+    """A sonda chegou ao teto de chamadas (uso interno)."""
+
+
+class _Chamadas:
+    """A Sessao vista pela sonda: conta as chamadas, para no teto e faz a pausa de PAUSA_MIN a PAUSA_MAX s entre
+    duas delas. `limite` começa abaixo do teto (reserva para F12 a F15) e sobe para o teto no fim.
+
+    `contado` é o _OpenerContado posto na Sessao: diz se o último pedido foi o POST da renovação (ErroApi dele é
+    RenovacaoFalhou, nunca um status do catálogo) e se a chamada chegou a sair (só então conta em `feitas`)."""
+
+    def __init__(self, sessao, teto, dormir, aleatorio, contado):
+        self.sessao, self.teto, self.dormir, self.aleatorio = sessao, teto, dormir, aleatorio
+        self.contado = contado
+        self.limite = teto   # nunca passa do teto
+        self.feitas = 0
+
+    def get(self, caminho, params=None):
+        if self.feitas >= self.limite:
+            raise _TetoAtingido()
+        if self.feitas:
+            self.dormir(PAUSA_MIN + (PAUSA_MAX - PAUSA_MIN) * self.aleatorio())
+        antes = self.contado.gets
+        try:
+            return self.sessao.get(caminho, params)
+        except ErroApi as e:
+            if self.contado.ultimo == 'POST':
+                raise RenovacaoFalhou(e.status) from None
+            raise
+        finally:
+            if self.contado.gets > antes:
+                self.feitas += 1
+
+
+class _OpenerContado:
+    """Envolve o opener da Sessao para contar os GETs e as respostas 429 (o backoff fica na Sessao) e guardar o
+    método do último pedido."""
+
+    def __init__(self, interno):
+        self.interno = interno
+        self.n429 = self.gets = 0
+        self.ultimo = None
+
+    def open(self, req, timeout=None):
+        self.ultimo = req.get_method()
+        if self.ultimo == 'GET':
+            self.gets += 1
+        try:
+            return self.interno.open(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                self.n429 += 1
+            raise
+
+
+def _medir(contagem, fazer):
+    """(resposta, erro) de fazer(). Conta o resultado em `contagem` ('200', '<status> <código>', '403 <código>'
+    ou 'fora do formato'). Limite, rede, teto e erros de autorização sobem e param a sonda: o 401 que sobra
+    depois da única renovação da Sessao vira RefazerAutorizacao (saída 2), não um status do catálogo."""
+    try:
+        resposta = fazer()
+    except SemPermissao as e:
+        contagem[f'403 {e.codigo or "PolicyAgent"}'] += 1
+        return None, e
+    except ErroApi as e:
+        if e.status == 401:
+            raise RefazerAutorizacao() from None
+        contagem[f'{e.status} {e.codigo}' if e.codigo else str(e.status)] += 1
+        return None, e
+    except RenovacaoInvalida:
+        raise
+    except RespostaInvalida as e:
+        contagem['fora do formato'] += 1
+        return None, e
+    contagem['200'] += 1
+    return resposta, None
+
+
+def _status(contagem):
+    if not contagem:
+        return 'nenhuma chamada'
+    return ', '.join(f'{k}: {n}' for k, n in sorted(contagem.items()))
+
+
+def _so_status(contagem):
+    """Uma chamada só: o status (e o código filtrado) dela."""
+    if not contagem:
+        return 'nenhuma chamada'
+    chave = next(iter(contagem))
+    return chave + (' (falta permissão funcional no DevCenter)' if chave.startswith(('403 PA_', '403 PolicyAgent'))
+                    else '')
+
+
+def _ids(lista):
+    return ', '.join(lista[:MAX_IDS_LINHA]) or '(nenhum)'
+
+
+def _nomes(conjunto):
+    return ', '.join(sorted(conjunto)) or '(nenhum da lista)'
+
+
+def _faixa_de_preco(preco_api, preco_banco):
+    """'igual', 'ate2' ou 'acima' comparando em centavos (o banco guarda o preço já arredondado como no console)."""
+    api = _arredondar_js(preco_api * 100)
+    banco = int((preco_banco * 100).to_integral_value(rounding=decimal.ROUND_HALF_UP))
+    if api == banco:
+        return 'igual'
+    return 'ate2' if abs(api - banco) * 100 <= 2 * banco else 'acima'
+
+
+def _recente(preco_em, agora):
+    if not isinstance(preco_em, str) or not RE_DATA_HORA.fullmatch(preco_em):
+        return False
+    try:
+        quando = time.mktime(time.strptime(preco_em, '%Y-%m-%dT%H:%M:%S'))
+    except (ValueError, OverflowError):
+        return False
+    return -FUTURO_TOLERADO <= agora - quando <= JANELA_F11
+
+
+class _Medidas:
+    """Contagens da sonda. Só números, nomes de campo, status filtrados, nomes de aba e ids MLB do banco."""
+
+    def __init__(self):
+        self.busca, self.produto, self.itens = (collections.Counter() for _ in range(3))
+        self.limit50 = None                   # (contagem, resultados, paging.limit)
+        self.buscados = self.sem_consulta = self.com_candidato = self.n_candidatos = self.descartados = 0
+        self.n404 = collections.Counter()     # 404 do /items pelo estado do produto já lido (R2)
+        self.lidos = self.bbw_objeto = self.bbw_nulo = self.bbw_ausente = self.frete = 0
+        self.foto_id = self.com_filhos = self.ativos = self.outros = self.com_categoria = 0
+        self.campos_bbw, self.campos_lista, self.campos_paging = set(), set(), set()
+        self.provados = {'bbw': 0, 'lista': 0}
+        self.exemplos, self.acima_ids = [], []
+        self.por_aba = {}                     # aba → [provados, na amostra]
+        self.faixas = {True: collections.Counter(), False: collections.Counter()}   # recente? → faixa → n
+        self.sem_preco_banco = self.sem_preco_api = 0
+        self.categoria = self.pid_exemplo = None
+        self.bloqueado = set()                # 'produto', 'itens': 403 PolicyAgent, não chama mais no laço
+        self.parou = None
+        self.vistos = 0
+
+    def ler_produto(self, p):
+        self.lidos += 1
+        if 'buy_box_winner' not in p:
+            self.bbw_ausente += 1
+        bbw = p.get('buy_box_winner')
+        if isinstance(bbw, dict):
+            self.bbw_objeto += 1
+            self.campos_bbw.update(k for k in bbw if k in CAMPOS_BBW)
+            if isinstance(bbw.get('shipping'), dict) and 'free_shipping' in bbw['shipping']:
+                self.frete += 1
+        elif bbw is None and 'buy_box_winner' in p:
+            self.bbw_nulo += 1
+        fotos = p.get('pictures')
+        if isinstance(fotos, list) and any(isinstance(f, dict) and isinstance(f.get('id'), str) for f in fotos):
+            self.foto_id += 1
+        if isinstance(p.get('children_ids'), list) and p['children_ids']:
+            self.com_filhos += 1
+        if p.get('status') == 'active':
+            self.ativos += 1
+        else:
+            self.outros += 1
+        cat = _categoria_do_produto(p)
+        if cat:
+            self.com_categoria += 1
+            self.categoria = self.categoria or cat
+
+
+def _categoria_do_produto(p):
+    bbw = p.get('buy_box_winner')
+    return _pid(p.get('category_id')) or (_pid(bbw.get('category_id')) if isinstance(bbw, dict) else None)
+
+
+def _estado_do_produto(p):
+    """Faixa do 404 do /items pelo produto já lido: p é o dict de /products/{pid} ou None (não lido)."""
+    if not isinstance(p, dict):
+        return 'sem produto'
+    if 'buy_box_winner' not in p:
+        return 'bbw ausente'
+    return 'bbw de outro anúncio' if isinstance(p['buy_box_winner'], dict) else 'bbw nulo'
+
+
+def _oferta_na_lista(chamadas, m, pid, item_id, p=None):
+    """Linha do item_id em /products/{pid}/items (até PAGINAS_LISTA páginas), ou None. 404 só conta, separado
+    pelo estado do produto `p` já lido (None: não lido)."""
+    offset = 0
+    for _ in range(PAGINAS_LISTA):
+        params = {'offset': offset} if offset else None
+        r, erro = _medir(m.itens, lambda: _get_dict(chamadas, f'/products/{pid}/items', params))
+        if isinstance(erro, SemPermissao):
+            m.bloqueado.add('itens')
+        elif isinstance(erro, ErroApi) and erro.status == 404:
+            m.n404[_estado_do_produto(p)] += 1
+        if r is None:
+            return None
+        resultados = r.get('results')
+        paging = r.get('paging')
+        if isinstance(paging, dict):
+            m.campos_paging.update(k for k in paging if k in CAMPOS_PAGING)
+        if not isinstance(resultados, list):
+            return None
+        for linha in resultados:
+            if not isinstance(linha, dict):
+                continue
+            m.campos_lista.update(k for k in linha if k in CAMPOS_LISTA)
+            if linha.get('item_id') == item_id:
+                return linha
+        total = paging.get('total') if isinstance(paging, dict) else None
+        if not resultados or not _inteiro(total) or offset + len(resultados) >= total:
+            return None
+        offset += len(resultados)
+    return None
+
+
+def _provar(chamadas, m, item_id, pids):
+    """('bbw'|'lista', oferta) se o item_id está num dos candidatos (buy_box_winner ou lista), senão (None, None)."""
+    for pid in pids:
+        p = None
+        if 'produto' not in m.bloqueado:
+            p, erro = _medir(m.produto, lambda: produto(chamadas, pid))
+            if isinstance(erro, SemPermissao):
+                m.bloqueado.add('produto')
+            if p is not None:
+                m.ler_produto(p)
+                bbw = p.get('buy_box_winner')
+                if isinstance(bbw, dict) and bbw.get('item_id') == item_id:
+                    return 'bbw', bbw
+        if 'itens' not in m.bloqueado:
+            linha = _oferta_na_lista(chamadas, m, pid, item_id, p)
+            if linha is not None:
+                return 'lista', linha
+    return None, None
+
+
+def _comparar_preco(m, item, oferta, agora):
+    banco = ler_preco(item['preco'])
+    preco, moeda = oferta.get('price'), oferta.get('currency_id')
+    if banco is None:
+        m.sem_preco_banco += 1
+        return
+    if not _numero(preco) or not 0 < preco < 1e7 or moeda != 'BRL':
+        m.sem_preco_api += 1
+        return
+    faixa = _faixa_de_preco(preco, banco)
+    m.faixas[_recente(item['preco_em'], agora)][faixa] += 1
+    if faixa == 'acima':
+        m.acima_ids.append(item['item_id'])
+
+
+def _somar_item(m, item, aba, q, pids, descartados, via, oferta, agora):
+    """Soma em `m` um item que terminou a prova. Item cortado no meio (teto, Limite, erro) nunca chega aqui:
+    assim F7, F10 e F11 só contam itens inteiros."""
+    conta = m.por_aba.setdefault(aba, [0, 0])
+    conta[1] += 1
+    m.vistos += 1
+    if not q:
+        m.sem_consulta += 1
+        return
+    m.buscados += 1
+    m.descartados += descartados
+    if not pids:
+        return
+    m.com_candidato += 1
+    m.n_candidatos += len(pids)
+    if via:
+        m.provados[via] += 1
+        conta[0] += 1
+        m.exemplos.append(item['item_id'])
+        _comparar_preco(m, item, oferta, agora)
+
+
+def _laco_da_amostra(chamadas, m, amostra, abas, agora):
+    """F7 a F11 para cada item da amostra. Para no teto (com a reserva) ou no 403 da busca. As contagens por
+    endpoint (F8, F9) valem por chamada; as do item (F7, F10, F11) só entram quando ele termina."""
+    if amostra:
+        q = consulta_do_titulo(amostra[0]['titulo']) or 'celular'
+        contagem = collections.Counter()
+        r, _ = _medir(contagem, lambda: _get_dict(chamadas, '/products/search', {
+            'site_id': 'MLB', 'status': 'active', 'q': q, 'limit': LIMIT_F7}))
+        resultados = r.get('results') if r else None
+        paging = r.get('paging') if r else None
+        m.limit50 = (contagem, len(resultados) if isinstance(resultados, list) else None,
+                     paging.get('limit') if isinstance(paging, dict) and _inteiro(paging.get('limit')) else None)
+    for item in amostra:
+        aba = item['cat'] if item['cat'] in abas else '(outra aba)'
+        q = consulta_do_titulo(item['titulo'])
+        pids, descartados, via, oferta = [], 0, None, None
+        if q:
+            r, erro = _medir(m.busca, lambda: _candidatos(chamadas, q))
+            if isinstance(erro, SemPermissao):
+                m.parou = '403 na busca de produtos'
+                return
+            pids, descartados = r if r is not None else ([], 0)
+            if pids:
+                m.pid_exemplo = m.pid_exemplo or pids[0]   # id para o F15, não é contagem
+                via, oferta = _provar(chamadas, m, item['item_id'], pids)
+        _somar_item(m, item, aba, q, pids, descartados, via, oferta, agora)
+
+
+def _imprimir_amostra(m, n, parcial):
+    if parcial:
+        print(f'Parcial ({m.parou or "parou"}): itens vistos {m.vistos} de {n}', flush=True)
+    if m.limit50:
+        contagem, resultados, limite = m.limit50
+        extra = '' if resultados is None else f'; resultados: {resultados}'
+        extra += '' if limite is None else f'; paging.limit: {limite}'
+        print(f'F7 /products/search limit={LIMIT_F7}: {_so_status(contagem)}{extra}', flush=True)
+    media = f'{m.n_candidatos / m.com_candidato:.1f}' if m.com_candidato else '0'
+    print(f'F7 /products/search (título): {_status(m.busca)}; itens com candidato: {m.com_candidato} de '
+          f'{m.buscados}; média de candidatos: {media}; sem título utilizável: {m.sem_consulta}; '
+          f'descartados: {m.descartados}', flush=True)
+    print(f'F8 /products/{{id}}: {_status(m.produto)}; lidos: {m.lidos}; buy_box_winner: objeto {m.bbw_objeto}, '
+          f'nulo {m.bbw_nulo}, ausente {m.bbw_ausente}; campos do buy_box_winner: {_nomes(m.campos_bbw)}; '
+          f'shipping.free_shipping: {m.frete}; pictures[].id: {m.foto_id}; children_ids: {m.com_filhos}; '
+          f'status active: {m.ativos}, outro: {m.outros}; category_id: {m.com_categoria}', flush=True)
+    n404 = sum(v for k, v in m.itens.items() if k.split(' ')[0] == '404')
+    faixas = ', '.join(f'{k} {m.n404[k]}' for k in ('bbw nulo', 'bbw de outro anúncio', 'bbw ausente',
+                                                     'sem produto'))
+    print(f'F9 /products/{{id}}/items: {_status(m.itens)}; 404: {n404} ({faixas}); campos em results[]: '
+          f'{_nomes(m.campos_lista)}; paging: {_nomes(m.campos_paging)}', flush=True)
+    total = m.provados['bbw'] + m.provados['lista']
+    pct = f' ({100 * total / m.vistos:.0f}%)' if m.vistos else ''
+    print(f'F10 provados: {total} de {m.vistos}{pct} (bbw: {m.provados["bbw"]}, lista: {m.provados["lista"]})',
+          flush=True)
+    print(f'F10 exemplos: {_ids(m.exemplos)}', flush=True)
+    for aba in sorted(m.por_aba):
+        provados, vistos = m.por_aba[aba]
+        print(f'F10 aba {aba}: {provados} de {vistos}', flush=True)
+    for recente, rotulo in ((True, 'até 48 h'), (False, 'mais antigo ou sem data')):
+        f = m.faixas[recente]
+        print(f'F11 preço do banco {rotulo}: igual {f["igual"]}, até 2% {f["ate2"]}, acima de 2% {f["acima"]}',
+              flush=True)
+    print(f'F11 sem comparação: sem preço legível no banco {m.sem_preco_banco}, sem preço BRL na API '
+          f'{m.sem_preco_api}', flush=True)
+    print(f'F11 acima de 2%: {_ids(m.acima_ids)}', flush=True)
+
+
+def _f12(chamadas, m, termos):
+    """Busca por termos do buscas.json: produtos ativos, com buy_box_winner e condition new (só contagens)."""
+    if not termos:
+        print('F12 /products/search (termos): pulado (buscas.json ausente ou fora do formato)', flush=True)
+        return
+    busca, prod = collections.Counter(), collections.Counter()
+    lidos = ativos = com_bbw = novos = 0
+    parcial = ''
+    try:
+        for termo in termos:
+            pids, erro = _medir(busca, lambda: candidatos(chamadas, termo))
+            if isinstance(erro, SemPermissao):
+                break
+            for pid in (pids or [])[:PRODUTOS_F12]:
+                p, erro = _medir(prod, lambda: produto(chamadas, pid))
+                if p is None:
+                    continue
+                lidos += 1
+                ativos += p.get('status') == 'active'
+                bbw = p.get('buy_box_winner')
+                if isinstance(bbw, dict):
+                    com_bbw += 1
+                    novos += bbw.get('condition') == 'new'
+                m.categoria = m.categoria or _categoria_do_produto(p)
+                m.pid_exemplo = m.pid_exemplo or pid
+    except _TetoAtingido:
+        parcial = ' (parcial: teto de chamadas)'
+    print(f'F12 /products/search ({len(termos)} termos): {_status(busca)}{parcial}', flush=True)
+    print(f'F12 /products/{{id}}: {_status(prod)}; lidos: {lidos}; active: {ativos}; com buy_box_winner: '
+          f'{com_bbw}; buy_box_winner new: {novos}', flush=True)
+
+
+def _uma(chamadas, rotulo, caminho, params=None):
+    contagem = collections.Counter()
+    try:
+        _medir(contagem, lambda: _get_dict(chamadas, caminho, params))
+    except _TetoAtingido:
+        print(f'{rotulo}: pulado (teto de chamadas)', flush=True)
+        return
+    print(f'{rotulo}: {_so_status(contagem)}', flush=True)
+
+
+def sondar_catalogo(sessao, db=None, amostra=AMOSTRA_PADRAO, semente=SEMENTE_PADRAO, termos=TERMOS_F12,
+                    teto=TETO_CHAMADAS, dormir=None, aleatorio=None, agora=None, buscas=None):
+    """Mede F7 a F15 do plano api-oficial-ml-catalogo com uma amostra do banco (só leitura; nenhum arquivo é
+    gravado pela sonda). Imprime só status, códigos filtrados, nomes de campo, contagens, nomes de aba (do
+    buscas.json) e até 5 ids MLB do banco por linha: título, preço e token nunca saem.
+
+    Para em `teto` chamadas (o laço da amostra guarda _reserva(termos sorteados) para F12 a F15). Limite (429),
+    rede e erros de autorização (inclusive o 401 que sobra e a renovação recusada) imprimem o parcial e sobem
+    (saídas 3, 1 e 2 no main). Os tokens são conferidos antes do cabeçalho."""
+    if not isinstance(amostra, int) or not 1 <= amostra <= AMOSTRA_MAX:
+        raise ValueError(MSG_AMOSTRA)
+    # tokens antes de tudo: sem arquivo, sem Secret ou com a renovação recusada, a sonda para aqui, sem cabeçalho
+    # nem parcial vazio (R5), e um 5xx da renovação não se repete a cada chamada (S1)
+    try:
+        sessao.token()
+    except ErroApi as e:
+        raise RenovacaoFalhou(e.status) from None
+    inicio = time.monotonic()
+    agora = time.time() if agora is None else agora
+    abas, todos_termos = _abas_e_termos(buscas)
+    itens = itens_do_banco(db)
+    escolhidos = random.Random(semente).sample(itens, min(amostra, len(itens)))
+    termos_f12 = random.Random(semente).sample(todos_termos, min(termos, len(todos_termos)))
+    reserva = _reserva(len(termos_f12))
+    original = sessao.opener
+    contado = _OpenerContado(sessao._opener())
+    chamadas = _Chamadas(sessao, teto, dormir or sessao.dormir, aleatorio or sessao.aleatorio, contado)
+    sessao.opener = contado
+    m = _Medidas()
+    impresso = False
+    print(f'Catálogo: amostra de {len(escolhidos)} de {len(itens)} itens do ML no banco (semente {semente}); '
+          f'teto de {teto} chamadas.', flush=True)
+    try:
+        if not escolhidos:
+            print('F7-F11: pulados (sem item do ML no banco)', flush=True)
+        else:
+            chamadas.limite = max(teto - reserva, 0)
+            try:
+                _laco_da_amostra(chamadas, m, escolhidos, abas, agora)
+            except _TetoAtingido:
+                m.parou = f'teto de {teto} chamadas, com {reserva} guardadas para F12 a F15'
+            chamadas.limite = teto
+            _imprimir_amostra(m, len(escolhidos), parcial=m.parou is not None)
+            impresso = True
+        _f12(chamadas, m, termos_f12)
+        if escolhidos:
+            _uma(chamadas, 'F13 /reviews/item/{id}', f'/reviews/item/{escolhidos[0]["item_id"]}')
+        else:
+            print('F13 /reviews/item/{id}: pulado (sem item do ML no banco)', flush=True)
+        if m.categoria:
+            _uma(chamadas, 'F14 /highlights/MLB/category/{cat}', f'/highlights/MLB/category/{m.categoria}')
+        else:
+            print('F14 /highlights/MLB/category/{cat}: pulado (sem category_id)', flush=True)
+        if m.pid_exemplo:
+            _uma(chamadas, 'F15 /sites/MLB/search?product_id', '/sites/MLB/search',
+                 {'product_id': m.pid_exemplo, 'limit': 1})
+        else:
+            print('F15 /sites/MLB/search?product_id: pulado (sem id de produto)', flush=True)
+    except ErroML as e:
+        if escolhidos and not impresso:
+            m.parou = m.parou or ('limite de requisições (429)' if isinstance(e, Limite) else 'erro')
+            _imprimir_amostra(m, len(escolhidos), parcial=True)
+        raise
+    finally:
+        sessao.opener = original
+        print(f'chamadas: {chamadas.feitas}, 429: {contado.n429}, tempo: {time.monotonic() - inicio:.1f}s',
+              flush=True)
+    return 0
+
+
 def sair(caminho):
     """Apaga o arquivo local de tokens e as sobras de gravação interrompida (sob o lock, para não cruzar com uma
     renovação)."""
@@ -891,13 +1519,28 @@ def ler_argumentos(argv=None):
     sub = p.add_subparsers(dest='comando', required=True)
     sub.add_parser('autorizar', help='autoriza o app Etiqueta e grava os tokens (pede ACHADINHOS_ML_SECRET)')
     sub.add_parser('conferir', help='confere os tokens com GET /users/me')
-    sub.add_parser('sondar', help='testa os endpoints candidatos (F0 a F6) e mostra só status e nomes de campo')
+    s = sub.add_parser('sondar', help='testa os endpoints candidatos (F0 a F6) e mostra só status e nomes de campo')
+    s.add_argument('--catalogo', action='store_true',
+                   help='mede o catálogo (F7 a F15) com uma amostra do banco, só leitura')
+    s.add_argument('--amostra', type=int, default=None,
+                   help=f'itens da amostra no --catalogo (padrão {AMOSTRA_PADRAO}, máximo {AMOSTRA_MAX})')
+    s.add_argument('--semente', type=int, default=None,
+                   help=f'semente da amostra no --catalogo (padrão {SEMENTE_PADRAO}; a mesma dá a mesma amostra)')
     sub.add_parser('sair', help='apaga os tokens locais')
     return p.parse_args(argv)
 
 
 def main(argv=None):
     args = ler_argumentos(argv)
+    if args.comando == 'sondar' and not args.catalogo and (args.amostra is not None or args.semente is not None):
+        print(f'ERRO: {MSG_SO_CATALOGO}', file=sys.stderr, flush=True)
+        return 2
+    if args.comando == 'sondar' and args.catalogo:
+        amostra = AMOSTRA_PADRAO if args.amostra is None else args.amostra
+        if not 1 <= amostra <= AMOSTRA_MAX:
+            print(f'ERRO: {MSG_AMOSTRA}', file=sys.stderr, flush=True)
+            return 2
+        semente = SEMENTE_PADRAO if args.semente is None else args.semente
     try:
         if args.comando == 'sair':
             return sair(TOKENS)
@@ -906,9 +1549,15 @@ def main(argv=None):
         sessao = sessao_do_ambiente()
         if args.comando == 'conferir':
             return conferir(sessao)
+        if args.catalogo:
+            return sondar_catalogo(sessao, DB, amostra, semente)
         return sondar(sessao)
     except ConfigFaltando as e:
-        msg = str(e).replace('<comando>', args.comando)
+        comando = args.comando
+        if args.comando == 'sondar' and args.catalogo:   # a receita repete a sonda que o dono rodou (Q2)
+            comando += ' --catalogo' + ''.join(f' --{nome} {v}' for nome, v in
+                                               (('amostra', args.amostra), ('semente', args.semente)) if v is not None)
+        msg = str(e).replace('<comando>', comando)
         print(f'ERRO: {msg}', file=sys.stderr, flush=True)
         return e.saida
     except ErroML as e:

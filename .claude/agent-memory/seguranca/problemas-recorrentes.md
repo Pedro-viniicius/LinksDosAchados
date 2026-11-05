@@ -41,5 +41,6 @@ Padrões a procurar sempre (origem: revisões de 2026-11-03).
 - **Doc/CA dizem "nunca aparece na tela" e o `input()` ecoa** (S1 BAIXA, 2026-11-05): entrada colada com segredo de uso único deve usar `getpass` ou a doc tem que dizer a verdade. Corrigido na rodada 2 (`ler_colado`).
 - **Segredo novo sem linha no CLAUDE.md "Segredos"** (S4 BAIXA, 2026-11-05: `ml_tokens.json`): agentes só evitam o que está listado; cobre `api_token.txt`, Shopee; confira em todo segredo novo.
 - Runner `testes/rodar.mjs`: CDP em porta efêmera de 127.0.0.1, perfil temporário, `kill` no `finally` e em SIGINT/SIGTERM.
+- **Laço que engole `ErroApi` e segue chamando** (S1 BAIXA, 2026-11-05, `ml_api._medir` no `sondar --catalogo`): o `ErroApi` da renovação (`renovar` → `_post_token`, 5xx/4xx sem `invalid_grant`) e o 401 depois da única renovação são contados como status do endpoint; com token vencido, cada item refaz o POST `/oauth/token` com Secret + refresh (medido: 10 itens = 17 POSTs, saída 0, F13 mostra "500" que era do token). Em laço novo sobre a `Sessao` (atualizar_precos ml, coleta), pare no erro de autenticação/renovação. Corrigido na rodada 2 (`token()` antes do laço, `_OpenerContado.ultimo == 'POST'` → `RenovacaoFalhou`, 401 residual → `RefazerAutorizacao`); reutilize o mesmo padrão nas etapas 4 e 5.
 
 Ver [[areas-sensiveis]], [[riscos-aceitos]].

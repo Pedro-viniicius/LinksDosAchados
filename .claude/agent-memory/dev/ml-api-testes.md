@@ -24,4 +24,21 @@ Rodada 2 (2026-11-05):
 - Exceção nova que precisa passar nos `assertRaises(M.RespostaInvalida)` do qa: subclasse (`RenovacaoInvalida(RespostaInvalida)`, saída 2). Cuidado com quem captura a base: o `_sonda` engolia; tem `except RenovacaoInvalida: raise` antes.
 - A tabela de saídas do README é lida pelo qa com `^\| ([0-3]) \|`: linha `| 130 |` não quebra.
 
+Etapa 1 de api-oficial-ml-catalogo (`sondar --catalogo`, testes/test_ml_api_catalogo.py, 2026-11-05):
+- `sqlite3.connect('file:...?mode=ro', uri=True)` num banco WAL SEM -wal/-shm (servidor parado) CRIA os dois (shm 32 KB, wal vazio) e eles ficam. O `ids_do_banco` já fazia isso. Teste "nenhum arquivo criado" só fecha byte a byte com o banco em uso (conexão aberta pelo teste, como o servidor no ar) ou em journal DELETE; o -shm muda de conteúdo com leitor (compare só o nome).
+- `ml_api` não pode importar `servidor` (TestFronteiras): o parse de preço é porte (`M.ler_preco`) SEM re.A, amarrado ao `S.ler_preco` por teste (dígito árabe pega o re.A).
+- MLFalso: ids de produto montados por f-string (`MLB{n}{j}{k}`) colidem entre cenários (item 9 x termo do F12): use prefixos distintos (`MLB770...`).
+- O teste importa `test_ml_api as T` e subclassa `T.Cli`; `servidor` importado depois usa S.DB = TMP/banco-padrao.db, patch de `S.DB` + `S.criar_banco()` por teste.
+- Pausa da sonda: `PAUSA_MIN/MAX` patcháveis (CLI) ou `dormir`/`aleatorio` no `sondar_catalogo` (direto).
+- Script de mutantes: scratchpad `cat1/mutar.py` (copia ml_api, servidor, disparo, genero, api_ofertas, coletas, index.html, buscas.json e os 2 testes); 24 mutantes, todos mortos.
+- `test_atualizar_precos_qa` falha 7 em `V1PrecoMaxHorasNosDadosReais` (lê o banco real; depende dos dados do dia), sem relação com o ml_api.
+
+Rodada 2 da etapa 1 do catálogo (R1, R2, S1/R4, Q2, R3, R5, R6, R8, S3; 2026-11-05):
+- Erro da renovação x erro do catálogo: o `_OpenerContado` guarda `ultimo` (método do último pedido) e `gets`. ErroApi saindo do `sessao.get` com `ultimo == 'POST'` veio do POST /oauth/token (vira `RenovacaoFalhou`, saída 2); com 'GET', veio do catálogo. `feitas` só sobe se `contado.gets` subiu (o mutante "sempre conta" só morre com o token vencendo NO MEIO: avance `self.agora[0]` dentro do responder).
+- `sessao.token()` antes do cabeçalho tem de vir ANTES de trocar `sessao.opener`: senão um erro ali deixa o opener trocado (fora do try/finally).
+- `_medir`: o `raise RefazerAutorizacao()` dentro do `except ErroApi` não é pego pelos outros `except` do mesmo try.
+- Mutante equivalente: `p = None` antes do `for pid` no `_provar` (o bloqueio do produto sempre vem de uma leitura que já devolve None).
+- R7 (fallback MLB1055 no F14) NÃO feito: o qa tem `test_categoria_e_produto_hostis...` exigindo "pulado (sem category_id)". R2 opcional (`/items` do 1º pai) também não: quebra `RESERVA_FINAIS == 33` e `gets[-3:]` do qa.
+- Script de mutantes da rodada: scratchpad `mutar_r2.py` + cópia `cat1r2/` (20 mutantes; roda as duas suítes do catálogo).
+
 **How to apply:** nas etapas 4 e 5 (fonte `ml` do `atualizar_precos.py`, `coletar_ml.py`), que usam `Sessao`/exceções do `ml_api`. Relacionado: [[coletar-shopee-testes]], [[servidor-testes]].
