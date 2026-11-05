@@ -79,6 +79,8 @@ python3 testes/test_coletar_amazon.py -v
 python3 testes/test_coletar_shopee.py -v
 python3 testes/test_atualizar_precos.py -v
 python3 testes/test_ml_api.py -v
+python3 testes/test_ml_api_catalogo.py -v
+python3 testes/test_atualizar_precos_ml.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
 python3 testes/test_genero.py -v
@@ -99,6 +101,8 @@ python3 testes/test_front_constantes.py -v
 python3 testes/test_shopee_qa.py -v
 python3 testes/test_ordens_qa.py -v
 node --test testes/coletar_ml_qa.test.mjs
+python3 testes/test_ml_api_catalogo_qa.py -v
+python3 testes/test_atualizar_precos_ml_qa.py -v
 ```
 
 Os testes que falam com o servidor sobem o `servidor.py` como subprocesso, com banco temporário e porta livre; os outros rodam em memória. Nenhum toca no banco real.
@@ -247,7 +251,7 @@ Cuidados:
 
 ## API oficial do Mercado Livre
 
-O `ml_api.py` (só biblioteca padrão) fala com a API oficial do ML pelo app **Etiqueta** do DevCenter (Client ID `3553760734310605`), com OAuth 2.0 e PKCE, **só para leitura**. Hoje ele só autoriza, confere e testa o acesso (`autorizar`, `conferir`, `sondar` e `sair`). A atualização de preços e a coleta pela API só entram depois que o `sondar` mostrar o que a API libera para afiliado (portão G1 do plano `docs/produto/planos/api-oficial-ml.md`). Até lá, o ML continua no console (seção acima), e o link `meli.la` continua vindo só do `ColetaML.afiliar()`.
+O `ml_api.py` (só biblioteca padrão) fala com a API oficial do ML pelo app **Etiqueta** do DevCenter (Client ID `3553760734310605`), com OAuth 2.0 e PKCE, **só para leitura**. Ele autoriza, confere e testa o acesso (`autorizar`, `conferir`, `sondar` e `sair`). A sonda mostrou que a API de afiliado só libera o catálogo (`/products/*`): em cima disso, o `atualizar_precos.py ml` atualiza o **preço** dos anúncios que já estão no banco (veja "Mercado Livre pela API (catálogo)" em "Atualizar os preços"). A coleta de itens novos e a busca por termo continuam no console (seção acima), e o link `meli.la` continua vindo só do `ColetaML.afiliar()`.
 
 **Etapa 0 (uma vez, antes do primeiro `autorizar`):**
 
@@ -272,10 +276,12 @@ O comando só aceita o endereço da página de retorno (`https://desejodemenina.
 ```
 python3 ml_api.py conferir
 read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py sondar; unset S
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py sondar --catalogo --amostra 50; unset S
 ```
 
 - `conferir` chama `GET /users/me` e mostra só "OK" e os escopos. Se aparecer `write`, ele avisa: deixe o app em somente leitura e rode o `autorizar` de novo.
 - `sondar` testa os endpoints candidatos (F0 a F6 do plano): `/users/me`, a busca `/sites/MLB/search`, `/products/search` e `/products/{id}/items`, `/items/bulk` (com e sem `attributes`), `/items/{id}` e `/reviews/item/{id}`. Ele usa o termo fixo "perfume" e 3 ids `MLB` lidos do banco (`ACHADINHOS_DB`, só leitura; sem banco, pula os endpoints de item). Para cada um, imprime só o status, o código de erro e os **nomes** de campo de uma lista fixa (`price`, `original_price`, `sold_quantity`, `condition`, `status`, `rating_average`, `catalog_product_id`, `thumbnail`), nunca os valores. Mande a saída ao lead: é ela que decide o G1. Um 403 num endpoint é resposta, não falha (a saída continua 0).
+- `sondar --catalogo [--amostra N] [--semente S]` mede o catálogo com uma amostra de itens do ML sorteada do banco (`--amostra` de 1 a 100, padrão 50; a mesma `--semente` dá a mesma amostra, padrão 20261105). Para cada item busca candidatos a produto de catálogo pelo título e confere se o anúncio **pertence** ao produto. Imprime só contagens, nomes de campo e ids de anúncio, nunca título nem preço. Para no teto de 500 chamadas, com pausa de 0,3 a 0,8 s entre elas (a de 241 chamadas levou cerca de 4 min). **Não grava nada**: nem vínculo, nem banco. Serve para ver quanto da sua base o catálogo cobre antes de rodar o `atualizar_precos.py ml`.
 - O access_token vale 6 horas. Enquanto vale, `conferir` e `sondar` rodam sem o Secret. Quando faltam menos de 5 minutos, o comando renova sozinho, e aí **precisa** do Secret: sem ele, sai com 2 e mostra o prefixo `read -rs S; ...` do próprio comando. Por isso o `sondar` acima já vai com o prefixo.
 
 **Sair:**
@@ -290,7 +296,8 @@ Apaga o arquivo de tokens deste computador. Para cortar o acesso também do lado
 
 - `ACHADINHOS_ML_SECRET`: o Secret do app. Só no ambiente do comando, com o prefixo `read -rs S; ...; unset S`, nunca com `export`. O script o tira do próprio ambiente assim que o lê, e ele vai só no corpo do pedido de token ao host fixo `api.mercadolibre.com`.
 - `ACHADINHOS_ML_TOKENS`: arquivo dos tokens (padrão `ml_tokens.json` ao lado do `ml_api.py`).
-- `ACHADINHOS_DB`: o banco de onde o `sondar` lê os 3 ids, como no `servidor.py`.
+- `ACHADINHOS_DB`: o banco de onde o `sondar` lê os 3 ids (e a amostra do `--catalogo`), como no `servidor.py`.
+- `ACHADINHOS_ML_CATALOGO`: arquivo dos vínculos anúncio → produto de catálogo (padrão `ml_catalogo.json` ao lado do `ml_api.py`; veja "Mercado Livre pela API (catálogo)"). Não é segredo.
 
 Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O `servidor.py` não lê `ACHADINHOS_ML_SECRET`, `ACHADINHOS_ML_TOKENS` nem o arquivo de tokens.
 
@@ -302,7 +309,7 @@ Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O
 |---|---|---|
 | 0 | tudo certo | nada |
 | 1 | a API recusou (a mensagem traz só o status HTTP e o código do ML), resposta fora do formato, falha de rede, endereço colado errado ou autorização negada (`error=`) | rede ou endereço: rode de novo; recusa da API: mande o status e o código ao lead |
-| 2 | sem tokens ou autorização vencida ("rode `ml_api.py autorizar`"), renovação que voltou fora do formato ou sem `refresh_token` (confira o fluxo "Refresh Token" do app no DevCenter), Secret ausente ou recusado, permissão funcional que falta no DevCenter (403 `PolicyAgent`) ou arquivo de tokens recusado | siga a mensagem: rode o `autorizar`, passe o Secret com o prefixo, ative "Publicação e sincronização" em somente leitura ou corrija o arquivo (`chmod 600`) |
+| 2 | sem tokens ou autorização vencida ("rode `ml_api.py autorizar`"), renovação que voltou fora do formato ou sem `refresh_token` (confira o fluxo "Refresh Token" do app no DevCenter), renovação recusada pelo ML com erro 5xx (os tokens não mudam), Secret ausente ou recusado, permissão funcional que falta no DevCenter (403 `PolicyAgent`) ou arquivo de tokens recusado | siga a mensagem: rode o `autorizar`, passe o Secret com o prefixo, ative "Publicação e sincronização" em somente leitura ou corrija o arquivo (`chmod 600`); na renovação com 5xx, espere alguns minutos e rode de novo (se repetir, `autorizar`) |
 | 3 | limite de requisições da API (429 depois de 3 tentativas com espera crescente) | espere de 15 a 30 min e rode de novo |
 | 130 | interrompido com Ctrl+C | o arquivo de tokens nunca fica pela metade; rode o comando de novo |
 
@@ -463,6 +470,68 @@ await ColetaML.atualizar({termos: ['Body splash'], enviar: false})          // s
 - **Resultado:** o log do console traz uma linha por termo e um fim com os totais. Em `ColetaML.estado` ficam `atualizado`, `ausente` (item da página que não está no banco: nada é inserido), `foraDoPiso`, `usados` e `semPreco`.
 - **Tempo (não medido):** o plano contou 99 termos do ML com itens no banco (todas as abas), com pausa de 2,5 a 5 s entre um e outro mais o carregamento de cada página: pelo menos uns 6 min de pausa para tudo, e provavelmente bem mais. Por aba é proporcional aos termos dela.
 - **Captcha ou bloqueio:** se a busca de um termo vier **sem polycard** (captcha ou mudança na página do ML), a atualização **para** e não envia nada daquele termo. Resolva o captcha na aba e chame `ColetaML.atualizar(...)` de novo com as mesmas opções: ela retoma pelo progresso do dia. Se o servidor recusar ou não responder, também para, com o motivo no console.
+
+### Mercado Livre pela API (catálogo)
+
+Atualiza o **preço** dos anúncios do ML que já estão no banco pela API oficial (`ml_api.py`; para autorizar e conferir o acesso, veja "API oficial do Mercado Livre"). Plano: `docs/produto/planos/api-oficial-ml-catalogo.md`. Ela existe ao lado do console: a coleta de itens novos e o `meli.la` continuam no console, e o que a API não cobre (veja "Cobertura") segue pelo `ColetaML.atualizar` acima.
+
+**Antes do primeiro lote real:**
+
+1. Faça um backup do banco (seção "Backup": banco em WAL, **nunca `cp`**), com o nome `backups/antes-ml-catalogo.db`. **Faça este passo uma vez só**, antes do primeiro lote: repeti-lo depois **sobrescreve** `backups/antes-ml-catalogo.db` sem perguntar, e o backup deixaria de ser o de antes da atualização.
+
+   ```
+   mkdir -p backups
+   python3 -c "import sqlite3;s=sqlite3.connect('file:achadinhos.db?mode=ro',uri=True);d=sqlite3.connect('backups/antes-ml-catalogo.db');s.backup(d);d.close()"
+   ```
+
+2. Rode uma **aba pequena** (`--cat`) e confira **5 itens** atualizados: abra a página do anúncio no ML e compare com o preço que o site mostra. Só siga para as outras abas se baterem. Para achar itens atualizados, abra a aba no site (`localhost:8765`), escolha **"Em dia (N)"** no filtro de idade do preço (o seletor que começa em "Todos os preços", ao lado dos outros filtros) e olhe os cartões do Mercado Livre (o filtro de loja "Mercado Livre" ajuda): o atualizado traz a linha **"Preço de agora há pouco"** (na primeira hora) ou **"Preço de hoje, HH:MM"** (a hora da rodada). O RESUMO do comando só lista os ids dos itens **não vistos**, então não serve para achar os atualizados.
+3. **Reverter:** pare o `servidor.py` **e o `atualizar_precos.py`** (o `--restaurar` só confere a porta do servidor, não vê o outro comando) e use `python3 migrar_categorias.py --restaurar backups/antes-ml-catalogo.db`. No banco real ele pede para digitar `sim` (ou passe `--sim`), como em "Reverter" da migração das categorias. Ele devolve o banco **inteiro**: o que foi atualizado, e tudo o que mudou no site e no disparo desde o backup, se perde. O link de afiliado nunca muda, então não há o que desfazer nele. O `ml_catalogo.json` pode ficar: só tem ids.
+
+```
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 atualizar_precos.py ml --cat "Pets"; unset S
+python3 atualizar_precos.py ml --cat "Pets" --vincular 100 --max-chamadas 1500
+```
+
+- **Secret:** só é usado se o access_token precisar ser renovado (vale 6 h). Se ainda vale, basta teclar Enter no `read`, **mas só se o token durar a rodada inteira**: se ele vencer no meio, o comando sai com 2 e pede o Secret (o que já foi gravado fica). Numa rodada longa, ou se a última renovação foi há umas 5 h, informe o Secret já no começo. Use um terminal só para isso, sem `export`, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`. O segundo exemplo roda sem o Secret (o token tem de estar valendo).
+- **Opções:** `--cat ABA` (uma aba do `buscas.json`; sem ele, todas), `--vincular N` (0 a 1000, padrão 300: quantos anúncios **sem vínculo guardado** são ligados ao catálogo por rodada) e `--max-chamadas N` (1 a 10000, padrão 3000: teto de chamadas à API por rodada; a pausa entre elas é de 0,3 a 0,8 s). `python3 atualizar_precos.py ml --help` lista as três.
+- **O que muda:** só `preco`, `preco_antigo` e `desconto` (e o `preco_em`, que registra a hora). O `atualizado_em` do item também é regravado, como em qualquer atualização pelo servidor: o item reaparece no cursor da API v1 (ordem por atualização). A ordem "recentes" do disparo não muda, porque usa a data de criação do item. **Nunca insere** item e **nunca troca o `meli.la`**. Título, nota, vendas, foto, frete e cupom ficam como estão: o comando relê a linha do banco logo antes de gravar cada item, então o que você ou o console mudaram durante a rodada não é desfeito. O preço é o da **oferta do próprio anúncio** (nunca o do vencedor da página do produto). O `meli.la` continua vindo só do `ColetaML.afiliar()`.
+- **Cobertura:** só anúncio **ligado a um produto de catálogo** tem preço pela API (a busca e o `/items` estão fechados para afiliado). Na sonda real de 05/11/2026, com amostra de 50 itens, **74% (37 de 50) foram provados** num produto de catálogo, e em 12 itens comparáveis (preço do banco de até 48 h) **83% tinham preço igual** ao da API. Os outros ~26% não foram ligados a um produto de catálogo e não são atualizados por aqui (ficam "não vistos"; o `ColetaML.atualizar` do console cobre esses).
+- **Primeiro vínculo e tempos (estimativa, não medida de ponta a ponta):**
+  - Ligar um anúncio ao catálogo custa cerca de 5 chamadas por item (teto conservador: a sonda gastou 241 chamadas para 50 itens, 4,8 por item; essas 241 incluem uns 20 testes fora do vínculo, e as repetições do 429 não entram na conta, só no tempo). Com cerca de 3.800 itens do ML, são uns 18.000 chamadas **só para ligar tudo**, mais ou menos 1 s cada (a sonda levou 239 s para 241 chamadas): **perto de 5 horas só de vínculo, em cerca de 13 rodadas de `--vincular 300`**.
+  - Mas cada rodada **também lê as ofertas** dos itens ligados. Se as rodadas forem no mesmo dia, uma rodada com os padrões gasta uns 1.440 chamadas de vínculo mais de 440 a 880 de ofertas, **de 30 a 40 min**. Se forem em dias diferentes, a outra metade do teto vai para as ofertas dos que já estão ligados, e a rodada chega perto de 3.000 chamadas, **cerca de 50 min**. No total, as ~13 rodadas somam **de 7 a 11 horas**, não 5.
+  - O teto vale para vínculo e ofertas juntos. O vínculo **para de ligar itens novos ao chegar à metade do teto** (linha `[ml] vínculo parou na metade do teto; N itens ficam para a próxima rodada`) e a outra metade fica para ler as ofertas.
+  - **Recomendado: faça a primeira ligação aba por aba, ao longo de vários dias** (`--cat ABA`, uma ou duas rodadas por dia, no tempo que couber no seu dia). Em dias seguidos **é esperado parar no teto (saída 3)**; isso não é erro: rode de novo e a rodada segue de onde parou. Os vínculos já provados ficam em `ml_catalogo.json` (gravados a cada 20 vínculos novos e ao fim, também quando a rodada para) e não custam chamadas de novo; no mesmo dia, o item que já teve o preço atualizado sai da seleção. Em outro dia, o preço de todos volta a ser lido (o preço envelhece), mas o vínculo continua valendo.
+  - Depois de ligados, cada rodada gasta de 2 a 4 chamadas por produto de catálogo (o produto e até 3 páginas da lista de anúncios dele). Para uns 2.800 itens ligados, isso dá de uns 5.600 a uns 11.000 chamadas, **de 1,5 a 3 h por dia, em 2 a 4 rodadas** (o pior caso é um anúncio por produto; anúncios que dividem um produto custam uma vez só).
+- **Arquivo de vínculos:** `ml_catalogo.json` (`ACHADINHOS_ML_CATALOGO` troca o caminho), ao lado do `ml_api.py`, no `.gitignore`, modo 0600, gravado de uma vez. Guarda só ids (anúncio, produto, data e como foi provado), nenhum título nem preço. Só entra vínculo **provado** (o anúncio é o vencedor do produto ou aparece na lista de anúncios dele); título parecido não basta. O **vínculo negativo** (sem produto de catálogo) é tentado de novo depois de 7 dias, o que custa chamadas novas. O **vínculo provado não vence**: se um anúncio sai do produto, ele conta `indisponivel` em toda rodada até você apagar o arquivo, e apagar o arquivo refaz **todos** os vínculos pela API (as chamadas do primeiro vínculo de novo). A leitura é estrita: arquivo que seja link, de outro dono, aberto a grupo ou outros, com mais de 2 MB ou fora do formato é recusado (saída 2); corrija ou apague.
+- **Progresso:** `atualizar_precos_feitos.txt` ganha uma linha `ml|<data>|catalogo|<1º produto do lote>` por lote gravado, só como registro; quem decide o que falta é o `preco_em` de hoje.
+
+**Saídas:**
+
+| Código | Quando | O que fazer |
+|---|---|---|
+| 0 | a rodada terminou. **Não quer dizer que algo foi atualizado**: uma onda de erro passageiro da API termina com 0 atualizados e N não vistos | leia o RESUMO. Muitos "não vistos" por erro: rode de novo mais tarde |
+| 1 | falha de rede (um timeout derruba a rodada) ou erro inesperado (só o tipo na mensagem). Recusa da API e resposta fora do formato **de um item** não chegam aqui: viram "não visto" e a rodada termina com 0 (na renovação, saem com 2) | rede: rode de novo; erro inesperado: mande o tipo ao lead. O que já foi gravado fica |
+| 2 | sem tokens ou autorização vencida; token vencido sem o Secret; Secret ou renovação recusados; permissão do app (403 `PolicyAgent`); arquivo de tokens ou de vínculos recusado | siga a mensagem (`autorizar`, prefixo com o Secret, `chmod 600`, ou corrija/apague o arquivo de vínculos). Se a renovação for recusada **no meio da rodada**, os tokens não mudam, o que já foi gravado fica e o RESUMO não sai: corrija e rode de novo |
+| 3 | **teto de chamadas**: a mensagem `[ml] parou no teto de N chamadas (--max-chamadas); rode de novo para seguir.` e "PAROU: chegou ao teto"; ou **429** (limite da API, depois de 3 tentativas) | teto: rode de novo **sem esperar**. 429: **espere de 15 a 30 min** e rode de novo. Nos dois, o RESUMO sai e o que foi gravado fica |
+| 130 | Ctrl+C | o que já foi gravado fica (cada item é gravado e confirmado na hora) e os vínculos novos são guardados; rode de novo |
+
+**RESUMO** (só contagens e até 20 ids; nunca título nem link). No ML:
+
+- `atualizados`: preço, preço antigo e desconto gravados.
+- `usados`: a oferta traz condição diferente de nova, ou o título é de usado.
+- `sem preço legível` (`sem_preco`): moeda que não é real ou preço inválido; os dados antigos ficam.
+- `indisponíveis`: o anúncio está vinculado, mas não está mais no produto.
+- `sumidos`: o item foi excluído do banco no meio da rodada.
+- `não vistos`: sem vínculo (o produto não existe, ou o anúncio ficou para a próxima rodada por causa do `--vincular` ou da metade do teto), erro passageiro da API ou rodada parada antes dele.
+- `fora do piso` aparece no resumo, mas o ML pela API não confere o piso e esta contagem fica em 0.
+
+Nenhum desses últimos é gravado: o preço do item **envelhece**, como em "O que acontece com o item que sumiu ou mudou".
+
+**Avisos:**
+
+- **Uma máquina e um comando por vez.** O `ml_catalogo.json` não tem trava: dois comandos ao mesmo tempo podem perder vínculos um do outro (só custa chamadas).
+- **`--max-chamadas` abaixo de 40 pode não fechar nenhum lote de ofertas.** Um lote de 20 produtos gasta de 40 a 80 chamadas, e o lote cortado pelo teto **não é gravado**; repetir o mesmo comando recomeça o mesmo lote e não avança. Regra prática: deixe `--max-chamadas` em pelo menos **10 vezes o `--vincular`** (o vínculo usa uns 5 por item e para na metade; o padrão 300 e 3000 já obedece) e nunca abaixo de 160, para sobrar ao menos um lote de 80 na outra metade. Com `--vincular 0` (só ofertas dos já ligados), o teto todo vai para as ofertas: 80 já garantem um lote.
+- **O preço da API pode diferir da vitrine** (e da página do anúncio): em 2 dos 12 itens comparados na sonda a diferença passou de 2%. Por isso a conferência de 5 itens em "Antes do primeiro lote real".
 
 ### Shopee
 

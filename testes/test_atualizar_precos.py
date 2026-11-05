@@ -533,8 +533,9 @@ class TestFonteFalsa(Base):
         self.assertNotIn('Titulo secreto', out)
         self.assertNotIn('http', out)
 
-    def test_fontes_tem_as_duas_lojas(self):
-        self.assertEqual(A.FONTES, {'amazon': A.fonte_amazon_busca, 'shopee': A.fonte_shopee_api})
+    def test_fontes_tem_as_tres_lojas(self):
+        self.assertEqual(A.FONTES, {'amazon': A.fonte_amazon_busca, 'shopee': A.fonte_shopee_api,
+                                    'ml': A.fonte_ml_catalogo})
 
 
 # ---------- Shopee pela Open API (CA4, CA5) ----------
@@ -662,7 +663,7 @@ class TestArgumentos(Base):
     def test_argumentos_invalidos_saem_com_2(self):
         for argv in (['amazon', '--produtos', '501'], ['amazon', '--produtos', '-1'], ['amazon', '--produtos', 'abc'],
                      ['amazon', '--produtos', '١'], ['amazon', '--cat', 'Aba que não existe'], ['shopee'],
-                     ['shopee', '--cat', CAT, '--produtos', '1'], ['ml'], []):
+                     ['shopee', '--cat', CAT, '--produtos', '1'], ['ml', '--vincular', '1001'], []):
             with self.subTest(argv):
                 codigo, out, err = self.rodar(argv)
                 self.assertEqual(codigo, 2)

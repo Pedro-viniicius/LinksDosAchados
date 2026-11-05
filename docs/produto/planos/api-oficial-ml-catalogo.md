@@ -186,6 +186,27 @@ As etapas 1 e 2 dividem `ml_api.py` e o teste, então rodam em sequência. A 3 d
 - P4: critério do G2 aceito (F10 ≥ 25% de provados e F11 ≥ 80% "igual").
 - P5: **(3)** a coleta continua no console; a API fica só para preços. A entrega 2 (CA9) fica suspensa.
 
+## Registro do G2 (2026-11-05, sonda rodada pelo dono: amostra 50 de 3.817, semente 20261105, 241 chamadas, 2×429, 239 s)
+- F7: `/products/search` 200 com `limit=50` (paging.limit 50). Pelo título: 50 de 50 itens com candidato, média de 3,0 candidatos, 1 descartado.
+- F8: `/products/{id}` 200 em 84 de 84. **`buy_box_winner` veio `null` em todos** (também nos 15 do F12). `pictures[].id` em 84, `status` active em 84, sem `children_ids` e sem `category_id` no produto.
+- F9: `/products/{id}/items` 200 em 64 e 404 `not_found` em 20 (todos com `bbw` nulo). `results[]` traz `item_id, price, original_price, currency_id, condition, seller_id, listing_type_id, official_store_id, category_id, shipping`; `paging` com `limit, offset, total`.
+- F10: **37 de 50 provados (74%)**, todos pela lista (0 pelo `bbw`). Por aba: Celulares 8/10, Bebês 5/6, Eletroportáteis 4/5, Pets 4/5, Cozinha 4/4, Casa 3/4, TV/Alexa 3/4, Mercado 2/3, Games 2/4, Beleza 1/2, Eletrodomésticos 1/1, Cama/Mesa/Banho 0/1, Áudio 0/1.
+- F11 (preço do banco até 48 h): **igual 10, até 2% 0, acima de 2% 2 → 83% igual** em 12. Com preço mais antigo: igual 10, até 2% 3, acima de 2% 12 (esperado: o banco está velho).
+- F12: 5 termos → 5×200; 15 produtos ativos, nenhum com `bbw` (a coleta pelo catálogo não teria preço por esse campo).
+- F13: `/reviews/item` 403 PolicyAgent (continua fechado). F14: pulado (sem `category_id` no produto). F15: 403 forbidden.
+- **Critério (Decisão 1 e P4): F8 = 200 ✔, F10 74% ≥ 25% ✔, F11 83% ≥ 80% ✔. G2 aprovado; seguem as etapas 2, 3 e 4.**
+- Consequências para a etapa 2: a prova pelo `bbw` fica no código como está no contrato, mas a prova real é pela lista; o 404 no `/items` conta como "sem oferta" e não derruba. Na etapa 3, o `category_id` do `results[]` não é usado.
+
+## Registro das etapas 2 e 3 (2026-11-05, lead)
+- Etapa 2 (vínculo e `ml_catalogo.json`): duas rodadas. R1/S1 (o `vincular` engolia o inconclusivo e a renovação com 5xx; agora `RenovacaoFalhou` sai do `Sessao.renovar` e o inconclusivo levanta o erro) e Q1 (lista sem `paging.total` válido não é mais negativo conclusivo) corrigidos. Veredito final: revisor aprovado com ressalvas, qa aprovado, segurança sem bloqueios.
+- Etapa 3 (`atualizar_precos.py ml`): rodada 1 sem achado obrigatório. O lead mandou corrigir S1/R5 (reler a linha antes do `upsert`, para não sobrescrever edição feita durante a rodada), R1 (mensagem do teto), R2 ("Nada foi gravado" → "Os tokens não mudaram"), R3 (vínculo para na metade do teto), R4 (`sondar_catalogo` usa `com_teto`) e a leitura dos vínculos antes do banco.
+- **Risco aceito (Q1 da etapa 3):** coluna NULL em `CAMPOS` vira `''` pelo `d.get(c) or ''` do `servidor.upsert`. O banco real tem 0 NULL nesses campos, o front trata `''` e NULL igual e o CA8 proíbe mexer no `servidor.py`.
+- **Riscos aceitos (S2/S3 da etapa 3, informativas):** sem `flock` no `ml_catalogo.json` (premissa: uma máquina, um comando por vez; o README avisa) e `.tmp` só sobra com SIGKILL.
+- O teste `test_ml_api_qa.py::test_nenhum_modulo_do_servidor_ou_do_site_cita_o_ml_api` foi ajustado pelo lead: o `atualizar_precos.py` pode citar `ml_api`/`ACHADINHOS_ML_SECRET` (é a etapa 3), mas continua proibido de citar `ml_tokens`/`ACHADINHOS_ML_TOKENS`.
+- Etapa 3, rodada 2 (2026-11-05): um dev foi cortado pelo limite de uso no meio da correção; outro conferiu as edições, corrigiu 2 desvios (marcador `reler` chegando ao `upsert` e texto da mensagem do teto) e escreveu os testes. Veredito final: qa aprovado (56 testes na suíte `_ml_qa`), revisor aprovado com ressalvas, segurança sem bloqueios. R6 (`--max-chamadas` abaixo de 40 não fecha lote) e R7 (textos) vão como texto na etapa 4.
+- Etapa 4 (2026-11-05): README da fonte `ml` (CA7). Rodada 1 do revisor com R1 (tempo total do primeiro vínculo: de 7 a 11 h, não 5) e R2 (backup antes dos comandos) e as sugestões R3 a R10; rodada 2 deixou R6 e R10 parciais. O dono autorizou uma conferência curta depois da rodada 2: aprovado. Só texto: nenhum código mudou.
+- **Risco aceito pelo dono (05/11, depois da etapa 4):** R3 da segurança, termos de uso do ML para afiliado que usa dados de catálogo (`/products/*`) para atualizar preço; ninguém leu os termos. Mitigações: só leitura, teto de chamadas por rodada, pausa entre chamadas e parada no 429. O R2 da segurança (`code` do OAuth no log da Hostinger) já foi aceito pelo dono em 05/11 (`api-oficial-ml.md`, "Risco aceito pelo dono").
+
 ## ADR
 **ADR: o preço do ML pelo catálogo, com o vínculo provado por pertença e guardado num cache local.**
 - **Contexto:** `/items/*` e `/sites/MLB/search` estão fechados para afiliado. Só o `/products/*` responde, e o banco tem anúncios, não produtos.

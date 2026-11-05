@@ -16,15 +16,22 @@ metadata:
 - Conferido em 2026-11-04 (atualizar-precos, E1-E6, rodada 1): gatilhos não dispararam (`so_existentes` só estreita o POST; origens, `ROTAS_ML`, `METODOS_ML`, bind iguais; config fora de `ROTAS_ML`). Impacto novo: a origem do ML carimba `preco_em` (POST/PATCH `data`) e fura a trava de preço velho com preço falso, ou zera o `preco_em` (tira item do disparo); `cat` plantada chegava a comando de terminal copiado (S1 BAIXA, fechado na rodada 2). Lead levaria os dois impactos ao dono no resumo final.
 - Volta como achado se: a allowlist de origens crescer, `ROTAS_ML`/`METODOS_ML` ganharem DELETE/PUT/config/fetch, CA7 deixar de valer, ou o servidor escutar fora de 127.0.0.1.
 
-**R2 (PROPOSTO, aguardando o dono; não é aceito ainda) — `code` do OAuth do ML no log de acesso da Hostinger e no histórico do navegador** (plano api-oficial-ml, "Pontos para o seguranca"; levado ao lead em 2026-11-05).
+**R2 (ACEITO pelo dono em 2026-11-05; registrado em `docs/produto/planos/api-oficial-ml.md`, "Risco aceito pelo dono") — `code` do OAuth do ML no log de acesso da Hostinger e no histórico do navegador** (plano api-oficial-ml, "Pontos para o seguranca").
 - Mitigação declarada: code de uso único e curto, exige o verifier PKCE (só em memória do `autorizar`) e o Secret (só no env do dono); página sem JS, CSP `default-src 'none'`, `no-store`, `no-referrer`, `noindex`, `frame-ancestors 'none'`.
 - Volta como achado se: o PKCE não for obrigatório no app do DevCenter E o Secret ficar em algum lugar além do env do comando; a página ganhar JS/recurso externo; o verifier for para disco.
 
-**R3 (PROPOSTO, aguardando o dono) — termos de uso do ML para afiliado que usa dados de catálogo (`/products/*`) para atualizar preço** (plano api-oficial-ml-catalogo, "Pontos para o seguranca"; ninguém leu os termos; levado ao lead em 2026-11-05, E1 rodada 1).
+**R3 (ACEITO pelo dono em 2026-11-05; registrado em `docs/produto/planos/api-oficial-ml-catalogo.md`, "Risco aceito pelo dono") — termos de uso do ML para afiliado que usa dados de catálogo (`/products/*`) para atualizar preço** (plano api-oficial-ml-catalogo, "Pontos para o seguranca"; ninguém leu os termos; levado ao lead em 2026-11-05, E1 rodada 1).
 - Mitigação declarada: só leitura, teto de chamadas por rodada, pausa 0,3-0,8 s, nada de scraping; nenhum dado de terceiro (seller_id) sai ou é gravado.
 - Pior caso: app suspensa/bloqueada no DevCenter; o console continua como fallback.
 
 **Q1 / pendência INFORMATIVA — aceita pelo lead em 2026-11-05 (catálogo E1, rodada 2; não precisa do dono por ser INFORMATIVA):** abrir o banco WAL em `mode=ro` com servidor parado (`itens_do_banco`, `ids_do_banco`, `test_ml_api_qa` sobre o banco real) deixa `achadinhos.db-wal` (0 B) e `-shm` (32 KB, sem dado de linha; medido) 0644 na raiz, cobertos por `*.db-wal`/`*.db-shm` no `.gitignore`; `/home/ufla` é 0750.
 - Volta como achado se: os arquivos saírem do `.gitignore`, o servidor passar a servir a pasta, ou o `-wal` passar a ter conteúdo gravado por esses leitores (abrir com escrita).
+
+**Q1 da etapa 3 do catálogo — aceito pelo lead em 2026-11-05 (registrado no plano api-oficial-ml-catalogo):** coluna NULL em `CAMPOS` vira `''` pelo `d.get(c) or ''` do `servidor.upsert` (banco real com 0 NULL nesses campos; o front trata igual).
+- Volta como achado se: `''` e NULL passarem a ter sentido diferente na leitura.
+
+**S2/S3 do catálogo (INFORMATIVAS, aceitas pelo lead em 2026-11-05, etapa 3 rodada 2; registradas no plano; o aviso "uma máquina, um comando por vez" no README é da etapa 4, confira lá):** `ml_catalogo.json` sem `flock` (premissa "uma máquina, um comando por vez", escrita no docstring do `atualizar_precos.py`) e sem limpeza de `.ml_catalogo.json.*.tmp`.
+- Mitigação declarada: `os.replace` atômico + leitor estrito (nunca corrompe nem segue symlink); pior caso de 2 rodadas juntas = vínculos perdidos refeitos pela API (custo de chamadas, R3); o vínculo forjado/velho não injeta preço (pertença reconferida em `ofertas_do_produto`); `.tmp` só sobra em SIGKILL/queda (Ctrl+C limpa, medido), tem só ids, 0600, no `.gitignore`.
+- Volta como achado se: o arquivo passar a ter segredo ou dado pessoal; o preço passar a vir só do cache sem reconferir a pertença; aparecer agendamento automático (cron/servidor) que rode duas fontes `ml` ao mesmo tempo; o padrão `.ml_catalogo.json.*.tmp` sair do `.gitignore`.
 
 Ver [[problemas-recorrentes]], [[areas-sensiveis]].

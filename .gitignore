@@ -33,6 +33,10 @@ ml_tokens.json
 ml_tokens.json.lock
 # sobra da escrita atômica (.ml_tokens.json.<16 hex>.tmp) quando o processo morre no meio: tem os tokens
 .ml_tokens.json.*.tmp
+# Vínculos anúncio → produto de catálogo do ML (ml_api.py, ACHADINHOS_ML_CATALOGO): cache local, sem segredo,
+# e a sobra da escrita atômica (.ml_catalogo.json.<16 hex>.tmp)
+ml_catalogo.json
+.ml_catalogo.json.*.tmp
 
 # Estado local do Claude Code
 .claude/scheduled_tasks.lock

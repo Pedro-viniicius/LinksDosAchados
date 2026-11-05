@@ -2,7 +2,7 @@
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global, regra da spec sem medir, cor da referência sem conferir
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
 - [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível persistente por config, toggle às cegas; formatos reais via GET
-- [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo com o estado que ele cria; a doc herda erro do plano (FEITOS novo recoleta tudo)
+- [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo; some todas as fases; backup antes dos comandos; na r2, grep em toda consequência nova
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
 - [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
@@ -11,4 +11,4 @@
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
 - [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
-- [API oficial do ML](padroes-ml-api.md) — etapas 1-3 aprovadas na r2; borda .lock existente + pasta sem escrita gasta o code; check-ignore -q com vários dá 128; mutantes precisam do README na cópia
+- [API oficial do ML](padroes-ml-api.md) — etapas 1-3 e catálogo 1-3 aprovadas; catálogo etapa 4 (README) aprovada na conferência pós-r2

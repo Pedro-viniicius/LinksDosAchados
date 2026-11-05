@@ -3,8 +3,10 @@
 
 Uso:  python3 atualizar_precos.py amazon [--cat "<aba>"] [--produtos N]
       python3 atualizar_precos.py shopee --cat "<aba>"
+      python3 atualizar_precos.py ml [--cat "<aba>"] [--vincular N] [--max-chamadas N]
 
-Plano: docs/produto/planos/atualizar-precos.md, etapa 4 (CA2, CA4, CA5, CA10 e CA11).
+Plano: docs/produto/planos/atualizar-precos.md, etapa 4 (CA2, CA4, CA5, CA10 e CA11); a fonte `ml` vem de
+docs/produto/planos/api-oficial-ml-catalogo.md, etapa 3 (CA4, CA5 e CA8).
 
 Ponto de troca (CA10): a seleção dos itens, a gravação e o resumo ficam aqui; cada loja é uma fonte em
 `FONTES`. Uma fonte é `fonte(itens, opcoes)`: recebe `{item_id: linha}` e gera `(rotulo, [Observacao, ...])`,
@@ -14,7 +16,8 @@ entra uma fonte nova por id, e o resto não muda.
 - Seleção: itens da loja nas abas (`--cat` ou todas as do buscas.json), com id no formato da loja (ASIN ou
   <shopId>.<itemId>) e cujo preço não foi confirmado hoje (preco_em de outro dia, nulo ou malformado).
 - Gravação: só observação `ok` de item selecionado, com título e preço legível (servidor.ler_preco), pelo
-  `servidor.upsert(..., inserir=False)`, com commit por página. Item sem preço legível não vai ao upsert
+  `servidor.upsert(..., inserir=False)`, com commit por página (no ml, por item: a releitura abre uma transação
+  para cada um). Item sem preço legível não vai ao upsert
   (que apagaria o preço e zeraria o preco_em): conta como "sem preço" e mantém os dados antigos.
   Item que sumiu, ficou indisponível, caiu do piso ou virou usado não é gravado nem apagado: entra no resumo,
   o preço dele envelhece e a trava do disparo o tira de lá (CA5).
@@ -33,15 +36,32 @@ Shopee (`fonte_shopee_api`): pela Open API, com `coletar_shopee.credenciais`/`bu
     read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat ...; unset S
   O Secret é lido com pop e nunca vai para argumento, arquivo, saída ou mensagem de erro.
 
+Mercado Livre (`fonte_ml_catalogo`): pela API oficial (ml_api.py), só pelo catálogo. O anúncio do banco se liga a um
+produto de catálogo com prova (ml_api.vincular; cache em ml_catalogo.json, lido antes de qualquer gravação e gravado
+a cada 20 vínculos novos); até --vincular itens (padrão 300, máximo 1000) sem vínculo no cache são vinculados por
+rodada. O preço vem só da oferta do próprio anúncio (ml_api.ofertas_do_produto); título, nota, vendas, foto, frete e
+cupom vêm do banco, relido logo antes de gravar (na mesma transação do upsert: o que o site ou o console mudar no
+meio da rodada fica); só preco, preco_antigo e desconto mudam. Condição diferente de new ou título de usado: `usado`;
+moeda diferente de BRL ou preço inválido (abaixo de R$ 0,01): `sem_preco`; vinculado mas fora do produto:
+`indisponivel`; sem vínculo, com erro passageiro da API ou além do --vincular: não visto. Nenhum deles é gravado.
+Teto de --max-chamadas GETs (padrão 3000, máximo 10000) com pausa de 0,3 a 0,8 s entre eles; o vínculo para de ligar
+itens novos ao chegar à metade do teto (a outra metade fica para as ofertas); o teto e o 429 param com saída 3.
+Tokens do `ml_api.py autorizar`; o Secret só é usado se o token precisar ser renovado:
+    read -rs S; ACHADINHOS_ML_SECRET="$S" python3 atualizar_precos.py ml --cat ...; unset S
+Premissa: uma máquina e um comando por vez (o arquivo de vínculos não tem trava).
+
 Progresso por dia em atualizar_precos_feitos.txt (ACHADINHOS_FEITOS_ATUALIZAR troca o arquivo), linhas
-`<loja>|<AAAA-MM-DD>|<ordem>|<termo>` (na página do produto, `<loja>|<AAAA-MM-DD>|produto|<ASIN>`). Rodar de novo
+`<loja>|<AAAA-MM-DD>|<ordem>|<termo>` (na página do produto, `<loja>|<AAAA-MM-DD>|produto|<ASIN>`; no ML,
+`ml|<AAAA-MM-DD>|catalogo|<1º produto do lote>`, só registro: o ML retoma pelo preco_em). Rodar de novo
 no mesmo dia retoma de onde parou. Não lê nem grava coleta_amazon_feitos.txt além de consultar as ordens.
 
-Saída: 0 ok; 1 erro (dono errado, API recusou, resposta fora do formato); 2 argumento ou configuração
-(aba fora do buscas.json, ID de afiliado ou credenciais da Shopee); 3 bloqueio ou limite (o progresso fica salvo).
+Saída: 0 ok; 1 erro (dono errado, API recusou, resposta fora do formato, rede); 2 argumento ou configuração
+(aba fora do buscas.json, ID de afiliado ou credenciais da Shopee; no ML, tokens ausentes ou recusados, falta do
+Secret com o token vencido, renovação recusada, permissão do app ou arquivo de vínculos recusado); 3 bloqueio,
+limite ou teto de chamadas (o progresso fica salvo).
 """
-import argparse, json, os, re, sys, unicodedata, urllib.error
-from collections import namedtuple
+import argparse, contextlib, json, os, re, sys, unicodedata, urllib.error
+from collections import Counter, namedtuple
 from datetime import date, datetime
 import servidor as S
 import disparo as D
@@ -51,17 +71,33 @@ BUSCAS = os.path.join(BASE, 'buscas.json')
 FEITOS = os.environ.get('ACHADINHOS_FEITOS_ATUALIZAR') or os.path.join(BASE, 'atualizar_precos_feitos.txt')
 MAX_PRODUTOS = 500
 MAX_IDS_RESUMO = 20
-SITUACOES = ('ok', 'fora_do_piso', 'usado', 'indisponivel', 'sumiu')
+SITUACOES = ('ok', 'fora_do_piso', 'usado', 'indisponivel', 'sumiu', 'sem_preco')
 # id do item que a fonte da loja sabe procurar (e que pode sair no resumo)
-ID_DA_LOJA = {'amazon': re.compile(r'[A-Z0-9]{10}'), 'shopee': re.compile(r'[0-9]{1,20}\.[0-9]{1,20}')}
+ID_DA_LOJA = {'amazon': re.compile(r'[A-Z0-9]{10}'), 'shopee': re.compile(r'[0-9]{1,20}\.[0-9]{1,20}'),
+              'ml': re.compile(r'MLB[0-9]{6,19}')}
+VINCULAR_PADRAO, MAX_VINCULAR = 300, 1000          # itens vinculados pela API por rodada (ml)
+CHAMADAS_PADRAO, MAX_CHAMADAS = 3000, 10000        # teto de GETs por rodada (ml)
+PRODUTOS_POR_LOTE = 20     # produtos de catálogo por página do ml (rótulo catalogo|<1º produto>)
+VINCULOS_POR_GRAVACAO = 20  # vínculos novos entre duas gravações do ml_catalogo.json
+PRECO_MIN_ML = 0.01        # abaixo disso o formatar_preco daria "R$ 0,00": sem preço
+URL_ML = 'https://produto.mercadolivre.com.br/MLB-{}'   # a mesma forma do coletar_ml.js, montada pelo id
 TENTATIVAS_PAGINA = 3   # às vezes a Amazon devolve uma página sem resultados (como no coletar_amazon)
 
 # item_id e situacao (SITUACOES); `it` no formato do servidor.upsert, só quando a situação é 'ok'
 Observacao = namedtuple('Observacao', 'item_id situacao it')
+# marcador em `it` (fonte ml): o gravar_pagina relê a linha e troca só os CAMPOS_DO_PRECO sobre ela
+RELER = 'reler'
+CAMPOS_DO_PRECO = ('preco', 'preco_antigo', 'desconto')
+TETO = 'teto'   # motivo do Bloqueio quando o teto de chamadas (--max-chamadas) foi atingido
 
 
 class Bloqueio(Exception):
-    """Captcha, 503 ou 429 da Amazon, ou limite da API da Shopee: para com saída 3 e o progresso salvo."""
+    """Captcha, 503 ou 429 da Amazon, limite da API da Shopee, ou 429 e teto de chamadas da API do ML: para com
+    saída 3 e o progresso salvo. `motivo` é None (a loja bloqueou) ou TETO (o teto posto pelo dono)."""
+
+    def __init__(self, motivo=None):
+        super().__init__()
+        self.motivo = motivo
 
 
 class ArgInvalido(ValueError):
@@ -113,11 +149,15 @@ def selecionar(con, loja, abas, dia):
     Fica de fora o item cujo preço já foi confirmado no dia `dia` e o de id fora do formato da loja.
     "Confirmado no dia" usa o mesmo parse estrito da trava (disparo.ler_preco_em): preco_em malformado
     é velho e entra na seleção, qualquer que seja o prefixo.
+    A linha traz também os S.CAMPOS. Na fonte ml ela só alimenta o vínculo (o título), o eh_usado e a montagem da
+    observação: o que é gravado vem da linha relida no banco logo antes (RELER, em _gravar_relendo), com só os
+    CAMPOS_DO_PRECO trocados.
     """
     if not abas:
         return {}, 0
     marcas = ','.join('?' * len(abas))
-    linhas = con.execute(f'SELECT id, item_id, cat, busca, preco, preco_em FROM items '
+    colunas = ', '.join(['id', 'item_id', 'cat', 'busca', 'preco_em'] + S.CAMPOS)   # o preco vem nos CAMPOS
+    linhas = con.execute(f'SELECT {colunas} FROM items '
                          f'WHERE loja=? AND cat IN ({marcas}) ORDER BY id', [loja, *abas]).fetchall()
     formato = ID_DA_LOJA[loja]
     itens, ja = {}, 0
@@ -164,17 +204,46 @@ def gravar_pagina(con, loja, itens, observacoes, estado):
         it = obs.it
         if not isinstance(it, dict) or it.get('loja') != loja or it.get('item_id') != iid:
             raise ValueError('a fonte devolveu um item de outra loja ou de outro id')
-        data = it.get('data') or {}
-        if not data.get('titulo'):
-            estado[iid] = 'indisponivel'
-            continue
-        if S.ler_preco(data.get('preco')) is None:
-            estado[iid] = 'sem_preco'   # não vai ao upsert: o preço antigo e o preco_em ficam
-            continue
-        r = S.upsert(con, it, inserir=False)
-        estado[iid] = 'atualizado' if r == 'atualizado' else 'sumiu'   # 'ausente': excluído no meio do lote
-        n += estado[iid] == 'atualizado'
+        n += _gravar_relendo(con, it, estado) if it.get(RELER) else _gravar(con, it, estado)
     return n
+
+
+def _gravar(con, it, estado):
+    """Grava um item `ok` pelo upsert(inserir=False) e anota a situação em `estado`. Devolve 1 se atualizou."""
+    iid, data = it['item_id'], it.get('data') or {}
+    if not data.get('titulo'):
+        estado[iid] = 'indisponivel'
+        return 0
+    if S.ler_preco(data.get('preco')) is None:
+        estado[iid] = 'sem_preco'   # não vai ao upsert: o preço antigo e o preco_em ficam
+        return 0
+    r = S.upsert(con, it, inserir=False)
+    estado[iid] = 'atualizado' if r == 'atualizado' else 'sumiu'   # 'ausente': excluído no meio do lote
+    return int(estado[iid] == 'atualizado')
+
+
+def _gravar_relendo(con, it, estado):
+    """Como _gravar, mas sobre a linha de agora (S1): a rodada do ml dura horas e o upsert regrava todos os CAMPOS,
+    então o título, o cupom ou a nota que o site ou o console mudaram depois da seleção voltariam ao valor velho.
+    Relê os CAMPOS e grava só os CAMPOS_DO_PRECO de `it` sobre eles, dentro de um BEGIN IMMEDIATE com o upsert
+    (nenhuma escrita entra entre a leitura e a gravação) e commit logo depois. Linha apagada: vai ao upsert como veio,
+    que devolve 'ausente' sem gravar (conta `sumiu`). O marcador RELER não vai ao upsert."""
+    it = {k: v for k, v in it.items() if k != RELER}
+    if con.in_transaction:
+        con.commit()
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        atual = con.execute(f'SELECT {", ".join(S.CAMPOS)} FROM items WHERE loja=? AND item_id=?',
+                            (it['loja'], it['item_id'])).fetchone()
+        if atual is not None:
+            novo = it.get('data') or {}
+            it = dict(it, data={**dict(atual), **{c: novo.get(c) for c in CAMPOS_DO_PRECO}})
+        n = _gravar(con, it, estado)
+        con.commit()
+        return n
+    except BaseException:
+        con.rollback()
+        raise
 
 
 def atualizar(loja, abas, opcoes):
@@ -190,7 +259,7 @@ def atualizar(loja, abas, opcoes):
         itens, ja = selecionar(con, loja, list(abas), dia)
         opcoes = dict(opcoes, buscas=abas, feitos=feitos(loja, dia), agora=datetime.now(),
                       validade=D.validade_horas(con))
-        estado, parou = {}, False
+        estado, parou, motivo = {}, False, None
         try:
             for rotulo, observacoes in fonte({k: dict(v) for k, v in itens.items()}, opcoes):
                 observacoes = list(observacoes)
@@ -200,16 +269,17 @@ def atualizar(loja, abas, opcoes):
                     marcar(loja, dia, rotulo)
                     vistos = sum(1 for o in observacoes if o.item_id in itens)
                     print(f'[{loja}] {rotulo}: {vistos} dos selecionados vistos, {n} atualizados', flush=True)
-        except Bloqueio:
+        except Bloqueio as e:
             con.rollback()
-            parou = True
+            parou, motivo = True, e.motivo
     finally:
         con.close()
     contagem = {s: sum(1 for v in estado.values() if v == s)
                 for s in ('atualizado', 'sem_preco', 'fora_do_piso', 'usado', 'indisponivel', 'sumiu')}
     nao_vistos = [iid for iid in itens if iid not in estado]
     return {'loja': loja, 'selecionados': len(itens), 'ja_hoje': ja, **contagem,
-            'nao_vistos': len(nao_vistos), 'ids_nao_vistos': nao_vistos[:MAX_IDS_RESUMO], 'parou': parou}
+            'nao_vistos': len(nao_vistos), 'ids_nao_vistos': nao_vistos[:MAX_IDS_RESUMO], 'parou': parou,
+            'motivo': motivo}
 
 
 def texto_resumo(r):
@@ -368,7 +438,125 @@ def fonte_shopee_api(itens, opcoes):
             yield rotulo, obs
 
 
-FONTES = {'amazon': fonte_amazon_busca, 'shopee': fonte_shopee_api}
+# ---------- fonte do Mercado Livre: API oficial pelo catálogo ----------
+def _observacao_ml(M, iid, linha, oferta):
+    """Observação de um anúncio vinculado pela oferta dele (ofertas_do_produto). Só preco, preco_antigo e desconto
+    vêm da API; o resto dos dados é o do banco, relido na gravação (RELER). A url é montada pelo id (o upsert mantém
+    o meli.la)."""
+    if oferta is None:
+        return Observacao(iid, 'indisponivel', None)   # vinculado, mas o anúncio saiu do produto
+    if oferta.condicao != 'new' or M.eh_usado(linha.get('titulo')):
+        return Observacao(iid, 'usado', None)
+    if not M.oferta_valida(oferta) or oferta.preco < PRECO_MIN_ML:
+        return Observacao(iid, 'sem_preco', None)
+    antigo, desconto = M.desconto(oferta.preco, oferta.preco_antigo)
+    data = {c: linha.get(c) or '' for c in S.CAMPOS}
+    data.update(preco=M.formatar_preco(oferta.preco), preco_antigo=antigo, desconto=desconto)
+    return Observacao(iid, 'ok', {'loja': 'ml', 'item_id': iid, 'cat': linha['cat'], 'busca': linha['busca'],
+                                  'url': URL_ML.format(iid[len('MLB'):]), 'data': data, RELER: True})
+
+
+def _gravar_vinculos_no_erro(M, vinculos):
+    """Guarda os vínculos novos quando a rodada para no meio. Uma falha aqui não troca o erro que parou a rodada
+    (o vínculo perdido só é refeito pela API)."""
+    with contextlib.suppress(M.ErroML, OSError):
+        M.gravar_vinculos(vinculos)
+
+
+def _vincular_ml(M, chamadas, itens, vinculos, dia, maximo, metade):
+    """{pid: [item_id]} dos itens com vínculo provado, pelo cache ou pela API (até `maximo` itens sem vínculo no
+    cache, na ordem da seleção, e só enquanto `chamadas.feitas` não chega a `metade`, para sobrar teto às ofertas).
+    `vinculos` é o dict já lido por ler_vinculos; os novos vão para o arquivo a cada VINCULOS_POR_GRAVACAO e no fim.
+    Erro passageiro de um item (ErroApi, RespostaInvalida) conta e segue, sem anotar nada; renovação recusada,
+    limite, rede, autorização, permissão e teto param a rodada."""
+    por_produto, conta, sujos = {}, Counter(), 0
+    try:
+        for iid, linha in itens.items():
+            vinculo = M.vinculo_do_cache(vinculos, iid, dia)
+            if vinculo is not None:
+                conta['cache'] += 1
+            elif conta['api'] >= maximo:
+                conta['adiados'] += 1
+                continue
+            elif chamadas.feitas >= metade:
+                conta['metade'] += 1   # não vistos nesta rodada
+                continue
+            else:
+                conta['api'] += 1
+                try:
+                    vinculo = M.vincular(chamadas, iid, linha.get('titulo'), vinculos=vinculos, hoje=dia)
+                except (M.RenovacaoFalhou, M.RenovacaoInvalida):
+                    raise   # subclasses de ErroApi e RespostaInvalida: param a rodada (um POST com o Secret só)
+                except (M.ErroApi, M.RespostaInvalida):
+                    conta['erro'] += 1
+                    continue
+                sujos += 1
+                if sujos >= VINCULOS_POR_GRAVACAO:
+                    M.gravar_vinculos(vinculos)
+                    sujos = 0
+            pid = vinculo[0]
+            if pid:
+                por_produto.setdefault(pid, []).append(iid)
+            else:
+                conta['sem_produto'] += 1
+    except BaseException:
+        if sujos:
+            _gravar_vinculos_no_erro(M, vinculos)
+        raise
+    if sujos:
+        M.gravar_vinculos(vinculos)
+    vinculados = sum(len(v) for v in por_produto.values())
+    print(f'[ml] vínculos: {vinculados} itens em {len(por_produto)} produtos de catálogo, {conta["sem_produto"]} sem '
+          f'produto; {conta["cache"]} vieram do cache e {conta["api"]} foram à API ({conta["erro"]} com erro '
+          f'passageiro); {conta["adiados"]} ficam para a próxima rodada (--vincular {maximo}).', flush=True)
+    if conta['metade']:
+        print(f'[ml] vínculo parou na metade do teto; {conta["metade"]} itens ficam para a próxima rodada.', flush=True)
+    return por_produto
+
+
+def _ofertas_ml(M, chamadas, itens, por_produto):
+    """Uma página por lote de PRODUTOS_POR_LOTE produtos: ('catalogo|<1º pid>', [Observacao]). Erro passageiro de
+    um produto deixa os anúncios dele sem observação (não vistos) e segue; o resto para a rodada."""
+    pids, erros = sorted(por_produto), 0
+    for inicio in range(0, len(pids), PRODUTOS_POR_LOTE):
+        lote, obs = pids[inicio:inicio + PRODUTOS_POR_LOTE], []
+        for pid in lote:
+            ids = por_produto[pid]
+            try:
+                ofertas = M.ofertas_do_produto(chamadas, pid, ids)
+            except (M.RenovacaoFalhou, M.RenovacaoInvalida):
+                raise
+            except (M.ErroApi, M.RespostaInvalida):
+                erros += len(ids)
+                continue
+            obs.extend(_observacao_ml(M, iid, itens[iid], ofertas.get(iid)) for iid in ids)
+        yield f'catalogo|{lote[0]}', obs
+    if erros:
+        print(f'[ml] ofertas: {erros} anúncios ficaram sem leitura por erro passageiro da API (não vistos).', flush=True)
+
+
+def fonte_ml_catalogo(itens, opcoes):
+    """Preço pela API oficial do ML, só pelo catálogo (ver a docstring do módulo). `opcoes` traz a `sessao`
+    (ml_api.Sessao), `vincular`, `max_chamadas` e `vinculos` (o dict de ml_api.ler_vinculos, lido pelo _rodar_ml antes
+    de abrir o banco; sem ele, é lido aqui). Toda chamada passa pela vista com teto e pausa (ml_api.com_teto).
+    Retomada pelo preco_em de hoje: o item atualizado sai da seleção; o rótulo do lote é só registro."""
+    import ml_api as M
+    maximo = opcoes.get('max_chamadas', CHAMADAS_PADRAO)
+    # sempre antes de qualquer gravação; arquivo recusado: saída 2, nada gravado
+    vinculos = opcoes['vinculos'] if 'vinculos' in opcoes else M.ler_vinculos()
+    with M.com_teto(opcoes['sessao'], maximo) as chamadas:
+        try:
+            por_produto = _vincular_ml(M, chamadas, itens, vinculos, opcoes['agora'].date().isoformat(),
+                                       opcoes.get('vincular', VINCULAR_PADRAO), maximo // 2)
+            yield from _ofertas_ml(M, chamadas, itens, por_produto)
+        except M.Limite:
+            raise Bloqueio() from None
+        except M.TetoAtingido:
+            print(f'[ml] parou no teto de {maximo} chamadas (--max-chamadas); rode de novo para seguir.', flush=True)
+            raise Bloqueio(TETO) from None
+
+
+FONTES = {'amazon': fonte_amazon_busca, 'shopee': fonte_shopee_api, 'ml': fonte_ml_catalogo}
 
 
 # ---------- linha de comando ----------
@@ -376,6 +564,14 @@ def _produtos(texto):
     if not re.fullmatch(r'[0-9]{1,3}', texto, re.A) or int(texto) > MAX_PRODUTOS:
         raise argparse.ArgumentTypeError(f'use um número de 0 a {MAX_PRODUTOS}')
     return int(texto)
+
+
+def _inteiro_de(minimo, maximo):
+    def ler(texto):
+        if not re.fullmatch(r'[0-9]{1,5}', texto, re.A) or not minimo <= int(texto) <= maximo:
+            raise argparse.ArgumentTypeError(f'use um número de {minimo} a {maximo}')
+        return int(texto)
+    return ler
 
 
 def ler_argumentos(argv):
@@ -388,6 +584,14 @@ def ler_argumentos(argv):
                    help=f'abre a página do produto de até N itens não vistos e velhos (0 a {MAX_PRODUTOS}, padrão 0)')
     s = sub.add_parser('shopee', help='pela Open API de afiliados (credenciais só no ambiente do comando)')
     s.add_argument('--cat', required=True, help='aba do buscas.json')
+    m = sub.add_parser('ml', help='pela API oficial do Mercado Livre, só pelo catálogo (tokens do ml_api.py autorizar)')
+    m.add_argument('--cat', help='só os itens desta aba do buscas.json')
+    m.add_argument('--vincular', type=_inteiro_de(0, MAX_VINCULAR), default=VINCULAR_PADRAO,
+                   help=f'itens sem vínculo no cache ligados ao catálogo pela API nesta rodada (0 a {MAX_VINCULAR}, '
+                        f'padrão {VINCULAR_PADRAO})')
+    m.add_argument('--max-chamadas', type=_inteiro_de(1, MAX_CHAMADAS), default=CHAMADAS_PADRAO,
+                   help=f'teto de chamadas à API nesta rodada (1 a {MAX_CHAMADAS}, padrão {CHAMADAS_PADRAO}); '
+                        'abaixo de 40 pode não fechar nenhum lote de ofertas e a rodada não avança')
     args = p.parse_args(argv)
     try:
         args.abas = abas_escolhidas(args.cat)
@@ -398,6 +602,10 @@ def ler_argumentos(argv):
 
 def _resultado(resumo):
     print(texto_resumo(resumo), flush=True)
+    if resumo['parou'] and resumo.get('motivo') == TETO:
+        print('PAROU: chegou ao teto de chamadas (--max-chamadas); rode de novo para seguir, sem precisar esperar.',
+              file=sys.stderr, flush=True)
+        return 3
     if resumo['parou']:
         print('PAROU: a loja bloqueou (captcha, 503, 429 ou limite da API). O progresso foi salvo; '
               'espere de 15 a 30 minutos e rode de novo.', file=sys.stderr, flush=True)
@@ -439,9 +647,36 @@ def _rodar_shopee(args):
         return 1
 
 
+MSG_SECRET_ML = ('o acesso ao Mercado Livre venceu e precisa ser renovado com o Secret do app '
+                 '(ACHADINHOS_ML_SECRET). Num terminal só para isso, sem export: read -rs S; ACHADINHOS_ML_SECRET="$S" '
+                 'python3 atualizar_precos.py ml [--cat ...]; unset S')
+
+
+def _rodar_ml(args):
+    import ml_api as M
+    sessao = M.sessao_do_ambiente()   # pop do Secret: sai do ambiente deste processo
+    try:
+        # tokens antes do banco: sem arquivo, sem o Secret com o token vencido ou com a renovação recusada, para aqui
+        # (o Secret só é usado se o token precisar ser renovado)
+        sessao.token()
+        # vínculos antes do banco: arquivo recusado sai com 2 sem abrir nem migrar o banco
+        vinculos = M.ler_vinculos()
+        S.criar_banco()
+        return _resultado(atualizar('ml', args.abas, {'sessao': sessao, 'vincular': args.vincular,
+                                                      'max_chamadas': args.max_chamadas, 'vinculos': vinculos}))
+    except M.ConfigFaltando as e:
+        print(f'ERRO: {e if isinstance(e, M.TokensRecusados) else MSG_SECRET_ML}', file=sys.stderr, flush=True)
+        return e.saida
+    except M.ErroML as e:   # mensagens fixas do ml_api, com status e código filtrados
+        print(f'{"PAROU" if e.saida == 3 else "ERRO"}: {e}', file=sys.stderr, flush=True)
+        return e.saida
+
+
 def main(argv=None):
     args = ler_argumentos(sys.argv[1:] if argv is None else argv)
     try:
+        if args.loja == 'ml':
+            return _rodar_ml(args)
         return _rodar_shopee(args) if args.loja == 'shopee' else _rodar_amazon(args)
     except KeyboardInterrupt:
         print('Interrompido. O progresso das páginas já gravadas foi salvo.', file=sys.stderr, flush=True)

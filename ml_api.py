@@ -8,7 +8,8 @@ Uso:  python3 ml_api.py autorizar   (pede o Secret no ambiente do comando)
       python3 ml_api.py sair
 
 Plano: docs/produto/planos/api-oficial-ml.md, etapas 1 e 2 (CA2 a CA6, CA9); o `sondar --catalogo` é a etapa 1 de
-docs/produto/planos/api-oficial-ml-catalogo.md (CA1, CA2).
+docs/produto/planos/api-oficial-ml-catalogo.md (CA1, CA2), e o vínculo anúncio → produto de catálogo com as ofertas
+por produto (`vincular`, `ofertas_do_produto`, `ler_vinculos`/`gravar_vinculos`) é a etapa 2 (CA3).
 
 Este é o único módulo que fala com a API do ML. Ele não importa o servidor.py: nenhum código do servidor
 toca o arquivo de tokens, e os tokens nunca vão para a tabela config, para rota, página ou log.
@@ -21,6 +22,8 @@ Ambiente:
   ACHADINHOS_ML_TOKENS  arquivo dos tokens (padrão ml_tokens.json ao lado deste arquivo, no .gitignore).
   ACHADINHOS_DB  banco de onde o `sondar` lê 3 ids MLB (e o `sondar --catalogo`, a amostra), em modo só leitura
       (como no servidor.py).
+  ACHADINHOS_ML_CATALOGO  arquivo de vínculos anúncio → produto de catálogo (padrão ml_catalogo.json ao lado deste
+      arquivo, no .gitignore). Não é segredo.
 Nenhuma variável troca o host da API, o Client ID ou o endereço de retorno.
 
 Arquivo de tokens (JSON, até 4 KB, modo 0600, gravado por escrita atômica):
@@ -30,18 +33,27 @@ A leitura recusa symlink, arquivo que não é comum, dono diferente do usuário,
 A renovação roda sob flock exclusivo em <arquivo>.lock, relendo o arquivo dentro do lock: o refresh_token é de
 uso único, então dois comandos ao mesmo tempo não podem gastá-lo duas vezes.
 
+Arquivo de vínculos (JSON ASCII, até 2 MB, modo 0600, gravado pela mesma escrita atômica dos tokens):
+  {"v":1,"itens":{"MLB<n>":{"p":"MLB<m>"|null,"em":"AAAA-MM-DD","via":"bbw"|"lista"|null}}}
+Só entra vínculo com prova (o anúncio é o buy_box_winner do produto ou está em /products/{id}/items); "p": null é o
+vínculo negativo, tentado de novo depois de 7 dias. A leitura é tão estrita quanto a dos tokens.
+
 Saída: 0 ok; 1 erro (API recusou, resposta fora do formato, endereço colado errado, autorização negada, rede);
 2 configuração (sem tokens ou autorização vencida: rode `ml_api.py autorizar`; renovação fora do formato ou sem
-refresh_token; Secret ausente ou recusado; permissão funcional que falta no DevCenter; arquivo de tokens inseguro);
+refresh_token; renovação recusada com status sem tratamento próprio, como 5xx (RenovacaoFalhou); Secret ausente ou
+recusado; permissão funcional que falta no DevCenter; arquivo de tokens inseguro; arquivo de vínculos recusado
+(VinculosRecusados));
 3 limite de requisições da API; 130 interrompido (Ctrl+C).
 As mensagens são fixas: token, code, verifier e Secret nunca saem na tela nem em mensagem de exceção.
 """
-import argparse, base64, collections, contextlib, decimal, fcntl, getpass, hashlib, hmac, http.client, json, math, os
-import pathlib, random, re, secrets, sqlite3, stat, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
+import argparse, base64, collections, contextlib, datetime, decimal, fcntl, getpass, hashlib, hmac, http.client, json
+import math, os, pathlib, random, re, secrets, sqlite3, stat, sys, time, unicodedata
+import urllib.error, urllib.parse, urllib.request
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TOKENS = os.environ.get('ACHADINHOS_ML_TOKENS') or os.path.join(BASE, 'ml_tokens.json')
 DB = os.environ.get('ACHADINHOS_DB') or os.path.join(BASE, 'achadinhos.db')
+CATALOGO = os.environ.get('ACHADINHOS_ML_CATALOGO') or os.path.join(BASE, 'ml_catalogo.json')
 
 # ---------- constantes fixas do app "Etiqueta" no DevCenter (não são segredo) ----------
 CLIENT_ID = '3553760734310605'
@@ -165,7 +177,7 @@ class RenovacaoInvalida(RespostaInvalida):
     """Resposta 200 da renovação fora do formato: o refresh_token pode ter sido gasto, então pede o autorizar já."""
     saida = 2
     mensagem = ('a renovação do acesso ao Mercado Livre voltou fora do formato esperado (o refresh_token pode ter '
-                'sido gasto). Nada foi gravado: rode `ml_api.py autorizar`')
+                'sido gasto). Os tokens não mudaram: rode `ml_api.py autorizar`')
 
 
 class SemRefreshToken(RenovacaoInvalida):
@@ -198,16 +210,21 @@ class ErroApi(ErroML):
                          + (f' ({self.codigo})' if self.codigo else ' (sem código)'))
 
 
-class RenovacaoFalhou(ErroML):
-    """A renovação (POST /oauth/token) foi recusada com um status sem tratamento próprio (5xx, por exemplo). Na
-    sonda do catálogo, para tudo: sem isso cada chamada tentaria renovar de novo e o erro sairia como do catálogo."""
+class RenovacaoFalhou(ErroApi):
+    """A renovação (POST /oauth/token) foi recusada com um status sem tratamento próprio (5xx, por exemplo); o
+    Sessao.renovar a levanta no lugar do ErroApi. O _medir não a captura: ela para qualquer laço (sonda do
+    catálogo, vincular, ofertas_do_produto), senão cada chamada tentaria renovar de novo (um POST com o Secret por
+    item) e o erro sairia como do catálogo. É subclasse de ErroApi (status e código filtrados), então quem captura
+    ErroApi precisa de `except RenovacaoFalhou: raise` antes (o _medir, o _sonda do F0 a F6 e a fonte `ml` do
+    atualizar_precos.py têm)."""
     saida = 2
-    mensagem = ('a renovação do acesso ao Mercado Livre falhou. Nada foi gravado: espere alguns minutos e rode de '
-                'novo; se repetir, rode `ml_api.py autorizar`')
+    mensagem = ('a renovação do acesso ao Mercado Livre falhou. Os tokens não mudaram: espere alguns minutos e '
+                'rode de novo; se repetir, rode `ml_api.py autorizar`')
 
-    def __init__(self, status=None):
+    def __init__(self, status=None, codigo=None):
+        super().__init__(status, codigo)
         ok = isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599
-        super().__init__(self.mensagem + (f' [HTTP {status}]' if ok else ''))
+        self.args = (self.mensagem + (f' [HTTP {status}]' if ok else ''),)
 
 
 # ---------- funções puras de mapeamento ----------
@@ -352,40 +369,56 @@ def _tokens_validos(d):
     return Tokens(d['user_id'], d['access_token'], d['expira_em'], d['refresh_token'], d['scope'], d['renovado_em'])
 
 
-def ler_tokens(caminho):
-    """Tokens do arquivo, com leitura estrita. Sem arquivo: RefazerAutorizacao. Inseguro ou estranho: TokensRecusados."""
+def _ler_privado(caminho, teto, recusar):
+    """Bytes de um arquivo comum do próprio usuário, sem permissão para grupo e outros, com até `teto` bytes; None se
+    o arquivo não existe. Symlink, FIFO e outros tipos, dono diferente, permissão aberta, arquivo grande e erro de
+    leitura levantam recusar(motivo), com motivo de texto fixo. Usada pelos tokens e pelos vínculos do catálogo."""
     try:
         info = os.lstat(caminho)
     except FileNotFoundError:
-        raise RefazerAutorizacao() from None
+        return None
     except OSError:
-        raise TokensRecusados('não consegui ler o arquivo') from None
+        raise recusar('não consegui ler o arquivo') from None
     if stat.S_ISLNK(info.st_mode):
-        raise TokensRecusados('é um link simbólico')
+        raise recusar('é um link simbólico')
     try:
         # O_NOFOLLOW fecha a janela entre o lstat e o open; O_NONBLOCK: um FIFO não trava
         fd = os.open(caminho, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
-        raise RefazerAutorizacao() from None
+        return None
     except OSError:
-        raise TokensRecusados('não consegui abrir o arquivo') from None
+        raise recusar('não consegui abrir o arquivo') from None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
-            raise TokensRecusados('não é um arquivo comum')
+            raise recusar('não é um arquivo comum')
         if info.st_uid != os.getuid():
-            raise TokensRecusados('o dono do arquivo não é o seu usuário')
+            raise recusar('o dono do arquivo não é o seu usuário')
         if info.st_mode & 0o077:
-            raise TokensRecusados('permissão aberta para grupo ou outros; use chmod 600')
-        if info.st_size > MAX_ARQUIVO_TOKENS:
-            raise TokensRecusados(f'passa de {MAX_ARQUIVO_TOKENS} bytes')
-        bruto = os.read(fd, MAX_ARQUIVO_TOKENS + 1)
+            raise recusar('permissão aberta para grupo ou outros; use chmod 600')
+        if info.st_size > teto:
+            raise recusar(f'passa de {teto} bytes')
+        partes, lidos = [], 0
+        while lidos <= teto:
+            parte = os.read(fd, teto + 1 - lidos)
+            if not parte:
+                break
+            partes.append(parte)
+            lidos += len(parte)
     except OSError:
-        raise TokensRecusados('não consegui ler o arquivo') from None
+        raise recusar('não consegui ler o arquivo') from None
     finally:
         os.close(fd)
-    if len(bruto) > MAX_ARQUIVO_TOKENS:
-        raise TokensRecusados(f'passa de {MAX_ARQUIVO_TOKENS} bytes')
+    if lidos > teto:
+        raise recusar(f'passa de {teto} bytes')
+    return b''.join(partes)
+
+
+def ler_tokens(caminho):
+    """Tokens do arquivo, com leitura estrita. Sem arquivo: RefazerAutorizacao. Inseguro ou estranho: TokensRecusados."""
+    bruto = _ler_privado(caminho, MAX_ARQUIVO_TOKENS, TokensRecusados)
+    if bruto is None:
+        raise RefazerAutorizacao()
     try:
         tokens = _tokens_validos(json.loads(bruto.decode('ascii')))
     except (ValueError, RecursionError):
@@ -396,11 +429,19 @@ def ler_tokens(caminho):
 
 
 def gravar_tokens(caminho, tokens):
-    """Grava por escrita atômica: arquivo temporário 0600 (O_EXCL|O_NOFOLLOW) na mesma pasta, fsync,
-    os.replace e fsync da pasta. Quem chama segura o lock (travar)."""
+    """Grava os tokens por escrita atômica (gravar_atomico). Quem chama segura o lock (travar)."""
     dados = tokens.como_json().encode('ascii')
     if len(dados) > MAX_ARQUIVO_TOKENS:
         raise RespostaInvalida()
+    gravar_atomico(caminho, dados, MAX_ARQUIVO_TOKENS)
+
+
+def gravar_atomico(caminho, dados, teto):
+    """Grava `dados` (bytes, até `teto`) por escrita atômica: arquivo temporário .<nome>.<16 hex>.tmp 0600
+    (O_EXCL|O_NOFOLLOW) na mesma pasta, fsync, os.replace e fsync da pasta. Um symlink no caminho é trocado pelo
+    arquivo, nunca seguido. Se algo falha antes do replace, o temporário é apagado e o arquivo antigo fica."""
+    if not isinstance(dados, bytes) or len(dados) > teto:
+        raise ValueError('dados fora do teto da gravação')
     pasta = os.path.dirname(os.path.abspath(caminho))
     tmp = os.path.join(pasta, f'.{os.path.basename(caminho)}.{secrets.token_hex(8)}.tmp')
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -627,7 +668,7 @@ class Sessao:
     def renovar(self, recusado=None):
         """Renova sob flock, relendo o arquivo dentro do lock. Se outro processo já renovou (o token do arquivo
         vale e não é o `recusado`), usa o dele sem gastar o refresh_token. O novo par é gravado antes de
-        qualquer outra chamada."""
+        qualquer outra chamada. Recusa sem tratamento próprio (5xx, por exemplo) sai como RenovacaoFalhou."""
         with travar(self.caminho):
             tokens = ler_tokens(self.caminho)
             atual = tokens.access.valor()
@@ -644,6 +685,10 @@ class Sessao:
                 raise
             except RespostaInvalida:
                 raise RenovacaoInvalida() from None
+            except ErroApi as e:
+                # status sem tratamento próprio (invalid_grant e invalid_client já saíram como RefazerAutorizacao e
+                # CredencialInvalida): para quem chama, não é um status do recurso pedido
+                raise RenovacaoFalhou(e.status, e.codigo) from None
             gravar_tokens(self.caminho, novos)
             return novos.access.valor()
 
@@ -834,6 +879,8 @@ def _sonda(sessao, rotulo, caminho, params=None, rotulo_caminho=None):
     except SemPermissao as e:
         print(f'{nome}: 403 {e.codigo or "PolicyAgent"} (falta permissão funcional no DevCenter)', flush=True)
         return None
+    except RenovacaoFalhou:
+        raise   # a renovação foi recusada: seguir mandaria um POST com o Secret por endpoint; sai 2
     except ErroApi as e:
         print(f'{nome}: {e.status} {e.codigo or "(sem código)"}', flush=True)
         return None
@@ -1051,8 +1098,8 @@ class _Chamadas:
     """A Sessao vista pela sonda: conta as chamadas, para no teto e faz a pausa de PAUSA_MIN a PAUSA_MAX s entre
     duas delas. `limite` começa abaixo do teto (reserva para F12 a F15) e sobe para o teto no fim.
 
-    `contado` é o _OpenerContado posto na Sessao: diz se o último pedido foi o POST da renovação (ErroApi dele é
-    RenovacaoFalhou, nunca um status do catálogo) e se a chamada chegou a sair (só então conta em `feitas`)."""
+    `contado` é o _OpenerContado posto na Sessao: diz se a chamada chegou a sair como GET (só então conta em
+    `feitas`). A renovação recusada já sai da Sessao como RenovacaoFalhou, nunca como status do catálogo."""
 
     def __init__(self, sessao, teto, dormir, aleatorio, contado):
         self.sessao, self.teto, self.dormir, self.aleatorio = sessao, teto, dormir, aleatorio
@@ -1068,27 +1115,20 @@ class _Chamadas:
         antes = self.contado.gets
         try:
             return self.sessao.get(caminho, params)
-        except ErroApi as e:
-            if self.contado.ultimo == 'POST':
-                raise RenovacaoFalhou(e.status) from None
-            raise
         finally:
             if self.contado.gets > antes:
                 self.feitas += 1
 
 
 class _OpenerContado:
-    """Envolve o opener da Sessao para contar os GETs e as respostas 429 (o backoff fica na Sessao) e guardar o
-    método do último pedido."""
+    """Envolve o opener da Sessao para contar os GETs e as respostas 429 (o backoff fica na Sessao)."""
 
     def __init__(self, interno):
         self.interno = interno
         self.n429 = self.gets = 0
-        self.ultimo = None
 
     def open(self, req, timeout=None):
-        self.ultimo = req.get_method()
-        if self.ultimo == 'GET':
+        if req.get_method() == 'GET':
             self.gets += 1
         try:
             return self.interno.open(req, timeout=timeout)
@@ -1098,15 +1138,36 @@ class _OpenerContado:
             raise
 
 
+TetoAtingido = _TetoAtingido   # nome público para quem usa a vista com teto fora da sonda (atualizar_precos.py ml)
+
+
+@contextlib.contextmanager
+def com_teto(sessao, teto, dormir=None, aleatorio=None):
+    """A Sessao vista com teto e pausa, a mesma _Chamadas da sonda: até `teto` GETs que chegaram a sair (o próximo
+    levanta TetoAtingido) e pausa de PAUSA_MIN a PAUSA_MAX s entre dois deles. A vista vai para vincular e
+    ofertas_do_produto no lugar da Sessao. O opener da Sessao volta ao original na saída, com ou sem erro."""
+    original = sessao.opener
+    contado = _OpenerContado(sessao._opener())
+    chamadas = _Chamadas(sessao, teto, dormir or sessao.dormir, aleatorio or sessao.aleatorio, contado)
+    sessao.opener = contado
+    try:
+        yield chamadas
+    finally:
+        sessao.opener = original
+
+
 def _medir(contagem, fazer):
     """(resposta, erro) de fazer(). Conta o resultado em `contagem` ('200', '<status> <código>', '403 <código>'
     ou 'fora do formato'). Limite, rede, teto e erros de autorização sobem e param a sonda: o 401 que sobra
-    depois da única renovação da Sessao vira RefazerAutorizacao (saída 2), não um status do catálogo."""
+    depois da única renovação da Sessao vira RefazerAutorizacao (saída 2), não um status do catálogo, e a
+    renovação recusada (RenovacaoFalhou, subclasse de ErroApi) sobe como está."""
     try:
         resposta = fazer()
     except SemPermissao as e:
         contagem[f'403 {e.codigo or "PolicyAgent"}'] += 1
         return None, e
+    except RenovacaoFalhou:
+        raise
     except ErroApi as e:
         if e.status == 401:
             raise RefazerAutorizacao() from None
@@ -1181,6 +1242,8 @@ class _Medidas:
         self.sem_preco_banco = self.sem_preco_api = 0
         self.categoria = self.pid_exemplo = None
         self.bloqueado = set()                # 'produto', 'itens': 403 PolicyAgent, não chama mais no laço
+        self.negado = None                    # o SemPermissao visto no produto ou na lista (vincular: para)
+        self.falha = None                     # 1º erro que não é 404 nem 403 no produto ou na lista: prova inconclusiva
         self.parou = None
         self.vistos = 0
 
@@ -1225,68 +1288,99 @@ def _estado_do_produto(p):
     return 'bbw de outro anúncio' if isinstance(p['buy_box_winner'], dict) else 'bbw nulo'
 
 
-def _oferta_na_lista(chamadas, m, pid, item_id, p=None):
-    """Linha do item_id em /products/{pid}/items (até PAGINAS_LISTA páginas), ou None. 404 só conta, separado
-    pelo estado do produto `p` já lido (None: não lido)."""
-    offset = 0
-    for _ in range(PAGINAS_LISTA):
+def _anotar_erro(m, erro):
+    """Guarda em `m` o erro de uma leitura de produto ou de lista: 404 é resposta (sem produto, sem oferta) e não
+    entra; 403 PolicyAgent vai para `negado`; o resto (5xx, 4xx, fora do formato) torna a prova inconclusiva."""
+    if isinstance(erro, SemPermissao):
+        m.negado = erro
+    elif erro is not None and not (isinstance(erro, ErroApi) and erro.status == 404):
+        m.falha = m.falha or erro
+
+
+def _linhas_na_lista(chamadas, m, pid, ids, p=None, paginas=PAGINAS_LISTA):
+    """{item_id: linha} dos `ids` achados em /products/{pid}/items (até `paginas` páginas; para quando acha todos).
+    Só vale o item_id da linha que casa com RE_MLB e está em `ids`; repetido, vale a 1ª linha. 404 só conta,
+    separado pelo estado do produto `p` já lido (None: não lido). Página vazia é o fim da lista; `results` que não é
+    lista e página sem `paging.total` inteiro são resposta fora do formato (m.falha)."""
+    achadas, offset = {}, 0
+    if not ids:
+        return achadas
+    for _ in range(paginas):
         params = {'offset': offset} if offset else None
         r, erro = _medir(m.itens, lambda: _get_dict(chamadas, f'/products/{pid}/items', params))
+        _anotar_erro(m, erro)
         if isinstance(erro, SemPermissao):
             m.bloqueado.add('itens')
         elif isinstance(erro, ErroApi) and erro.status == 404:
             m.n404[_estado_do_produto(p)] += 1
         if r is None:
-            return None
+            return achadas
         resultados = r.get('results')
         paging = r.get('paging')
         if isinstance(paging, dict):
             m.campos_paging.update(k for k in paging if k in CAMPOS_PAGING)
         if not isinstance(resultados, list):
-            return None
+            m.falha = m.falha or RespostaInvalida()
+            return achadas
         for linha in resultados:
             if not isinstance(linha, dict):
                 continue
             m.campos_lista.update(k for k in linha if k in CAMPOS_LISTA)
-            if linha.get('item_id') == item_id:
-                return linha
+            i = linha.get('item_id')
+            if isinstance(i, str) and RE_MLB.fullmatch(i) and i in ids and i not in achadas:
+                achadas[i] = linha
+                if len(achadas) == len(ids):
+                    return achadas
+        if not resultados:
+            return achadas
         total = paging.get('total') if isinstance(paging, dict) else None
-        if not resultados or not _inteiro(total) or offset + len(resultados) >= total:
-            return None
+        if not _inteiro(total):
+            # sem paging.total inteiro não dá para saber se há outra página: fora do formato, não fim da lista
+            m.falha = m.falha or RespostaInvalida()
+            return achadas
+        if offset + len(resultados) >= total:   # total menor que o já lido também é fim
+            return achadas
         offset += len(resultados)
-    return None
+    return achadas
+
+
+def _oferta_na_lista(chamadas, m, pid, item_id, p=None):
+    """Linha do item_id em /products/{pid}/items (até PAGINAS_LISTA páginas), ou None (ver _linhas_na_lista)."""
+    return _linhas_na_lista(chamadas, m, pid, {item_id}, p).get(item_id)
 
 
 def _provar(chamadas, m, item_id, pids):
-    """('bbw'|'lista', oferta) se o item_id está num dos candidatos (buy_box_winner ou lista), senão (None, None)."""
+    """('bbw'|'lista', oferta, pid) se o item_id está num dos candidatos (é o buy_box_winner do produto ou está na
+    lista dele), senão (None, None, None). O buy_box_winner de outro anúncio nunca prova nada."""
     for pid in pids:
         p = None
         if 'produto' not in m.bloqueado:
             p, erro = _medir(m.produto, lambda: produto(chamadas, pid))
+            _anotar_erro(m, erro)
             if isinstance(erro, SemPermissao):
                 m.bloqueado.add('produto')
             if p is not None:
                 m.ler_produto(p)
                 bbw = p.get('buy_box_winner')
                 if isinstance(bbw, dict) and bbw.get('item_id') == item_id:
-                    return 'bbw', bbw
+                    return 'bbw', bbw, pid
         if 'itens' not in m.bloqueado:
             linha = _oferta_na_lista(chamadas, m, pid, item_id, p)
             if linha is not None:
-                return 'lista', linha
-    return None, None
+                return 'lista', linha, pid
+    return None, None, None
 
 
 def _comparar_preco(m, item, oferta, agora):
     banco = ler_preco(item['preco'])
-    preco, moeda = oferta.get('price'), oferta.get('currency_id')
     if banco is None:
         m.sem_preco_banco += 1
         return
-    if not _numero(preco) or not 0 < preco < 1e7 or moeda != 'BRL':
+    o = _oferta(item['item_id'], oferta, None)
+    if not oferta_valida(o):
         m.sem_preco_api += 1
         return
-    faixa = _faixa_de_preco(preco, banco)
+    faixa = _faixa_de_preco(o.preco, banco)
     m.faixas[_recente(item['preco_em'], agora)][faixa] += 1
     if faixa == 'acima':
         m.acima_ids.append(item['item_id'])
@@ -1338,7 +1432,7 @@ def _laco_da_amostra(chamadas, m, amostra, abas, agora):
             pids, descartados = r if r is not None else ([], 0)
             if pids:
                 m.pid_exemplo = m.pid_exemplo or pids[0]   # id para o F15, não é contagem
-                via, oferta = _provar(chamadas, m, item['item_id'], pids)
+                via, oferta, _ = _provar(chamadas, m, item['item_id'], pids)
         _somar_item(m, item, aba, q, pids, descartados, via, oferta, agora)
 
 
@@ -1434,11 +1528,8 @@ def sondar_catalogo(sessao, db=None, amostra=AMOSTRA_PADRAO, semente=SEMENTE_PAD
     if not isinstance(amostra, int) or not 1 <= amostra <= AMOSTRA_MAX:
         raise ValueError(MSG_AMOSTRA)
     # tokens antes de tudo: sem arquivo, sem Secret ou com a renovação recusada, a sonda para aqui, sem cabeçalho
-    # nem parcial vazio (R5), e um 5xx da renovação não se repete a cada chamada (S1)
-    try:
-        sessao.token()
-    except ErroApi as e:
-        raise RenovacaoFalhou(e.status) from None
+    # nem parcial vazio (R5); um 5xx da renovação sai da Sessao como RenovacaoFalhou e não se repete (S1)
+    sessao.token()
     inicio = time.monotonic()
     agora = time.time() if agora is None else agora
     abas, todos_termos = _abas_e_termos(buscas)
@@ -1446,50 +1537,249 @@ def sondar_catalogo(sessao, db=None, amostra=AMOSTRA_PADRAO, semente=SEMENTE_PAD
     escolhidos = random.Random(semente).sample(itens, min(amostra, len(itens)))
     termos_f12 = random.Random(semente).sample(todos_termos, min(termos, len(todos_termos)))
     reserva = _reserva(len(termos_f12))
-    original = sessao.opener
-    contado = _OpenerContado(sessao._opener())
-    chamadas = _Chamadas(sessao, teto, dormir or sessao.dormir, aleatorio or sessao.aleatorio, contado)
-    sessao.opener = contado
     m = _Medidas()
     impresso = False
-    print(f'Catálogo: amostra de {len(escolhidos)} de {len(itens)} itens do ML no banco (semente {semente}); '
-          f'teto de {teto} chamadas.', flush=True)
-    try:
-        if not escolhidos:
-            print('F7-F11: pulados (sem item do ML no banco)', flush=True)
-        else:
-            chamadas.limite = max(teto - reserva, 0)
-            try:
-                _laco_da_amostra(chamadas, m, escolhidos, abas, agora)
-            except _TetoAtingido:
-                m.parou = f'teto de {teto} chamadas, com {reserva} guardadas para F12 a F15'
-            chamadas.limite = teto
-            _imprimir_amostra(m, len(escolhidos), parcial=m.parou is not None)
-            impresso = True
-        _f12(chamadas, m, termos_f12)
-        if escolhidos:
-            _uma(chamadas, 'F13 /reviews/item/{id}', f'/reviews/item/{escolhidos[0]["item_id"]}')
-        else:
-            print('F13 /reviews/item/{id}: pulado (sem item do ML no banco)', flush=True)
-        if m.categoria:
-            _uma(chamadas, 'F14 /highlights/MLB/category/{cat}', f'/highlights/MLB/category/{m.categoria}')
-        else:
-            print('F14 /highlights/MLB/category/{cat}: pulado (sem category_id)', flush=True)
-        if m.pid_exemplo:
-            _uma(chamadas, 'F15 /sites/MLB/search?product_id', '/sites/MLB/search',
-                 {'product_id': m.pid_exemplo, 'limit': 1})
-        else:
-            print('F15 /sites/MLB/search?product_id: pulado (sem id de produto)', flush=True)
-    except ErroML as e:
-        if escolhidos and not impresso:
-            m.parou = m.parou or ('limite de requisições (429)' if isinstance(e, Limite) else 'erro')
-            _imprimir_amostra(m, len(escolhidos), parcial=True)
-        raise
-    finally:
-        sessao.opener = original
-        print(f'chamadas: {chamadas.feitas}, 429: {contado.n429}, tempo: {time.monotonic() - inicio:.1f}s',
-              flush=True)
+    # a vista com teto e pausa (a mesma do atualizar_precos.py ml); o opener original volta na saída do with
+    with com_teto(sessao, teto, dormir, aleatorio) as chamadas:
+        print(f'Catálogo: amostra de {len(escolhidos)} de {len(itens)} itens do ML no banco (semente {semente}); '
+              f'teto de {teto} chamadas.', flush=True)
+        try:
+            if not escolhidos:
+                print('F7-F11: pulados (sem item do ML no banco)', flush=True)
+            else:
+                chamadas.limite = max(teto - reserva, 0)
+                try:
+                    _laco_da_amostra(chamadas, m, escolhidos, abas, agora)
+                except _TetoAtingido:
+                    m.parou = f'teto de {teto} chamadas, com {reserva} guardadas para F12 a F15'
+                chamadas.limite = teto
+                _imprimir_amostra(m, len(escolhidos), parcial=m.parou is not None)
+                impresso = True
+            _f12(chamadas, m, termos_f12)
+            if escolhidos:
+                _uma(chamadas, 'F13 /reviews/item/{id}', f'/reviews/item/{escolhidos[0]["item_id"]}')
+            else:
+                print('F13 /reviews/item/{id}: pulado (sem item do ML no banco)', flush=True)
+            if m.categoria:
+                _uma(chamadas, 'F14 /highlights/MLB/category/{cat}', f'/highlights/MLB/category/{m.categoria}')
+            else:
+                print('F14 /highlights/MLB/category/{cat}: pulado (sem category_id)', flush=True)
+            if m.pid_exemplo:
+                _uma(chamadas, 'F15 /sites/MLB/search?product_id', '/sites/MLB/search',
+                     {'product_id': m.pid_exemplo, 'limit': 1})
+            else:
+                print('F15 /sites/MLB/search?product_id: pulado (sem id de produto)', flush=True)
+        except ErroML as e:
+            if escolhidos and not impresso:
+                m.parou = m.parou or ('limite de requisições (429)' if isinstance(e, Limite) else 'erro')
+                _imprimir_amostra(m, len(escolhidos), parcial=True)
+            raise
+        finally:
+            print(f'chamadas: {chamadas.feitas}, 429: {chamadas.contado.n429}, tempo: {time.monotonic() - inicio:.1f}s',
+                  flush=True)
     return 0
+
+
+# ---------- vínculo anúncio → produto e ofertas (plano api-oficial-ml-catalogo, etapa 2: CA3) ----------
+MAX_ARQUIVO_VINCULOS = 2 * 1024 * 1024   # bytes
+DIAS_NEGATIVO = 7                        # vínculo negativo é tentado de novo depois disto
+PRECO_MAX = 10_000_000                   # oferta válida: 0 < preço < 10⁷
+CHAVES_VINCULOS = {'v', 'itens'}
+CHAVES_VINCULO = {'p', 'em', 'via'}
+VIAS = ('bbw', 'lista')
+RE_DATA = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', re.A)
+
+Oferta = collections.namedtuple('Oferta', 'item_id preco preco_antigo moeda condicao via')
+
+
+class VinculosRecusados(ErroML):
+    """Arquivo de vínculos inseguro ou fora do formato. O motivo é texto fixo: nada do arquivo vai para a mensagem."""
+    saida = 2
+
+    def __init__(self, motivo):
+        super().__init__(f'arquivo de vínculos do catálogo recusado ({motivo}). Corrija ou apague o arquivo '
+                         '(ml_catalogo.json ou o de ACHADINHOS_ML_CATALOGO): os vínculos são refeitos pela API')
+        self.motivo = motivo
+
+
+def _data(v):
+    """A data 'AAAA-MM-DD' como datetime.date, ou None se não for uma data válida nesse formato."""
+    if not isinstance(v, str) or not RE_DATA.fullmatch(v):
+        return None
+    try:
+        return datetime.date.fromisoformat(v)
+    except ValueError:
+        return None
+
+
+def _vinculo_valido(e):
+    if not isinstance(e, dict) or set(e) != CHAVES_VINCULO or _data(e['em']) is None:
+        return False
+    if e['p'] is None:
+        return e['via'] is None
+    return _pid(e['p']) is not None and e['via'] in VIAS
+
+
+def _vinculos_validos(d):
+    """{item_id: {'p', 'em', 'via'}} do JSON do arquivo, ou None se algo estiver fora do formato."""
+    if not isinstance(d, dict) or set(d) != CHAVES_VINCULOS or not _inteiro(d['v']) or d['v'] != 1:
+        return None
+    if not isinstance(d['itens'], dict):
+        return None
+    itens = {}
+    for item_id, e in d['itens'].items():
+        if not (isinstance(item_id, str) and RE_MLB.fullmatch(item_id)) or not _vinculo_valido(e):
+            return None
+        itens[item_id] = {'p': e['p'], 'em': e['em'], 'via': e['via']}
+    return itens
+
+
+def ler_vinculos(caminho=None):
+    """{item_id: {'p': pid|None, 'em': 'AAAA-MM-DD', 'via': 'bbw'|'lista'|None}} do arquivo de vínculos (padrão:
+    CATALOGO). Sem arquivo: {}. Leitura estrita, como a dos tokens: symlink, arquivo que não é comum, dono diferente,
+    permissão aberta, mais de 2 MB, JSON fora do formato ou id que não casa com RE_MLB/RE_PRODUTO levantam
+    VinculosRecusados (saída 2)."""
+    bruto = _ler_privado(caminho or CATALOGO, MAX_ARQUIVO_VINCULOS, VinculosRecusados)
+    if bruto is None:
+        return {}
+    try:
+        itens = _vinculos_validos(json.loads(bruto.decode('ascii')))
+    except (ValueError, RecursionError):
+        itens = None
+    if itens is None:
+        raise VinculosRecusados('conteúdo fora do formato')
+    return itens
+
+
+def gravar_vinculos(itens, caminho=None):
+    """Grava os vínculos (padrão: CATALOGO) por escrita atômica, 0600. Vínculo fora do formato é erro de programação
+    (ValueError, nada é gravado); acima de 2 MB levanta VinculosRecusados e o arquivo antigo fica."""
+    dados = {'v': 1, 'itens': itens}
+    if _vinculos_validos(dados) is None:
+        raise ValueError('vínculo fora do formato')
+    bruto = json.dumps(dados, ensure_ascii=True, separators=(',', ':'), sort_keys=True).encode('ascii')
+    if len(bruto) > MAX_ARQUIVO_VINCULOS:
+        raise VinculosRecusados(f'passaria de {MAX_ARQUIVO_VINCULOS} bytes')
+    gravar_atomico(caminho or CATALOGO, bruto, MAX_ARQUIVO_VINCULOS)
+
+
+def hoje_local():
+    return time.strftime('%Y-%m-%d')
+
+
+def vinculo_do_cache(vinculos, item_id, hoje):
+    """O que o cache já sabe do item: (pid, via) do vínculo provado; (None, None) do negativo com menos de
+    DIAS_NEGATIVO dias; None quando é preciso vincular pela API (sem entrada, negativo vencido ou datado no futuro).
+    O vínculo provado não vence: se o anúncio sai do produto, as ofertas dão None (para refazer, apague o arquivo)."""
+    if _data(hoje) is None:
+        raise ValueError('data inválida')
+    e = vinculos.get(item_id)
+    if not _vinculo_valido(e):
+        return None
+    if e['p'] is not None:
+        return e['p'], e['via']
+    dias = (_data(hoje) - _data(e['em'])).days
+    return (None, None) if 0 <= dias < DIAS_NEGATIVO else None
+
+
+def _vincular(sessao, item_id, titulo):
+    """(pid, via) pela API, ou (None, None) no "não" conclusivo. Candidatos pelo título (_candidatos) e prova por
+    pertença (_provar). Só é conclusivo o "não" em que toda leitura respondeu (200 ou 404): sem prova, o erro de
+    servidor ou a resposta fora do formato da busca, de um produto ou de uma lista sobe (ErroApi ou
+    RespostaInvalida). A prova achada em outro candidato vale mesmo com erro num anterior. O 403 PolicyAgent sobe
+    como SemPermissao."""
+    q = consulta_do_titulo(titulo)
+    if not q:
+        return None, None
+    m = _Medidas()
+    r, erro = _medir(m.busca, lambda: _candidatos(sessao, q))
+    if erro is not None:
+        raise erro
+    pids, _ = r
+    via, _, pid = _provar(sessao, m, item_id, pids)
+    if m.negado is not None:
+        raise m.negado
+    if via:
+        return pid, via
+    if m.falha is not None:
+        raise m.falha
+    return None, None
+
+
+def vincular(sessao, item_id, titulo, vinculos=None, hoje=None):
+    """(pid, 'bbw'|'lista') se o anúncio item_id está provado num produto de catálogo, senão (None, None).
+
+    A prova é por pertença: o item_id é o buy_box_winner.item_id do produto ou aparece em /products/{pid}/items. O
+    título só gera candidatos: título idêntico sem pertença não vincula. `sessao` é a Sessao ou a vista com teto e
+    pausa da sonda (_Chamadas). Com `vinculos` (o dict de ler_vinculos), consulta o cache antes (vinculo_do_cache) e
+    anota nele o provado e o negativo conclusivo com a data `hoje` ('AAAA-MM-DD', padrão: hoje local); quem chama
+    grava com gravar_vinculos. Sem prova e com uma leitura inconclusiva, sobe o erro dela (ErroApi de 5xx ou 4xx
+    que não é 404, RespostaInvalida), para quem chama decidir por item entre contar e seguir ou parar. Limite, rede,
+    SemPermissao, autorização (o 401 que sobra vira RefazerAutorizacao), a renovação recusada (RenovacaoFalhou) e o
+    teto também sobem. Nada é anotado quando algo sobe."""
+    if not (isinstance(item_id, str) and RE_MLB.fullmatch(item_id)):
+        raise ValueError('id de anúncio inválido')
+    hoje = hoje or hoje_local()
+    if _data(hoje) is None:
+        raise ValueError('data inválida')
+    if vinculos is not None:
+        guardado = vinculo_do_cache(vinculos, item_id, hoje)
+        if guardado is not None:
+            return guardado
+    pid, via = _vincular(sessao, item_id, titulo)
+    if vinculos is not None:
+        vinculos[item_id] = {'p': pid, 'em': hoje, 'via': via}
+    return pid, via
+
+
+def _oferta(item_id, d, via):
+    """Oferta a partir do buy_box_winner ou da linha da lista. Preço só se for número finito; preço antigo só se
+    0 < v < PRECO_MAX; moeda e condição só se forem texto. Quem usa confere com oferta_valida."""
+    antigo = d.get('original_price')
+    return Oferta(item_id, d.get('price') if _numero(d.get('price')) else None,
+                  antigo if _numero(antigo) and 0 < antigo < PRECO_MAX else None,
+                  d.get('currency_id') if isinstance(d.get('currency_id'), str) else None,
+                  d.get('condition') if isinstance(d.get('condition'), str) else None, via)
+
+
+def oferta_valida(o):
+    """Preço finito com 0 < preço < 10⁷ e moeda BRL."""
+    return isinstance(o, Oferta) and _numero(o.preco) and 0 < o.preco < PRECO_MAX and o.moeda == 'BRL'
+
+
+def ofertas_do_produto(sessao, pid, ids, paginas=PAGINAS_LISTA):
+    """{item_id: Oferta|None} dos anúncios `ids` vinculados ao produto pid: primeiro pelo buy_box_winner (só se o
+    item_id dele é um dos nossos), depois pela linha de cada um em /products/{pid}/items (até `paginas` páginas).
+    None: o anúncio não está no produto. A oferta é sempre a do próprio anúncio, nunca a do vencedor.
+
+    O pid passa por RE_PRODUTO e os ids por RE_MLB antes de qualquer chamada (ValueError). 404 no produto ou na lista
+    é resposta (sem oferta); 403 PolicyAgent, outros status, resposta fora do formato (inclusive página da lista sem
+    `paging.total` inteiro) e a renovação recusada (RenovacaoFalhou) sobem, para quem chama não contar o anúncio
+    como indisponível por um erro passageiro."""
+    if not _pid(pid):
+        raise ValueError('id de produto inválido')
+    ids = list(ids)
+    if not all(isinstance(i, str) and RE_MLB.fullmatch(i) for i in ids):
+        raise ValueError('id de anúncio inválido')
+    ofertas = dict.fromkeys(ids)
+    if not ofertas:
+        return ofertas
+    m = _Medidas()
+    p, erro = _medir(m.produto, lambda: produto(sessao, pid))
+    _anotar_erro(m, erro)
+    bbw = p.get('buy_box_winner') if p is not None else None
+    vencedor = bbw.get('item_id') if isinstance(bbw, dict) else None
+    if isinstance(vencedor, str) and vencedor in ofertas:
+        ofertas[vencedor] = _oferta(vencedor, bbw, 'bbw')
+    faltam = {i for i, o in ofertas.items() if o is None}
+    if faltam and m.negado is None and m.falha is None:
+        for i, linha in _linhas_na_lista(sessao, m, pid, faltam, p, paginas).items():
+            ofertas[i] = _oferta(i, linha, 'lista')
+    if m.negado is not None:
+        raise m.negado
+    if m.falha is not None:
+        raise m.falha
+    return ofertas
 
 
 def sair(caminho):

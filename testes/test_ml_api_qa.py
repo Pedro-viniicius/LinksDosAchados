@@ -633,11 +633,14 @@ class TestServidorNaoExpoe(unittest.TestCase):
             self.assertIsNone(re.search(r'APP_USR-|TG-[0-9a-f]', str(v)), 'valor da config parece token do ML')
 
     def test_nenhum_modulo_do_servidor_ou_do_site_cita_o_ml_api(self):
-        for nome in ('servidor.py', 'index.html', 'disparo.py', 'api_ofertas.py', 'genero.py', 'atualizar_precos.py',
-                     'coletar_ml.js'):
+        for nome in ('servidor.py', 'index.html', 'disparo.py', 'api_ofertas.py', 'genero.py', 'coletar_ml.js'):
             with open(os.path.join(RAIZ, nome), encoding='utf-8') as f:
                 texto = f.read()
             self.assertIsNone(re.search(r'ml_api|ACHADINHOS_ML_(SECRET|TOKENS)|ml_tokens', texto), nome)
+        # O atualizar_precos.py fala com o ml_api (plano api-oficial-ml-catalogo, etapa 3), mas nunca com os tokens.
+        with open(os.path.join(RAIZ, 'atualizar_precos.py'), encoding='utf-8') as f:
+            texto = f.read()
+        self.assertIsNone(re.search(r'ACHADINHOS_ML_TOKENS|ml_tokens', texto), 'atualizar_precos.py')
 
 
 # ---------- CA6: sondar não mexe no banco ----------

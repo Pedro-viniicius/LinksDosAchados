@@ -5,9 +5,9 @@ Uso:  python3 testes/test_ml_api.py -v
 
 Nenhum teste fala com o Mercado Livre: a rede passa por openers falsos (OpenerFalso, ou o Opener do
 script auxiliar nos subprocessos), o relógio é falso e qualquer saída acidental bate num proxy morto.
-ACHADINHOS_ML_TOKENS e ACHADINHOS_DB apontam para uma pasta temporária antes do import; o arquivo de tokens
-de cada teste fica numa subpasta própria. O Secret, os tokens e o code são marcadores procurados em toda
-saída, mensagem de exceção e argv.
+ACHADINHOS_ML_TOKENS, ACHADINHOS_DB e ACHADINHOS_ML_CATALOGO apontam para uma pasta temporária antes do
+import; o arquivo de tokens de cada teste fica numa subpasta própria. O Secret, os tokens e o code são
+marcadores procurados em toda saída, mensagem de exceção e argv.
 """
 import ast
 import base64
@@ -45,12 +45,14 @@ for v in ('http_proxy', 'https_proxy', 'ftp_proxy', 'HTTP_PROXY', 'HTTPS_PROXY')
 os.environ['no_proxy'] = ''
 os.environ['ACHADINHOS_ML_TOKENS'] = os.path.join(TMP, 'tokens-padrao.json')
 os.environ['ACHADINHOS_DB'] = os.path.join(TMP, 'banco-padrao.db')
+os.environ['ACHADINHOS_ML_CATALOGO'] = os.path.join(TMP, 'catalogo-padrao.json')
 os.environ.pop('ACHADINHOS_ML_SECRET', None)
 sys.path.insert(0, RAIZ)
 
 import ml_api as M  # noqa: E402
 
-assert os.path.dirname(M.TOKENS) == TMP and os.path.dirname(M.DB) == TMP, 'o teste não pode tocar os dados reais'
+assert os.path.dirname(M.TOKENS) == TMP and os.path.dirname(M.DB) == TMP and os.path.dirname(M.CATALOGO) == TMP, \
+    'o teste não pode tocar os dados reais'
 
 SECRET = 'SEGREDO-MARCADOR-ml-5b1e77'
 ACCESS = 'APP_USR-ACESSO-MARCADOR-0001-aaaaaaaaaaaa'
