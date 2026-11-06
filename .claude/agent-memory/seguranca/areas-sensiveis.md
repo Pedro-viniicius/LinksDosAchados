@@ -93,6 +93,14 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - Front (`index.html`): `GENEROS`/`ABAS_COM_GENERO` espelhados (teste `test_front_constantes.py`); selo, campo e controle "Público" só com constantes + `esc()`; `copiarGenero` aceita só valor de `GENEROS`; `localStorage` `genero:<aba>` validado por `generoEscolhido`; `carregarJson`/estado de erro com texto fixo. `generosDoForm` devolve o `data-original` da regra sem filtrar (já validado pelo servidor, que revalida).
 - Origem do ML muda o gênero automático indiretamente (título/busca por POST/PATCH): coberto por R1.
 
+**Garimpo feminino (`tools/garimpo_feminino/`, plano garimpo-feminino-shopee, E1-E7 revisadas em 2026-11-06, rodada 1)**
+- Mesmo Secret/AppID da coleta. `garimpo.main`: `ler_argumentos` → `CS.credenciais()` (pop) → log → config → `banco.travar` → `banco.abrir` → fase. Único `OPENER_API.open(` em `cliente.py:176`; conferência só por `CS.conferir_dono`. Corpo canônico, valores só em `variables`, assinatura refeita a cada tentativa.
+- `requisicoes` rejeita chave fora de `CAMPOS_REQ`. Log e `api_findings.md` só com texto fixo, código, HTTP e nomes (`_seguro`). `mensagem` de erro saneada só em `medicoes.valor_json`. `docs/` é versionado (P2), o resto no `.gitignore` (`git check-ignore` conferido; `garimpo.db`, `-wal`, `-shm` 0600 medidos).
+- `reconhecer` não grava produto nem conversão: só nomes de campo e contagens; `scrollId` vira booleano. Medido com marcador: nada em disco.
+- `CS._ler_json` é trocado em `guardando_mensagens` só durante a fase (um processo, sem thread, `finally`). A rajada escreve `cli.pausa` abaixo do piso só em `fase_reconhecer.py:734`.
+- Etapas ainda não revisadas: 9 a 15 (`fase_links`, `fase_conversoes`, `fase_exportar` são sensíveis). Conferir nelas: `products.offer_link` é gravado sem `eh_link_shopee`, então export e link de teste têm de filtrar; `raw_json`/título/`shopName` são texto de terceiro (CSV, Markdown, e agentes leem o banco).
+- Provas sem rede: script fora do projeto com `import test_reconhecer` (`rodar`, `ApiRoteada`), `TMPDIR` no scratchpad, `PYTHONDONTWRITEBYTECODE=1`, audit hook para rede/open. Para o environ, marcador falso e só booleano; nunca imprimir o conteúdo.
+
 **Invariantes**
 - Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`).
 - Servidor só em 127.0.0.1; toda resposta leva `X-Frame-Options: SAMEORIGIN` e `frame-ancestors 'self'` (o teste embute o index.html); sem outra CSP.

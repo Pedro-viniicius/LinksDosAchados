@@ -38,6 +38,14 @@ ml_tokens.json.lock
 ml_catalogo.json
 .ml_catalogo.json.*.tmp
 
+# Garimpo feminino (tools/garimpo_feminino): exports, logs e a trava da rodada; o garimpo.db (e -wal/-shm)
+# já cai no *.db acima
+tools/garimpo_feminino/exports/
+tools/garimpo_feminino/logs/
+tools/garimpo_feminino/garimpo.lock
+# sobra da escrita atômica dos docs (.<arquivo>.<aleatório>.tmp) quando o processo morre no meio
+tools/garimpo_feminino/docs/.*.tmp
+
 # Estado local do Claude Code
 .claude/scheduled_tasks.lock
 .claude/settings.local.json

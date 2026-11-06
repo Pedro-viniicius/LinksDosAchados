@@ -1,0 +1,12 @@
+{
+  "limit": 50,
+  "teto_pagina": 40,
+  "int64": "texto",
+  "list_types": [],
+  "separador_subids": null,
+  "estrategias": null,
+  "orcamento_aprovado": null,
+  "max_total_requests": 20000,
+  "pausa": 1.0,
+  "paginas_sem_novo": 3
+}

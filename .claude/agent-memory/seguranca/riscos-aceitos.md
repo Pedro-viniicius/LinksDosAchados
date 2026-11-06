@@ -34,4 +34,8 @@ metadata:
 - Mitigação declarada: `os.replace` atômico + leitor estrito (nunca corrompe nem segue symlink); pior caso de 2 rodadas juntas = vínculos perdidos refeitos pela API (custo de chamadas, R3); o vínculo forjado/velho não injeta preço (pertença reconferida em `ofertas_do_produto`); `.tmp` só sobra em SIGKILL/queda (Ctrl+C limpa, medido), tem só ids, 0600, no `.gitignore`.
 - Volta como achado se: o arquivo passar a ter segredo ou dado pessoal; o preço passar a vir só do cache sem reconferir a pertença; aparecer agendamento automático (cron/servidor) que rode duas fontes `ml` ao mesmo tempo; o padrão `.ml_catalogo.json.*.tmp` sair do `.gitignore`.
 
+**S1 do garimpo: NÃO é mais risco aceito (corrigido em 2026-11-06) — Secret em `/proc/<pid>/environ` na rodada em segundo plano.** O `garimpo.py` chama `prctl(PR_SET_DUMPABLE, 0)` antes de importar `coletar_shopee`; teste em subprocesso prova o `PermissionError`. Resta a janela de milissegundos até o `prctl`, e o root continua lendo. Volta como achado se a chamada sair do topo, ou se uma rodada seguir depois de um AVISO de falha do `prctl`: nesse caso, agentes não leem `/proc/*/environ` nem rodam `ps e`/`ps eww`. Os outros achados abertos do garimpo estão no plano `garimpo-feminino-shopee`, "Risco aceito pelo dono".
+
+**P4 do plano garimpo (lido como aceito na frase geral do dono em 2026-11-06, "estou disposto ao risco"; não houve resposta específica) — rajada de medição até o 10030 no mesmo AppID da produção.** Mitigação: teto de 120, para no 1º 10030/429, fora do horário de coleta. Ninguém leu os termos da Open API (doc no painel logado).
+
 Ver [[problemas-recorrentes]], [[areas-sensiveis]].

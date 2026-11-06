@@ -12,3 +12,4 @@
 - [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
 - [API oficial do ML](padroes-ml-api.md) — etapas 1-3 e catálogo 1-3 aprovadas; catálogo etapa 4 (README) aprovada na conferência pós-r2
+- [Garimpo feminino](padroes-garimpo-feminino.md) — r1 das etapas 1-7: erro vira medição, erro trava a categoria, nó ruim, SIGTERM; prova sem rede; armadilha da chave na etapa 9
