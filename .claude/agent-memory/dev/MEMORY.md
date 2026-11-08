@@ -26,3 +26,4 @@
 - [Reconhecer do garimpo (fase 1)](garimpo-reconhecer-testes.md) — __schema recusado pelo banco; mensagem via invólucro do _ler_json; parar no 1º 10030 pelo registrar; ApiRoteada
 - [Correções da rodada 1 do garimpo](garimpo-correcoes-rodada1.md) — erro_permanente por campos; portão limit.20; nohup x SIGHUP; EIO e pty; prctl com controle; rajada conta só depois do item; reconfirmação da base; etapa 8 A: dados reais, VERSOES, 10000, ensaio sobre cópia
 - [Etapa 8B do garimpo](garimpo-etapa8b.md) — consulta sem pageInfo, parada pelos nós, sonda com texto antigo, achados.json real
+- [Desmarcar a categoria (activeCat vazio)](desmarcar-aba-testes.md) — testes antigos de 'primeira aba'; painel Adicionar aberto p/ foco; stub removeItem; curl --noproxy

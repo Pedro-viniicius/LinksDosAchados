@@ -13,3 +13,5 @@
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
 - [API oficial do ML](padroes-ml-api.md) — etapas 1-3 e catálogo 1-3 aprovadas; catálogo etapa 4 (README) aprovada na conferência pós-r2
 - [Garimpo feminino](padroes-garimpo-feminino.md) — r1 das etapas 1-7: erro vira medição, erro trava a categoria, nó ruim, SIGTERM; prova sem rede; armadilha da chave na etapa 9
+- [Landing pages de grupo](revisao-landing-pages.md) — fora do repo: checks de cada site, 4 cópias do contar.php entre worktrees, origem nova sem teste
+- [Comportamento padrão do front](padroes-front-comportamento.md) — mudar o padrão quebra páginas fora da linha de base; rode todas; mutante por replace na 8767; anote achados da r1
