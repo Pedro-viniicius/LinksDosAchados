@@ -671,7 +671,8 @@ teste('CA-V20 (M6, redesenhado em CA-D3): em 320 px as faixas de abas somem e en
   }
   await largura(320);
   // o seletor traz as 17 abas (mais "Outras" quando houver) em optgroups e o valor é o da aba ativa
-  igual(s.options.length, 17 + 2, '17 abas + as 2 categorias legadas do cenário (Casa e Eletrodomésticos)');
+  igual(s.options[0].value, '', 'a primeira opção, sem valor, é "Todas as categorias"');
+  igual(s.options.length, 1 + 17 + 2, '"Todas as categorias" + 17 abas + as 2 categorias legadas do cenário (Casa e Eletrodomésticos)');
   igual(s.value, PERF);
 });
 

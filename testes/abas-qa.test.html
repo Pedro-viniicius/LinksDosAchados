@@ -218,12 +218,12 @@ teste('CA6/CA-D8: "Outras" some sem deixar rastro quando o último item legado s
   igual(catAtiva(), PRIMEIRA, 'a aba que sumiu leva à primeira');
   igual(selCat().value, PRIMEIRA, 'o seletor acompanha');
   igual(abaAtiva().map(b => b.dataset.c), [PRIMEIRA]);
-  igual([...selCat().options].map(o => o.value), ORDEM, 'o seletor também perdeu a opção');
+  igual([...selCat().options].map(o => o.value), ['', ...ORDEM], 'o seletor também perdeu a opção (fica "Todas as categorias" e as 17)');
   afirma(![...selCat().querySelectorAll('optgroup')].some(g => g.label === 'Outras'), 'optgroup Outras sobrou');
 });
 
 // ================================================================ activeCat hostil
-for (const hostil of ['__proto__', 'constructor', 'toString', 'celulares e informática', ' Celulares e Informática', 'Celulares e Informática ', 'Black Friday | Eletrônicos', '']) {
+for (const hostil of ['__proto__', 'constructor', 'toString', 'celulares e informática', ' Celulares e Informática', 'Celulares e Informática ', 'Black Friday | Eletrônicos']) {
   teste('CA-D6: activeCat salvo "' + hostil + '" abre na primeira aba, com uma só pílula ativa e o seletor igual', async () => {
     await abrirApp(hostil);
     igual(catAtiva(), PRIMEIRA);
@@ -233,6 +233,16 @@ for (const hostil of ['__proto__', 'constructor', 'toString', 'celulares e infor
     igual(qa('#tabs .tabs-grupo').length, 4, 'nenhuma "Outras" nasce do activeCat salvo');
   });
 }
+
+// activeCat guardado vazio é "nenhuma categoria": abre com todas, sem pílula marcada e sem "Outras"
+teste('CA-D6: activeCat salvo vazio abre com todas as categorias, sem pílula marcada e o seletor em "Todas as categorias"', async () => {
+  await abrirApp('');
+  igual(catAtiva(), '');
+  igual(abaAtiva().length, 0);
+  igual(selCat().value, '');
+  igual(abas().length, 17);
+  igual(qa('#tabs .tabs-grupo').length, 4, 'nenhuma "Outras" nasce do activeCat vazio');
+});
 
 // ================================================================ regra do disparo em tela estreita
 // Formulário da regra montado solto dentro da tela do disparo (sem navegar nem chamar a API) e medido em cada largura.

@@ -203,7 +203,7 @@ teste('CA-D1: há 17 abas, na ordem do dono, com o nome exato e a contagem do ba
 });
 
 teste('CA-D2: em 1280 px as abas formam 4 faixas rotuladas (4, 5, 4 e 4), com até 230 px de altura e sem rolagem horizontal', async () => {
-  await abrirApp();
+  await abrirApp(PRIMEIRA);   // sem nada guardado o app abre sem categoria (todas): a pílula ativa precisa de uma categoria marcada
   await largura(1280);
   const faixas = qa('#tabs .tabs-grupo');
   igual(faixas.map(f => txt(f.querySelector('.lbl'))), GRUPOS.map(g => g[0]));
@@ -231,7 +231,7 @@ teste('CA-D2: em 1280 px as abas formam 4 faixas rotuladas (4, 5, 4 e 4), com at
 
 // ================================================================ CA-D3: celular
 teste('CA-D3: em 320, 360 e 375 px as faixas somem e entra o seletor "Categoria" (44 px, rótulo visível, optgroup por grupo, contagem em cada opção); a partir de 601 px é o contrário', async () => {
-  await abrirApp();
+  await abrirApp(PRIMEIRA);
   for (const px of [320, 360, 375]) {
     await largura(px);
     afirma(!visivel(q('#tabs')), px + ' px: as faixas ficam escondidas');
@@ -243,8 +243,11 @@ teste('CA-D3: em 320, 360 e 375 px as faixas somem e entra o seletor "Categoria"
     afirma(rot && visivel(rot) && txt(rot) === 'Categoria', 'rótulo visível "Categoria" associado por for');
     igual([...s.querySelectorAll('optgroup')].map(g => g.label), GRUPOS.map(g => g[0]));
     igual([...s.querySelectorAll('optgroup')].map(g => [...g.querySelectorAll('option')].map(o => o.value)), GRUPOS.map(g => g[1]));
-    for (const o of s.options) igual(o.textContent, o.value + ' (' + milhar(daCat(o.value).length) + ')', 'opção "' + o.value + '"');
-    igual(s.options.length, 17);
+    // a primeira opção, sem valor, é "Todas as categorias" e conta todos os itens; as outras 17 são as abas
+    igual([s.options[0].value, s.options[0].textContent], ['', 'Todas as categorias (' + milhar(API.length) + ')'], 'primeira opção');
+    for (const o of [...s.options].slice(1)) igual(o.textContent, o.value + ' (' + milhar(daCat(o.value).length) + ')', 'opção "' + o.value + '"');
+    igual(s.options.length, 18);
+    igual([...s.options].slice(1).map(o => o.value), ORDEM, 'as 17 abas, na ordem');
     igual(s.value, catAtiva(), 'o seletor mostra a aba ativa');
     afirma(semRolagemHorizontal(), px + ' px: rolagem horizontal');
   }
@@ -355,16 +358,21 @@ async function abreNaPrimeira(valorGuardado, descricao) {
 
 teste('CA-D6: com activeCat de uma aba que sumiu ("Black Friday", "Casa Nova"...) o front abre em "Celulares e Informática", sem erro', async () => {
   for (const [valor, desc] of [['Black Friday', 'Black Friday'], ['Casa Nova', 'Casa Nova'], ['Black Friday | Eletrônicos', 'aba antiga'], ['Eletrodomésticos', 'aba antiga'],
-                                ['Casa e Decoração', 'aba antiga'], ['', 'vazio'], ['celulares e informática', 'caixa diferente'],
+                                ['Casa e Decoração', 'aba antiga'], ['celulares e informática', 'caixa diferente'],
                                 [PRIMEIRA + ' ', 'com espaço no fim'], ['Categoria que nunca existiu', 'inexistente']]) {
     await abreNaPrimeira(valor, desc);
   }
 });
 
-teste('CA-D6: sem activeCat guardado abre na primeira aba; com uma das 17 guardada, reabre nela', async () => {
-  await abrirApp();
-  igual(catAtiva(), PRIMEIRA);
-  afirma(cartoes().length > 0, 'grade vazia');
+teste('CA-D6: sem activeCat guardado (ou guardado vazio) abre com todas as categorias; com uma das 17 guardada, reabre nela', async () => {
+  for (const [guardado, desc] of [[undefined, 'nada guardado'], ['', 'guardado vazio']]) {
+    await abrirApp(guardado);
+    igual(catAtiva(), '', desc + ': sem categoria');
+    igual(abaAtiva().length, 0, desc + ': nenhuma pílula marcada');
+    igual(selCat().value, '', desc + ': o seletor em "Todas as categorias"');
+    afirma(cartoes().length > 0, desc + ': grade vazia');
+    igual(totalFiltrado(), API.length, desc + ': todos os itens');
+  }
   await abrirApp(GAMES);
   igual(catAtiva(), GAMES);
   igual(abaAtiva().map(b => b.dataset.c), [GAMES]);
@@ -384,7 +392,7 @@ teste('CA-D8: categoria do banco fora das 17 vai para o grupo "Outras", ao fim e
   igual(abas().map(b => b.dataset.c), [...ORDEM, 'Abelha legada', 'Zebra legada']);
   igual(contadorDaAba(abaPorNome('Abelha legada')), 2);
   igual([...selCat().querySelectorAll('optgroup')].map(g => g.label), [...GRUPOS.map(g => g[0]), 'Outras']);
-  igual([...selCat().options].map(o => o.value), [...ORDEM, 'Abelha legada', 'Zebra legada']);
+  igual([...selCat().options].map(o => o.value), ['', ...ORDEM, 'Abelha legada', 'Zebra legada'], 'a primeira opção é "Todas as categorias"');
   clicar(abaPorNome('Abelha legada'));
   igual(cartoes().length, 2, 'o item órfão continua acessível');
   igual(W.eval('cats()'), [...ORDEM, 'Abelha legada', 'Zebra legada']);

@@ -462,6 +462,7 @@ const TXT_ABAS = {
   anuncio:'{ABA}: {N} ofertas', anuncioUma:'{ABA}: 1 oferta', anuncioNenhuma:'{ABA}: nenhuma oferta',
   dicaSemPublico:'A maior parte desta categoria não separa por público ({SEM} de {TODOS}). Veja em "Sem gênero".',
   marcarGrupo:'Marcar o grupo', desmarcarGrupo:'Desmarcar o grupo',
+  todas:'Todas as categorias', dicaDesmarcar:'Clique de novo para ver todas as categorias', escolhaAdicionar:'Escolha a categoria',
 };
 // Estados da lista de ofertas: carregando, erro de carga, sem resultado e sem nenhuma oferta
 const TXT_LISTA = {
@@ -479,6 +480,7 @@ const TXT_PRECOS = {
   como:'Como atualizar os preços', desatualizado:'Desatualizado',
   faixaVelhos:'{N} de {T} preços desta categoria passam de {H} h.', faixaVelhosUm:'1 de 1 preço desta categoria passa de {H} h.',
   faixaEmDia:'Todos os preços desta categoria têm menos de {H} h.', faixaSemPreco:'Nenhum item desta categoria tem preço para conferir.',
+  faixaTodas:{velhos:'{N} de {T} preços de todas as categorias passam de {H} h.', velhosUm:'1 de 1 preço de todas as categorias passa de {H} h.', emDia:'Todos os preços de todas as categorias têm menos de {H} h.', semPreco:'Nenhum item de todas as categorias tem preço para conferir.'},
   agoraPouco:'Preço de agora há pouco', hoje:'Preço de hoje, {HORA}', ontem:'Preço de ontem, {HORA}', diasAtras:'Preço de {DATA} (há {N} dias)', mesAtras:'Preço de {DATA} (há mais de 1 mês)', desconhecida:'Idade do preço desconhecida',
   atualizar:'Atualizar preço', atualizarDe:'Atualizar preço de', buscando:'Buscando na Amazon…', atualizado:'Preço atualizado.',
   atualizarFalhou:'Não consegui atualizar: a Amazon não respondeu. Tente de novo.', atualizarSemPreco:'Não consegui atualizar: a Amazon não trouxe o preço. Tente de novo.',
@@ -537,7 +539,7 @@ const lojaDoLink = u=>{
   if (h.endsWith(SUFIXO_ML)) return 'ml';
   return Object.keys(HOSTS_LINK).find(k=>HOSTS_LINK[k].includes(h)) || null;
 };
-const TXT_ADD = {linkDesconhecido:'Link não reconhecido: use um link de afiliado da Amazon, do Mercado Livre ou da Shopee.'};
+const TXT_ADD = {linkDesconhecido:'Link não reconhecido: use um link de afiliado da Amazon, do Mercado Livre ou da Shopee.', semCategoria:'Escolha a categoria dos links, ou digite uma nova, antes de adicionar.'};
 // Textos do botão "Copiar imagem" (usados em copiarImagem)
 const TXT_IMG = {
   botao:'Copiar imagem',
@@ -562,7 +564,10 @@ const api = async(path, method='GET', body)=>{ const r=await fetch('/api/'+path,
 // o filtro de loja segue o LOJA (mesma ordem em todo o app); "Todas as lojas" fica primeiro
 $('#fLoja').insertAdjacentHTML('beforeend', Object.entries(LOJA).map(([k,t])=>`<option value="${esc(k)}">${esc(t)}</option>`).join(''));
 let items=[], templates=DEFAULT_TEMPLATES, current='Template 1';
-let activeCat = localStorage.getItem('activeCat') || '';
+// Categoria marcada ('' = nenhuma: a lista traz os produtos de todas as categorias). Lembrada em localStorage; se ele estiver indisponível, nada é lembrado e o site segue.
+function lerCatLembrada(){ try{ return localStorage.getItem('activeCat') || ''; }catch{ return ''; } }
+function guardarCat(c){ try{ localStorage.setItem('activeCat', c); }catch{ /* sem armazenamento: não lembra, mas funciona */ } }
+let activeCat = lerCatLembrada();
 let page=1;
 // Itens por aba, numa passada só. As 17 abas de ORDEM_ABAS vêm sempre (as sem item contam 0); a categoria do banco que não está nelas
 // (legado ou criada à mão) vai no grupo "Outras", no fim, em ordem alfabética. `adicionais` são nomes que precisam aparecer mesmo sem item (regra do disparo).
@@ -600,10 +605,11 @@ function contarGeneros(lista){
 // Público lembrado por aba (localStorage `genero:<aba>`); valor que não existe mais, ou aba sem gênero, é "Todos" ('')
 function generoEscolhido(cat){
   if (!abaTemGenero(cat)) return '';
-  const v = localStorage.getItem('genero:'+cat);
+  let v = '';
+  try{ v = localStorage.getItem('genero:'+cat); }catch{ /* sem armazenamento: "Todos" */ }
   return GENEROS.includes(v) ? v : '';
 }
-function guardarGenero(cat, v){ if (v) localStorage.setItem('genero:'+cat, v); else localStorage.removeItem('genero:'+cat); }
+function guardarGenero(cat, v){ try{ if (v) localStorage.setItem('genero:'+cat, v); else localStorage.removeItem('genero:'+cat); }catch{ /* sem armazenamento: não lembra, mas funciona */ } }
 // Resposta do servidor (PATCH/PUT) traz o público do item: copia só estes campos para o item da tela
 function copiarGenero(it, r){
   if (r && GENEROS.includes(r.genero)) Object.assign(it, {genero:r.genero, genero_origem:r.genero_origem || '', genero_auto:r.genero_auto});
@@ -714,13 +720,13 @@ function contarPrecos(lista, agora=new Date()){
 }
 // Faixa da aba ativa: some se a aba não tem item
 function atualizarFaixaPrecos(){
-  const f = $('#faixaPrecos'), doAba = items.filter(i=>i.cat === activeCat), T = TXT_PRECOS;
+  const f = $('#faixaPrecos'), doAba = activeCat ? items.filter(i=>i.cat === activeCat) : items, T = TXT_PRECOS;   // sem categoria, todos os itens
   f.hidden = !ofertasProntas || !doAba.length;
   if (f.hidden) return;
-  const c = contarPrecos(doAba), h = precoValidade;
-  $('#faixaPrecosTxt').textContent = !c.itens ? T.faixaSemPreco
-    : !c.velhos ? T.faixaEmDia.replace('{H}', h)
-    : (c.itens === 1 ? T.faixaVelhosUm : T.faixaVelhos).replace('{N}', fmtNum(c.velhos)).replace('{T}', fmtNum(c.itens)).replace('{H}', h);
+  const c = contarPrecos(doAba), h = precoValidade, X = activeCat ? {semPreco:T.faixaSemPreco, emDia:T.faixaEmDia, velhosUm:T.faixaVelhosUm, velhos:T.faixaVelhos} : T.faixaTodas;
+  $('#faixaPrecosTxt').textContent = !c.itens ? X.semPreco
+    : !c.velhos ? X.emDia.replace('{H}', h)
+    : (c.itens === 1 ? X.velhosUm : X.velhos).replace('{N}', fmtNum(c.velhos)).replace('{T}', fmtNum(c.itens)).replace('{H}', h);
 }
 // Opções do filtro de preço, com as contagens da lista atual (loja, busca, título e público valem; o próprio filtro de preço não)
 function atualizarFiltroPreco(){
@@ -1099,7 +1105,7 @@ function renderCard(card, it, abas=cats()){   // `abas`: o render() calcula a li
   };
   card.querySelector('.reset').onclick = ()=>{ ta.value = buildMsg(it); };
   card.querySelector('.del').onclick = async()=>{ await api('items/'+it.id,'DELETE'); items.splice(items.indexOf(it),1); render(); };
-  card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); if(!c){render();return;} } c=c.trim(); const r=await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; copiarGenero(it, r); render(); };
+  card.querySelector('.mv').onchange = async e=>{ let c=e.target.value; if(c==='__new'){ c=prompt('Nome da nova categoria:'); } c=(c||'').trim(); if(!c){render();return;} const r=await api('items/'+it.id,'PATCH',{cat:c}); it.cat=c; copiarGenero(it, r); render(); };
   const gs = card.querySelector('select.gen'); if (gs) gs.onchange = ()=>corrigirGenero(it, card, gs);
 }
 
@@ -1174,11 +1180,11 @@ async function corrigirGenero(it, card, sel){
   }
 }
 
-// Itens da aba ativa que passam nos filtros. semGenero e semBusca servem às contagens do controle "Público" (loja e título valem; o próprio público e a busca não).
+// Itens da aba ativa (ou de todas, sem categoria marcada) que passam nos filtros. semGenero e semBusca servem às contagens do controle "Público" (loja e título valem; o próprio público e a busca não).
 // semPreco serve às contagens do filtro de preço (o próprio filtro não vale nelas)
 function filtrarItens({semGenero=false, semBusca=false, semPreco=false}={}){
   const loja=$('#fLoja').value, busca=semBusca?'':$('#fBusca').value, txt=$('#fTexto').value.trim().toLowerCase(), g=semGenero?'':generoEscolhido(activeCat), fp=semPreco?'':$('#fPreco').value, agora=new Date();
-  return items.filter(i=>i.cat===activeCat && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)) && (!g||casaGenero(i,[g])) && (!fp||(temPreco(i)&&precoVelho(i.preco_em,precoValidade,agora)===(fp==='velho'))));
+  return items.filter(i=>(!activeCat||i.cat===activeCat) && (!loja||i.loja===loja) && (!busca||i.busca===busca) && (!txt||(i.data&&i.data.titulo||'').toLowerCase().includes(txt)) && (!g||casaGenero(i,[g])) && (!fp||(temPreco(i)&&precoVelho(i.preco_em,precoValidade,agora)===(fp==='velho'))));
 }
 function filtrada(){
   const ordem=$('#fOrdem').value;
@@ -1200,42 +1206,55 @@ function desenharAbas(grupos, contagem){
   if (box.dataset.estrutura !== estrutura){
     box.dataset.estrutura = estrutura;
     box.innerHTML = grupos.map((g,k)=>`<div class="tabs-grupo" role="group" aria-labelledby="tg-${k}"><span class="lbl" id="tg-${k}">${esc(g.rotulo)}</span><div class="tabs-pilulas">${g.abas.map(c=>`<button type="button" class="tab" data-c="${esc(c)}" aria-pressed="false"><span class="nome" data-n="${esc(c)}">${esc(c)}</span> <span class="muted"></span></button>`).join('')}</div></div>`).join('');
-    sel.innerHTML = grupos.map(g=>`<optgroup label="${esc(g.rotulo)}">${g.abas.map(c=>`<option value="${esc(c)}"></option>`).join('')}</optgroup>`).join('');
+    sel.innerHTML = `<option value=""></option>`+grupos.map(g=>`<optgroup label="${esc(g.rotulo)}">${g.abas.map(c=>`<option value="${esc(c)}"></option>`).join('')}</optgroup>`).join('');   // a primeira opção, sem valor, é "Todas as categorias"
   }
   const mudar = (el, t)=>{ if (el.textContent !== t) el.textContent = t; };
   for (const b of box.querySelectorAll('.tab')){
     const ativa = b.dataset.c === activeCat;
     b.classList.toggle('active', ativa); b.setAttribute('aria-pressed', ativa);
+    if (ativa) b.title = TXT_ABAS.dicaDesmarcar; else b.removeAttribute('title');   // a marcada avisa que outro clique a desmarca
     mudar(b.querySelector('.muted'), fmtNum(contagem.get(b.dataset.c) || 0));
   }
-  for (const o of sel.options) mudar(o, `${o.value} (${fmtNum(contagem.get(o.value) || 0)})`);
-  sel.value = activeCat; sel.title = activeCat;
+  for (const o of sel.options) mudar(o, `${o.value || TXT_ABAS.todas} (${fmtNum(o.value ? contagem.get(o.value) || 0 : items.length)})`);
+  sel.value = activeCat; sel.title = activeCat || TXT_ABAS.todas;
 }
-// Trocar de aba (botão ou seletor): zera a busca e a página, restaura o público lembrado (o render lê generoEscolhido) e anuncia o resultado
+// Trocar de aba (botão ou seletor; '' = nenhuma, todas as categorias): zera a busca e a página, restaura o público lembrado (o render lê generoEscolhido) e anuncia o resultado
 function escolherAba(c){
   activeCat = c; page = 1; $('#fBusca').value = ''; render();
   const n = filtrada().length, t = n === 0 ? TXT_ABAS.anuncioNenhuma : n === 1 ? TXT_ABAS.anuncioUma : TXT_ABAS.anuncio;
-  $('#anuncioLista').textContent = t.replace('{ABA}', activeCat).replace('{N}', fmtNum(n));
+  $('#anuncioLista').textContent = t.replace('{ABA}', activeCat || TXT_ABAS.todas).replace('{N}', fmtNum(n));
 }
-$('#tabs').addEventListener('click', ev=>{ const b = ev.target.closest('.tab'); if (b) escolherAba(b.dataset.c); });
+$('#tabs').addEventListener('click', ev=>{ const b = ev.target.closest('.tab'); if (b) escolherAba(b.dataset.c === activeCat ? '' : b.dataset.c); });   // clicar na marcada a desmarca
 $('#selCat').addEventListener('change', ev=>escolherAba(ev.target.value));
 $('#lblSelCat').textContent = TXT_ABAS.rotuloSelect;
+
+// Sem categoria marcada: as buscas agrupadas pela categoria dona, a primeira das abas (ordem de `cs`) que tem a busca. Uma só passada pelos itens.
+function buscasPorCategoria(buscas, cs){
+  const dona = new Map(), porCat = new Map(), pos = new Map(cs.map((c,k)=>[c,k]));
+  for (const i of items){
+    if (!i.busca || !pos.has(i.cat)) continue;
+    const d = dona.get(i.busca);
+    if (d === undefined || pos.get(i.cat) < pos.get(d)) dona.set(i.busca, i.cat);
+  }
+  for (const b of buscas){ const c = dona.get(b); if (!porCat.has(c)) porCat.set(c, []); porCat.get(c).push(b); }
+  return cs.filter(c=>porCat.has(c)).map(c=>[c, porCat.get(c)]);
+}
 
 function render(){
   if (!ofertasProntas) return;   // carregando ou com erro de carga: o bloco do estado fica, nada de lista
   const foco = guardarFoco();
   const contagem = contarAbas(), grupos = gruposDeAbas(contagem), cs = grupos.flatMap(g=>g.abas);
-  if(!cs.includes(activeCat)) activeCat = cs[0] || '';   // aba que não existe mais: a primeira, "Celulares e Informática"
-  localStorage.setItem('activeCat', activeCat);
+  if(activeCat && !cs.includes(activeCat)) activeCat = cs[0] || '';   // aba que não existe mais: a primeira, "Celulares e Informática" ('' é válido: todas as categorias)
+  guardarCat(activeCat);
   desenharAbas(grupos, contagem);
   // "Sem gênero" que zerou (com a loja e o título de agora) cai em "Todos" antes de filtrar
   if (abaTemGenero(activeCat) && generoEscolhido(activeCat)==='sem' && !contarGeneros(filtrarItens({semGenero:true, semBusca:true})).sem) guardarGenero(activeCat, '');
   atualizarPublico();
-  // o select de buscas só lista as buscas que têm item no público escolhido
+  // o select de buscas só lista as buscas que têm item no público escolhido; sem categoria, as de todas, agrupadas por categoria
   const gSel=generoEscolhido(activeCat);
-  const buscas=[...new Set(items.filter(i=>i.cat===activeCat && (!gSel||casaGenero(i,[gSel]))).map(i=>i.busca).filter(Boolean))];
-  const bsel=$('#fBusca'), bval=bsel.value;
-  bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+buscas.map(b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`).join('');
+  const buscas=[...new Set(items.filter(i=>(!activeCat||i.cat===activeCat) && (!gSel||casaGenero(i,[gSel]))).map(i=>i.busca).filter(Boolean))];
+  const bsel=$('#fBusca'), bval=bsel.value, opBusca=b=>`<option ${b===bval?'selected':''}>${esc(b)}</option>`;
+  bsel.innerHTML='<option value="">Todas as buscas ('+buscas.length+')</option>'+(activeCat ? buscas.map(opBusca).join('') : buscasPorCategoria(buscas, cs).map(([c,bs])=>`<optgroup label="${esc(c)}">${bs.map(opBusca).join('')}</optgroup>`).join(''));
   atualizarFiltroPreco();
   const list = filtrada();
   // loja sem item some do contador; cada trecho leva o "·" final no mesmo nowrap, para o separador nunca abrir a 2ª linha
@@ -1247,11 +1266,11 @@ function render(){
   document.querySelectorAll('.pager').forEach(el=>{ el.innerHTML=pagerHtml; el.querySelectorAll('.pg').forEach(b=>b.onclick=()=>{page=+b.dataset.p; render(); window.scrollTo({top:0,behavior:'smooth'});}); });
   const grid=$('#grid'); grid.innerHTML='';
   list.slice((page-1)*PAGE, page*PAGE).forEach(it=>{ const c=document.createElement('div'); c.className='card'; renderCard(c,it,cs); grid.appendChild(c); });
-  $('#addCat').innerHTML = cs.map(c=>`<option ${c===activeCat?'selected':''}>${esc(c)}</option>`).join('');
+  $('#addCat').innerHTML = (activeCat ? '' : `<option value="" selected>${esc(TXT_ABAS.escolhaAdicionar)}</option>`)+cs.map(c=>`<option ${c===activeCat?'selected':''}>${esc(c)}</option>`).join('');   // sem categoria marcada o campo não adivinha uma
   // sem nenhuma oferta: só o aviso; aba sem item (as 17 aparecem sempre): o aviso com as abas à vista, sem filtros; filtro que zera a lista: aviso no lugar do grid, com a saída
   const g = generoEscolhido(activeCat);
   if (!items.length) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), true);
-  else if (!contagem.get(activeCat)) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), false, true);
+  else if (activeCat && !contagem.get(activeCat)) definirEstadoLista(htmlEstadoLista('status', TXT_LISTA.semOfertas), false, true);
   else if (!list.length && $('#fPreco').value === 'velho' && filtrarItens({semPreco:true}).length) definirEstadoLista(htmlEstadoLista('status', TXT_PRECOS.tudoEmDia.replace('{H}', precoValidade), 'ver-todos-precos', TXT_PRECOS.verTodos), false);   // positivo: com os outros filtros atuais, nenhum preço passou do prazo
   else if (!list.length) definirEstadoLista(htmlEstadoLista('status', g ? TXT_LISTA.semResultadoPublico.replace('{PUBLICO}', NOME_GENERO[g]) : TXT_LISTA.semResultado, 'limpar', TXT_LISTA.limpar), false);
   else definirEstadoLista('', false);
@@ -1269,7 +1288,7 @@ function definirEstadoLista(html, semDados, abaVazia=false){
 // Volta loja, busca, ordem, título e público ao padrão; a aba fica
 function limparFiltros(){
   for (const s of ['#fLoja','#fBusca','#fPreco','#fOrdem','#fTexto']) $(s).value = '';
-  guardarGenero(activeCat, ''); page = 1; render();
+  if (activeCat) guardarGenero(activeCat, ''); page = 1; render();
   $('#fTexto').focus({preventScroll:true});   // o botão que tinha o foco saiu da tela
 }
 $('#estadoLista').addEventListener('click', ev=>{
@@ -1379,7 +1398,8 @@ $('#saveTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(!n)return;
 $('#delTpl').onclick=async()=>{const n=$('#tplName').value.trim();if(Object.keys(templates).length<=1)return;delete templates[n];current=Object.keys(templates)[0];await saveTemplates();fillSelect();render();$('#tplBox').classList.remove('open');};
 
 $('#saveLinks').onclick=async()=>{
-  const cat = ($('#addCatNew').value.trim() || $('#addCat').value || 'Geral');
+  const cat = ($('#addCatNew').value.trim() || $('#addCat').value);
+  if(!cat){ toast(TXT_ADD.semCategoria, true); $('#addCat').focus(); return; }   // sem categoria marcada o campo "Categoria" começa vazio: o dono escolhe
   const achados=[...$('#addLinks').value.matchAll(/https?:\/\/\S+/g)].map(m=>m[0].replace(/[.,);]+$/,''));
   // o servidor só aceita https: os http ficam de fora e voltam para a caixa, para o dono corrigir
   const found=achados.filter(u=>/^https:\/\//i.test(u)), ignorados=achados.filter(u=>!/^https:\/\//i.test(u));
