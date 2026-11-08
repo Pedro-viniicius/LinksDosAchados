@@ -12,3 +12,4 @@
 - [Preço sempre atualizado (preco_em, trava, v1, lote)](testes-atualizar-precos.md) — test_atualizar_precos_qa.py, precos-qa, Q1-Q4 baixos, bug do undici >64 KB, mutantes
 - [Painel PHP /painel/ (repo Pagina_desejoMenina)](testes-painel-hostinger.md) — Docker, TLS local, layout CDP, hook só aceita *.test.*, Q1-Q3 corrigidos (rodada 2 aprovada)
 - [API oficial do ML (ml_api.py)](testes-ml-api.md) — test_ml_api_qa.py e test_ml_api_catalogo_qa.py (sonda do catálogo), socket local, 401 concorrente, sondar antigo via git show, servidor real; rodada 2 aprovada (Q1 risco aceito, Q2 corrigido); etapa 3 (atualizar_precos ml): test_atualizar_precos_ml_qa.py, rodada 2 aprovada, Q1 risco aceito (NULL vira vazio)
+- [Foto grande (miniatura -> foto cheia)](testes-foto-grande.md) — tabela compartilhada Python/front, testes antigos do ML alterados, validação por referência

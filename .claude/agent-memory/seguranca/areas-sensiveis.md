@@ -73,6 +73,7 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 
 **Saídas no front (`index.html`)**
 - `innerHTML` com template string; `esc()` escapa `& < > "`. "Copiar imagem": `HOSTS_FOTO` na URL pedida e no `r.url` final.
+- Foto grande (correção Q1, rodada 1 em 2026-11-08): `disparo.foto_grande(url, loja)` (pura) reescreve só o fim do último segmento do caminho (Amazon `._AC_SL1000_`, ML `-F.jpg`, Shopee tira `_tn`); recusa `?`/`#`; entra e sai por `imagem_permitida`. Usada na v1 (`oferta`), no `_escolher` do disparo e, em JS, no `urlFotoParaCopiar` (regex do netloc inteiro; `baixarComoPng` reconfere host na ida e no destino). Medido: host nunca muda (Python e WHATWG), `\`/`@`/porta/`%2F`/Kelvin/`\n` cobertos. Banco em 2026-11-08: `imagem` máx. 77 chars; nenhuma Shopee termina em `_tn`. Turbo baixa a foto via Baileys `{image:{url}}` sem `maxContentLength` (sem teto de bytes, segue redirect).
 - Botão "Abrir": só `https:` via `new URL`, com `noopener,noreferrer` (S1 corrigido em 2026-11-03). POST `/api/items` exige `eh_url_de_loja` (https, netloc == host, `HOSTS_LOJAS` + `*.mercadolivre.com.br`); PATCH segue com `eh_link_afiliado`. `coletar_amazon.py` grava por `S.upsert()` direto, sem essa validação (ramo do WhatsApp grava `https?://\S+` do chat).
 - Banco em 2026-11-03: toda `url` é `https://meli.la/` (ml) ou `https://www.amazon.com.br/` (amazon); toda `imagem` em `http2.mlstatic.com`/`m.media-amazon.com`.
 
