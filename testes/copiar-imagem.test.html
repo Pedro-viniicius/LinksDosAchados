@@ -80,6 +80,9 @@ ouvirErros(window, 'página de teste');
 const URL_AMZ = 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_UL320_.jpg';
 const URL_AMZ_1000 = 'https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg';
 const URL_ML = 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-E.webp';
+const URL_ML_F = 'https://http2.mlstatic.com/D_Q_NP_2X_624792-MLU75859080805_042024-F.jpg';
+const URL_SHP_TN = 'https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc_tn';
+const URL_SHP = 'https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc';
 
 let W, FETCH_ORIG, CI_ORIG, IMPL = null, TXT = null;
 const REG_FETCH = [];   // chamadas a fetch do iframe no teste corrente
@@ -345,7 +348,7 @@ teste('CA1+CA2 (rede real): foto da Amazon vira image/png maior que 320 px, em S
   igual(W.document.getElementById('toast').textContent, TXT.toastOk);
 });
 
-teste('CA1+CA2 (rede real): WEBP do Mercado Livre vira image/png, sem reescrever a URL', async () => {
+teste('CA1+CA2 (rede real): foto do Mercado Livre em -F.jpg vira image/png de 1200 px, numa requisição só', async () => {
   const calls = stubClipboard();
   const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
   await clicarEEsperarFim(c);
@@ -356,8 +359,8 @@ teste('CA1+CA2 (rede real): WEBP do Mercado Livre vira image/png, sem reescrever
   igual(blob.type, 'image/png');
   afirma(await ehPng(blob), 'assinatura PNG (a origem era WEBP)');
   const p = await pixels(blob);
-  afirma(p.largura > 0 && p.altura > 0, 'o PNG decodifica com tamanho');
-  igual(chamadasImagem().map(r => r.url), [URL_ML], 'uma requisição, na URL gravada');
+  afirma(p.largura >= 1000 && p.altura >= 1000, 'o PNG sai da versão grande (era ' + p.largura + 'x' + p.altura + ')');
+  igual(chamadasImagem().map(r => r.url), [URL_ML_F], 'uma requisição, na versão grande -F.jpg');
   igual(c.btn.dataset.estado, 'copiada');
   afirma(c.card.classList.contains('img-done'), 'img-done');
 });
@@ -374,7 +377,6 @@ const TABELA_URL = [
   ['Amazon png', 'https://m.media-amazon.com/images/I/51xyz._AC_UL320_.png', 'https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.png'],
   ['Amazon já em SL1000 (idempotente)', URL_AMZ_1000, URL_AMZ_1000],
   ['Amazon sem sufixo de tamanho', 'https://m.media-amazon.com/images/I/41abc.jpg', 'https://m.media-amazon.com/images/I/41abc.jpg'],
-  ['ML não muda', URL_ML, URL_ML],
   ['outro host com o mesmo padrão não muda', 'https://example.com/images/I/x._AC_UL320_.jpg', 'https://example.com/images/I/x._AC_UL320_.jpg'],
   ['string vazia', '', '']
 ];
@@ -383,6 +385,150 @@ for (const [nome, entrada, saida] of TABELA_URL) {
     igual(funcao('urlFotoParaCopiar')(entrada), saida);
   });
 }
+
+// TABELA_FOTO_GRANDE_INICIO
+const TABELA_FOTO = [
+  ["Amazon UL320", "amazon", "https://m.media-amazon.com/images/I/41p2HTchUrL._AC_UL320_.jpg", "https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg"],
+  ["Amazon vários modificadores", "amazon", "https://m.media-amazon.com/images/I/71abcDEF12L._AC_SY300_SX300_QL70_ML2_.jpg", "https://m.media-amazon.com/images/I/71abcDEF12L._AC_SL1000_.jpg"],
+  ["Amazon com + e - no id", "amazon", "https://m.media-amazon.com/images/I/81+abc-DEF1L._AC_UL320_.jpg", "https://m.media-amazon.com/images/I/81+abc-DEF1L._AC_SL1000_.jpg"],
+  ["Amazon png", "amazon", "https://m.media-amazon.com/images/I/51xyz._AC_UL320_.png", "https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.png"],
+  ["Amazon webp", "amazon", "https://m.media-amazon.com/images/I/51xyz._AC_UL320_.webp", "https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.webp"],
+  ["Amazon jpeg", "amazon", "https://m.media-amazon.com/images/I/51xyz._AC_UL320_.jpeg", "https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.jpeg"],
+  ["Amazon extensão em maiúsculas", "amazon", "https://m.media-amazon.com/images/I/51xyz._AC_UL320_.JPG", "https://m.media-amazon.com/images/I/51xyz._AC_SL1000_.JPG"],
+  ["Amazon já em SL1000", "amazon", "https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg", "https://m.media-amazon.com/images/I/41p2HTchUrL._AC_SL1000_.jpg"],
+  ["Amazon sem modificador", "amazon", "https://m.media-amazon.com/images/I/abc.jpg", "https://m.media-amazon.com/images/I/abc.jpg"],
+  ["Amazon extensão que não é foto da tabela", "amazon", "https://m.media-amazon.com/images/I/abc._AC_UL320_.gif", "https://m.media-amazon.com/images/I/abc._AC_UL320_.gif"],
+  ["Amazon com query", "amazon", "https://m.media-amazon.com/images/I/abc._AC_UL320_.jpg?x=1", "https://m.media-amazon.com/images/I/abc._AC_UL320_.jpg?x=1"],
+  ["Amazon com fragmento", "amazon", "https://m.media-amazon.com/images/I/abc._AC_UL320_.jpg#f", "https://m.media-amazon.com/images/I/abc._AC_UL320_.jpg#f"],
+  ["Amazon com query que termina no padrão", "amazon", "https://m.media-amazon.com/images/I/a._AC_UL320_.jpg?x=._b_.jpg", "https://m.media-amazon.com/images/I/a._AC_UL320_.jpg?x=._b_.jpg"],
+  ["Amazon sem TLS", "amazon", "http://m.media-amazon.com/images/I/abc._AC_UL320_.jpg", "http://m.media-amazon.com/images/I/abc._AC_UL320_.jpg"],
+  ["Amazon com usuário", "amazon", "https://u@m.media-amazon.com/images/I/abc._AC_UL320_.jpg", "https://u@m.media-amazon.com/images/I/abc._AC_UL320_.jpg"],
+  ["Amazon com porta", "amazon", "https://m.media-amazon.com:8443/images/I/abc._AC_UL320_.jpg", "https://m.media-amazon.com:8443/images/I/abc._AC_UL320_.jpg"],
+  ["Amazon host parecido", "amazon", "https://m.media-amazon.com.evil.example/images/I/abc._AC_UL320_.jpg", "https://m.media-amazon.com.evil.example/images/I/abc._AC_UL320_.jpg"],
+  ["Amazon com esquema e host em maiúsculas", "amazon", "HTTPS://M.MEDIA-AMAZON.COM/images/I/a._AC_UL320_.jpg", "HTTPS://M.MEDIA-AMAZON.COM/images/I/a._AC_SL1000_.jpg"],
+  ["ML -E.webp", "ml", "https://http2.mlstatic.com/D_Q_NP_2X_840992-MLB95728482450_102025-E.webp", "https://http2.mlstatic.com/D_Q_NP_2X_840992-MLB95728482450_102025-F.jpg"],
+  ["ML -O.jpg", "ml", "https://http2.mlstatic.com/D_840992-MLB95728482450_102025-O.jpg", "https://http2.mlstatic.com/D_840992-MLB95728482450_102025-F.jpg"],
+  ["ML -I.jpeg", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-I.jpeg", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.jpg"],
+  ["ML -V.png", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-V.png", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.jpg"],
+  ["ML -F.webp", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.webp", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.jpg"],
+  ["ML já -F.jpg", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.jpg", "https://http2.mlstatic.com/D_840992-MLB1_102025-F.jpg"],
+  ["ML letra minúscula", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-e.webp", "https://http2.mlstatic.com/D_840992-MLB1_102025-e.webp"],
+  ["ML duas letras", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-EE.webp", "https://http2.mlstatic.com/D_840992-MLB1_102025-EE.webp"],
+  ["ML sem sufixo de letra", "ml", "https://http2.mlstatic.com/D_840992-MLB1.webp", "https://http2.mlstatic.com/D_840992-MLB1.webp"],
+  ["ML sufixo só no meio do caminho", "ml", "https://http2.mlstatic.com/a-E.webp/b.jpg", "https://http2.mlstatic.com/a-E.webp/b.jpg"],
+  ["ML gif", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.gif", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.gif"],
+  ["ML com query", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.webp?x=1", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.webp?x=1"],
+  ["ML com fragmento", "ml", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.webp#f", "https://http2.mlstatic.com/D_840992-MLB1_102025-E.webp#f"],
+  ["ML com fragmento que termina no padrão", "ml", "https://http2.mlstatic.com/D_a-E.webp#b-E.webp", "https://http2.mlstatic.com/D_a-E.webp#b-E.webp"],
+  ["ML sem TLS", "ml", "http://http2.mlstatic.com/D_840992-MLB1_102025-E.webp", "http://http2.mlstatic.com/D_840992-MLB1_102025-E.webp"],
+  ["ML com porta", "ml", "https://http2.mlstatic.com:8443/D_840992-MLB1_102025-E.webp", "https://http2.mlstatic.com:8443/D_840992-MLB1_102025-E.webp"],
+  ["ML host parecido", "ml", "https://http2.mlstatic.com.evil.example/D_840992-MLB1_102025-E.webp", "https://http2.mlstatic.com.evil.example/D_840992-MLB1_102025-E.webp"],
+  ["ML img-not-available", "ml", "https://http2.mlstatic.com/img-not-available/x/E@2x.gif", "https://http2.mlstatic.com/img-not-available/x/E@2x.gif"],
+  ["Shopee _tn", "shopee", "https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc_tn", "https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc"],
+  ["Shopee sem _tn", "shopee", "https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc", "https://down-br.img.susercontent.com/file/br-11134207-7r98o-m1abc"],
+  ["Shopee _tn no meio do caminho", "shopee", "https://down-br.img.susercontent.com/file/a_tn/b", "https://down-br.img.susercontent.com/file/a_tn/b"],
+  ["Shopee fim parecido com _tn", "shopee", "https://down-br.img.susercontent.com/file/abc_tnx", "https://down-br.img.susercontent.com/file/abc_tnx"],
+  ["Shopee _tn com query", "shopee", "https://down-br.img.susercontent.com/file/abc_tn?x=1", "https://down-br.img.susercontent.com/file/abc_tn?x=1"],
+  ["Shopee _tn com fragmento", "shopee", "https://down-br.img.susercontent.com/file/abc_tn#f", "https://down-br.img.susercontent.com/file/abc_tn#f"],
+  ["Shopee com query que termina em _tn", "shopee", "https://down-br.img.susercontent.com/file/a?x_tn", "https://down-br.img.susercontent.com/file/a?x_tn"],
+  ["Shopee com fragmento _tn", "shopee", "https://down-br.img.susercontent.com/file/a#_tn", "https://down-br.img.susercontent.com/file/a#_tn"],
+  ["Shopee _tn sem TLS", "shopee", "http://down-br.img.susercontent.com/file/abc_tn", "http://down-br.img.susercontent.com/file/abc_tn"],
+  ["Shopee _tn com usuário", "shopee", "https://u@down-br.img.susercontent.com/file/abc_tn", "https://u@down-br.img.susercontent.com/file/abc_tn"],
+  ["Shopee _tn em outro CDN da Shopee", "shopee", "https://down-sg.img.susercontent.com/file/abc_tn", "https://down-sg.img.susercontent.com/file/abc_tn"],
+  ["string vazia", "amazon", "", ""]
+];
+// TABELA_FOTO_GRANDE_FIM
+// mesma tabela do testes/test_disparo.py (FotoGrandeFuncao.test_tabela_igual_a_do_front confere que são iguais)
+for (const [nome, loja, entrada, saida] of TABELA_FOTO) {
+  teste('CA4: urlFotoParaCopiar (' + loja + '): ' + nome, async () => {
+    igual(funcao('urlFotoParaCopiar')(entrada), saida);
+  });
+}
+
+teste('CA4: urlFotoParaCopiar: URL com mais de 2048 caracteres volta igual e rápido (a regex da Amazon é quadrática)', async () => {
+  const f = funcao('urlFotoParaCopiar');
+  for (const [base, fim] of [['https://m.media-amazon.com/images/I/', '._AC_UL320_.jpg'], ['https://http2.mlstatic.com/', '-E.webp'], ['https://down-br.img.susercontent.com/file/', '_tn']]) {
+    const url = base + 'a' + '._'.repeat(10000) + fim;
+    const t0 = performance.now();
+    igual(f(url), url);
+    afirma(performance.now() - t0 < 200, 'demorou ' + (performance.now() - t0) + ' ms');
+  }
+  // no teto (2048) ainda converte; um caractere a mais volta como veio
+  const A = 'https://m.media-amazon.com/images/I/', FIM = '._AC_UL320_.jpg';
+  const noTeto = A + 'a'.repeat(2048 - A.length - FIM.length) + FIM;
+  igual(noTeto.length, 2048);
+  igual(f(noTeto), noTeto.replace(FIM, '._AC_SL1000_.jpg'));
+  const maisUm = A + 'a' + noTeto.slice(A.length);
+  igual(f(maisUm), maisUm);
+});
+
+teste('CA4: a grade de cards continua com a foto gravada (miniatura) no <img>, em qualquer loja', async () => {
+  for (const [loja, foto] of [['amazon', URL_AMZ], ['ml', URL_ML], ['shopee', URL_SHP_TN]]) {
+    const c = montarCard(itemFalso({ loja, imagem: foto }), false);
+    igual(c.card.querySelector('.info img').getAttribute('src'), foto, 'src do <img> (' + loja + ')');
+  }
+});
+
+teste('CA4: Mercado Livre pede a -F.jpg e, se ela existe, não faz segunda requisição', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(30, 20, '#123456');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_ML_F]);
+  igual(c.btn.dataset.estado, 'copiada');
+  igual(calls.write.length, 1);
+});
+
+teste('CA4: sem a -F.jpg o Mercado Livre cai para a URL gravada e a cópia conclui', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(30, 20, '#123456');
+  IMPL = url => Promise.resolve(url === URL_ML_F ? resp(new W.Blob(['x']), { status: 404, tipo: 'text/html' }) : resp(png));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_ML_F, URL_ML]);
+  igual(c.btn.dataset.estado, 'copiada');
+  const p = await pixels(await calls.write[0][0].getType('image/png'));
+  igual([p.largura, p.altura], [30, 20]);
+});
+
+teste('CA4: se a -F.jpg e a URL gravada do Mercado Livre falham, são só duas tentativas e o erro é indisponível', async () => {
+  stubClipboard();
+  IMPL = () => Promise.resolve(resp(new W.Blob(['x']), { status: 404, tipo: 'text/html' }));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_ML_F, URL_ML]);
+  afirmaErro(c, 'indisponivel');
+});
+
+teste('CA4: falha de rede na -F.jpg do Mercado Livre não tenta a URL gravada (só indisponível tem fallback)', async () => {
+  stubClipboard();
+  IMPL = () => Promise.reject(new W.TypeError('Failed to fetch'));
+  const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_ML_F]);
+  afirmaErro(c, 'rede');
+});
+
+teste('CA4: Shopee com _tn pede a foto sem o _tn e cai para a gravada se ela não existir', async () => {
+  const calls = stubClipboard();
+  const png = await imagem(30, 20, '#123456');
+  IMPL = url => Promise.resolve(url === URL_SHP ? resp(new W.Blob(['x']), { status: 404, tipo: 'text/html' }) : resp(png));
+  const c = montarCard(itemFalso({ loja: 'shopee', imagem: URL_SHP_TN }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_SHP, URL_SHP_TN]);
+  igual(c.btn.dataset.estado, 'copiada');
+});
+
+teste('CA4: Shopee sem _tn faz uma requisição só, na URL gravada', async () => {
+  stubClipboard();
+  const png = await imagem(30, 20, '#123456');
+  IMPL = () => Promise.resolve(resp(png));
+  const c = montarCard(itemFalso({ loja: 'shopee', imagem: URL_SHP }));
+  await clicarEEsperarFim(c);
+  igual(chamadasImagem().map(r => r.url), [URL_SHP]);
+  igual(c.btn.dataset.estado, 'copiada');
+});
 
 teste('CA2: sem SL1000 a Amazon cai para a URL gravada e a cópia conclui', async () => {
   const calls = stubClipboard();
@@ -498,7 +644,7 @@ for (const [nome, mk] of ERROS_INDISP) {
     const c = montarCard(itemFalso({ loja: 'ml', imagem: URL_ML }));
     await clicarEEsperarFim(c);
     afirmaErro(c, 'indisponivel');
-    igual(chamadasImagem().length, 1, 'ML não tem fallback; uma tentativa');
+    igual(chamadasImagem().map(r => r.url), [URL_ML_F, URL_ML], 'ML tenta a -F.jpg e depois a URL gravada');
     // a promise entregue ao ClipboardItem tem que falhar (nada de gif/lixo na área de transferência)
     let falhou = false;
     try { await calls.write[0][0].getType('image/png'); } catch (e) { falhou = true; }

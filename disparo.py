@@ -700,6 +700,38 @@ def imagem_permitida(url, loja=None):
     return p.scheme == 'https' and p.netloc.lower() == (p.hostname or '') and p.hostname in hosts
 
 
+# Miniatura -> foto grande, por loja (só o fim do caminho; mesmas regras do `urlFotoParaCopiar` do index.html).
+_RE_FOTO_AMAZON = re.compile(r'\._[^/]*_\.(jpe?g|png|webp)\Z', re.I | re.A)
+_RE_FOTO_ML = re.compile(r'-([A-Za-z])\.(?:webp|jpe?g|png)\Z', re.I | re.A)
+# URL maior que isto volta como veio: a regex da Amazon é quadrática e a `imagem` do banco não tem teto próprio.
+TETO_URL_FOTO = 2048
+
+
+def foto_grande(url, loja):
+    """Versão grande da foto, no CDN da própria loja; função pura, sem rede e sem gravar nada.
+
+    Amazon: `._<mods>_.<ext>` vira `._AC_SL1000_.<ext>`. ML: `-<letra maiúscula>.<ext>` vira `-F.jpg`.
+    Shopee: tira o `_tn` do fim. URL com query ou fragmento, fora de `imagem_permitida(url, loja)` ou sem o
+    padrão da loja volta como veio, e uma URL com mais de `TETO_URL_FOTO` caracteres também; o resultado também
+    passa em `imagem_permitida`, senão volta a original.
+    """
+    if not isinstance(url, str) or not isinstance(loja, str) or len(url) > TETO_URL_FOTO:
+        return url
+    if not imagem_permitida(url, loja):
+        return url
+    if '?' in url or '#' in url:
+        return url
+    if loja == 'amazon':
+        nova = _RE_FOTO_AMAZON.sub(lambda m: '._AC_SL1000_.' + m.group(1), url)
+    elif loja == 'ml':
+        nova = _RE_FOTO_ML.sub(lambda m: '-F.jpg' if 'A' <= m.group(1) <= 'Z' else m.group(0), url)
+    elif loja == 'shopee':
+        nova = url[:-3] if url.endswith('_tn') else url
+    else:
+        return url
+    return nova if imagem_permitida(nova, loja) else url
+
+
 def _sem_acento(s):
     return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c)).casefold()
 
@@ -914,7 +946,8 @@ def _escolher(con, regra, texto_tpl, agora, eh_afiliado, quantos, rng=None):
         if it['url'] not in msg or not mensagem_so_com_afiliado(msg, eh_afiliado, it['url']):
             recusados += 1
             continue
-        img = it['data']['imagem'] if regra['com_foto'] and imagem_permitida(it['data']['imagem'], it['loja']) else ''
+        foto = it['data']['imagem']
+        img = foto_grande(foto, it['loja']) if regra['com_foto'] and imagem_permitida(foto, it['loja']) else ''
         saida.append((it, msg, img))
     info['recusados'] = recusados
     return saida, info

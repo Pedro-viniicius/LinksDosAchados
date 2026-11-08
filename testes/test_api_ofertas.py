@@ -372,6 +372,81 @@ class SoAfiliado(Base):
                     self.assertEqual(D.urls_da_mensagem(valor), [], campo)
 
 
+# ---------------------------------------------------------------- foto grande (o Turbo baixa o campo `imagem` e manda ao grupo)
+class FotoGrande(Base):
+    """CA2: `imagem` da oferta é disparo.foto_grande(imagem gravada, loja). CA5: o banco guarda a miniatura."""
+    AMZ = 'https://m.media-amazon.com/images/I/'
+    ML = 'https://http2.mlstatic.com/'
+    SHP = 'https://down-br.img.susercontent.com/file/'
+    CASOS = {   # loja: (gravada, esperada na API)
+        'amazon': (AMZ + '41p2HTchUrL._AC_UL320_.jpg', AMZ + '41p2HTchUrL._AC_SL1000_.jpg'),
+        'ml': (ML + 'D_Q_NP_2X_840992-MLB95728482450_102025-E.webp', ML + 'D_Q_NP_2X_840992-MLB95728482450_102025-F.jpg'),
+        'shopee': (SHP + 'br-11134207-7r98o-m1abc_tn', SHP + 'br-11134207-7r98o-m1abc'),
+    }
+
+    def imagem_por_loja(self):
+        return {o['loja']: o['imagem'] for o in self.ofertas()['ofertas']}
+
+    def test_imagem_sai_em_tamanho_grande_nas_tres_lojas(self):
+        for loja, (gravada, _) in self.CASOS.items():
+            self.gravar(loja, imagem=gravada)
+        self.assertEqual(self.imagem_por_loja(), {l: g for l, (_, g) in self.CASOS.items()})
+
+    def test_imagem_e_a_mesma_do_foto_grande_do_disparo(self):
+        self.assertTrue(hasattr(D, 'foto_grande'), 'disparo.foto_grande não existe')
+        for loja, (gravada, _) in self.CASOS.items():
+            self.gravar(loja, imagem=gravada)
+        for o in self.ofertas()['ofertas']:
+            self.assertEqual(o['imagem'], D.foto_grande(self.CASOS[o['loja']][0], o['loja']))
+
+    def test_imagem_ja_grande_ou_sem_miniatura_nao_muda(self):
+        casos = {'amazon': self.AMZ + 'abc.jpg', 'ml': self.ML + 'D_NQ_NP_840992-MLB1_102025-F.jpg',
+                 'shopee': self.SHP + 'br-11134207-7r98o-m1abc'}
+        for loja, foto in casos.items():
+            self.gravar(loja, imagem=foto)
+        self.assertEqual(self.imagem_por_loja(), casos)
+
+    def test_foto_fora_do_cdn_da_loja_continua_null_mesmo_parecendo_miniatura(self):
+        self.gravar('amazon', imagem='https://golpe.com/images/I/a._AC_UL320_.jpg')
+        self.gravar('amazon', imagem='http://m.media-amazon.com/images/I/a._AC_UL320_.jpg')
+        self.gravar('amazon', imagem=self.ML + 'D_a-E.webp')      # CDN de outra loja
+        self.gravar('ml', imagem=self.AMZ + 'a._AC_UL320_.jpg')   # CDN de outra loja
+        self.gravar('shopee', imagem='https://evil.example/file/a_tn')
+        self.gravar('shopee', imagem='')
+        ofertas = self.ofertas()['ofertas']
+        self.assertEqual(len(ofertas), 6)
+        self.assertEqual([o['imagem'] for o in ofertas], [None] * 6)
+
+    def test_url_com_query_ou_fragmento_nao_e_mexida(self):
+        mini = self.AMZ + 'a._AC_UL320_.jpg'
+        self.gravar(imagem=mini + '?x=1')
+        self.gravar(imagem=mini + '#f')
+        self.assertEqual([o['imagem'] for o in self.ofertas()['ofertas']], [mini + '?x=1', mini + '#f'])
+
+    def test_a_oferta_direto_na_linha_traz_a_foto_grande(self):
+        gravada, grande = self.CASOS['ml']
+        i = self.gravar('ml', imagem=gravada)
+        linha = dict(self.con.execute('SELECT * FROM items WHERE id=?', (i,)).fetchone())
+        self.assertEqual(A.oferta(linha, AFILIADO)['imagem'], grande)
+
+    def test_o_banco_continua_com_a_miniatura(self):
+        for loja, (gravada, _) in self.CASOS.items():
+            self.gravar(loja, imagem=gravada)
+        antes = [tuple(r) for r in self.con.execute('SELECT * FROM items ORDER BY id')]
+        self.ofertas()
+        self.ofertas('ordem=desconto&limite=2')
+        self.cats()
+        self.assertEqual([tuple(r) for r in self.con.execute('SELECT * FROM items ORDER BY id')], antes)
+        self.assertEqual({r['loja']: r['imagem'] for r in self.con.execute('SELECT loja, imagem FROM items')},
+                         {l: g for l, (g, _) in self.CASOS.items()})
+
+    def test_imagem_da_oferta_sempre_passa_em_imagem_permitida(self):
+        for loja, (gravada, _) in self.CASOS.items():
+            self.gravar(loja, imagem=gravada)
+        for o in self.ofertas()['ofertas']:
+            self.assertTrue(D.imagem_permitida(o['imagem'], o['loja']))
+
+
 # ---------------------------------------------------------------- CA3: filtros e validação
 class Filtros(Base):
     def test_ca3_cat_e_loja_repetiveis(self):

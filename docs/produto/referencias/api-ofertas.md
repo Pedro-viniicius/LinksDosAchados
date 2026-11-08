@@ -135,7 +135,7 @@ Mais de 33 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `busca` | texto | Termo de busca que trouxe o item. Pode ser vazio. |
 | `titulo` | texto | Título, não vazio. |
 | `link` | texto | **Link de afiliado da própria loja**, pronto para usar: Amazon `https://www.amazon.com.br/...?tag=desejodemen01-20`, ML `https://meli.la/...`, Shopee `https://s.shopee.com.br/...`. |
-| `imagem` | texto ou `null` | URL da foto, só se for do CDN da loja do item (Amazon `m.media-amazon.com`, ML `http2.mlstatic.com`, Shopee `down-br.img.susercontent.com`); senão `null`. |
+| `imagem` | texto ou `null` | URL da foto, só se for do CDN da loja do item (Amazon `m.media-amazon.com`, ML `http2.mlstatic.com`, Shopee `down-br.img.susercontent.com`); senão `null`. A URL já é a da versão grande no mesmo CDN (`disparo.foto_grande`; o banco guarda a miniatura): Amazon `._<mods>_.<ext>` vira `._AC_SL1000_.<ext>`; ML `-<letra maiúscula>.<webp\|jpg\|jpeg\|png>` vira `-F.jpg`; Shopee perde o `_tn` do fim. URL com query ou fragmento, ou sem esse padrão, sai como está gravada. |
 | `preco` | número | Preço em reais, maior que 0 (`"R$ 4.285,90"` vira `4285.9`). |
 | `preco_antigo` | número ou `null` | Preço cheio. `null` se vazio ou se não for maior que `preco`. A Shopee não tem. |
 | `desconto_pct` | inteiro | Desconto em %. Se o texto de desconto da coleta der 0 e houver `preco_antigo`, é `round((1 - preco / preco_antigo) * 100)`. `0` quando não há desconto. |

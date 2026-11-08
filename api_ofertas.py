@@ -133,7 +133,7 @@ def oferta(row, eh_afiliado, manuais=None):
     return {
         'id': row['id'], 'chave': f"{t['loja']}:{t['item_id']}", 'loja': t['loja'], 'item_id': t['item_id'],
         'categoria': t['cat'], 'busca': t['busca'], 'titulo': t['titulo'], 'link': t['url'],
-        'imagem': t['imagem'] if D.imagem_permitida(t['imagem'], t['loja']) else None,
+        'imagem': D.foto_grande(t['imagem'], t['loja']) if D.imagem_permitida(t['imagem'], t['loja']) else None,
         'preco': preco, 'preco_antigo': preco_antigo, 'desconto_pct': desconto,
         'vendas': vendas,
         'avaliacao': avaliacao if _numero_ok(avaliacao) else None,

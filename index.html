@@ -982,13 +982,18 @@ const HOST_FOTO_SHOPEE = 'down-br.img.susercontent.com';   // CDN da foto da Sho
 const HOSTS_FOTO = ['m.media-amazon.com', 'http2.mlstatic.com', HOST_FOTO_SHOPEE];
 const falhaFoto = motivo=>Object.assign(new Error(motivo), {motivo});
 
-// Amazon: pede a versão de até 1000 px trocando o sufixo `._<mods>_.<ext>`. Outros hosts ficam como estão.
+// Troca a miniatura gravada pela foto grande do CDN da própria loja (mesmas regras do `foto_grande` do disparo.py):
+// Amazon `._<mods>_.<ext>` vira `._AC_SL1000_.<ext>`; ML `-<letra maiúscula>.<ext>` vira `-F.jpg`; Shopee perde o `_tn` do fim.
+// Só https, sem usuário nem porta, num host de HOSTS_FOTO e sem query nem fragmento; o resto fica como está.
 function urlFotoParaCopiar(url){
   const s = String(url ?? '');
-  let host;
-  try{ host = new URL(s).hostname; }catch{ return s; }
-  if (host !== 'm.media-amazon.com') return s;
-  return s.replace(/\._[^/]*_\.(jpe?g|png|webp)$/i, '._AC_SL1000_.$1');
+  const m = /^https:\/\/([^/?#]*)/i.exec(s);
+  if (!m || s.length > 2048 || /[?#]/.test(s)) return s;   // 2048: o mesmo teto do disparo.py (a regex da Amazon é quadrática)
+  const host = m[1].toLowerCase();   // o netloc inteiro: com usuário ou porta ele não bate com nenhum host
+  if (host === 'm.media-amazon.com') return s.replace(/\._[^/]*_\.(jpe?g|png|webp)$/i, '._AC_SL1000_.$1');
+  if (host === 'http2.mlstatic.com') return s.replace(/-([A-Za-z])\.(?:webp|jpe?g|png)$/i, (tudo, letra)=>letra === letra.toUpperCase() ? '-F.jpg' : tudo);
+  if (host === HOST_FOTO_SHOPEE) return s.replace(/_tn$/, '');
+  return s;
 }
 
 async function baixarComoPng(u){
