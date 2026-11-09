@@ -1098,6 +1098,16 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
     def setUpClass(cls):
         cls.caminho = copia_v1('v1-regressao')
         migrar(TS.RAIZ, cls.caminho)
+        # A v1 atual só traz preço dentro da validade (24 h, ou config.preco_validade_horas) e o código antigo
+        # não tem essa trava. Aqui se compara tudo o mais, então a cópia (descartável) ganha preço de 1 h antes
+        # do relógio do script (2030-01-01) e validade de 168 h: nenhuma oferta some por idade do preço.
+        con = sqlite3.connect(cls.caminho)
+        try:
+            con.execute("UPDATE items SET preco_em='2029-12-31T23:00:00'")
+            con.execute("INSERT OR REPLACE INTO config (chave, valor) VALUES ('preco_validade_horas', '168')")
+            con.commit()
+        finally:
+            con.close()
         cls.antigo = cls.rodar(codigo_antigo())
         cls.atual = cls.rodar(TS.RAIZ)
 
@@ -1109,11 +1119,15 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
         return json.loads(r.stdout)
 
     @staticmethod
-    def sem_o_novo(resposta):
+    def sem_o_novo(resposta, antigo=False):
+        """A resposta sem os campos novos. Com `antigo=True` (resposta do código de antes da foto grande,
+        commit 7c6f3e1), `imagem` passa pelo `disparo.foto_grande`: o resto do campo continua comparado."""
         r = json.loads(json.dumps(resposta))
         for o in r.get('ofertas', []):
             o.pop('genero', None)
             o.pop('preco_em', None)   # campo da feature atualizar-precos (testes próprios)
+            if antigo:
+                o['imagem'] = D.foto_grande(o['imagem'], o['loja'])
         for c in r.get('categorias', []):
             c.pop('generos', None)
         return r
@@ -1121,7 +1135,19 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
     def test_cada_consulta_responde_igual_menos_o_campo_novo(self):
         for qs in CONSULTAS_V1:
             with self.subTest(qs=qs[:60]):
-                self.assertEqual(self.sem_o_novo(self.atual[qs]), self.sem_o_novo(self.antigo[qs]))
+                self.assertEqual(self.sem_o_novo(self.atual[qs]), self.sem_o_novo(self.antigo[qs], antigo=True))
+
+    def test_a_foto_grande_e_a_unica_diferenca_de_imagem_do_codigo_antigo(self):
+        """Garante que a normalização do lado antigo não esconde nada: há foto que muda, e as que não mudam
+        são iguais nos dois lados."""
+        antigas = {o['id']: o['imagem'] for o in self.antigo['limite=200']['ofertas']}
+        novas = {o['id']: o['imagem'] for o in self.atual['limite=200']['ofertas']}
+        self.assertEqual(set(antigas), set(novas))
+        mudaram = [i for i in antigas if antigas[i] != novas[i]]
+        self.assertGreater(len(mudaram), 20)
+        for i in antigas:
+            self.assertEqual(novas[i], D.foto_grande(antigas[i], next(
+                o['loja'] for o in self.atual['limite=200']['ofertas'] if o['id'] == i)))
 
     def test_as_consultas_comparam_dados_de_verdade(self):
         self.assertGreater(len(self.atual['']['ofertas']), 40)

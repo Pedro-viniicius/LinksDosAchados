@@ -11,6 +11,8 @@ O público (`genero`) vem do genero.py (docs/produto/planos/genero-nas-categoria
 correção manual é só lida (tabela `generos_manuais`; banco sem ela dá tudo automático).
 A idade do preço (`preco_em` e o filtro `preco_max_horas`) é da etapa 3 de
 docs/produto/planos/atualizar-precos.md: a coluna items.preco_em vem da migração v3 do disparo.py.
+Sem `preco_max_horas` no pedido, vale config.preco_validade_horas (decisão do dono, 08/11/2026): a
+oferta com preço velho não sai, como no disparo.
 """
 import math
 import re
@@ -64,8 +66,8 @@ def _preco_em(v):
     """items.preco_em como sai na oferta: o texto, se o disparo.ler_preco_em o aceita (a mesma regra da
     trava: formato AAAA-MM-DDTHH:MM:SS estrito, hora de 00 a 23, data que existe); senão None (nulo, BLOB,
     "03/11/2026", 2026-02-30, T24:00:00). Data no futuro sai como texto: o campo só mostra a data, quem
-    decide se o preço é velho é o filtro preco_max_horas. Nunca tira a oferta da lista: sem o filtro, a
-    resposta é a de antes mais este campo (P2 do plano atualizar-precos)."""
+    decide se o preço é velho é o `_casa` (preco_max_horas ou, sem ele, a validade da config). Este campo
+    em si nunca tira a oferta da lista (P2 do plano atualizar-precos)."""
     return v if D.ler_preco_em(v) is not None else None
 
 
@@ -155,7 +157,8 @@ def filtros(pares):
 
     Devolve {'cats', 'lojas', 'generos', 'termos', 'desconto_min', 'ordem', 'limite', 'cursor',
     'preco_max_horas'}; `termos` já vem sem acento e sem caixa; `cursor` é None, (atualizado_em, id) ou
-    o deslocamento (int); `preco_max_horas` é None (sem filtro, o padrão) ou o int de 1 a 168.
+    o deslocamento (int); `preco_max_horas` é None (não veio no pedido: o `listar` aplica o padrão,
+    config.preco_validade_horas) ou o int de 1 a 168.
     """
     pares = list(pares or ())
     if len(pares) > MAX_PARES:
@@ -201,7 +204,7 @@ def filtros(pares):
 
     desconto_min = _inteiro(vistos['desconto_min'][0], 'desconto_min', 0, 99) if 'desconto_min' in vistos else 0
     limite = _inteiro(vistos['limite'][0], 'limite', 1, LIMITE_MAX) if 'limite' in vistos else LIMITE_PADRAO
-    # mesma faixa da validade do disparo (config.preco_validade_horas), mas aqui só vale se pedirem
+    # mesma faixa da validade do disparo (config.preco_validade_horas); sem o parâmetro, o `listar` aplica a validade da config
     preco_max_horas = (_inteiro(vistos['preco_max_horas'][0], 'preco_max_horas', D.VALIDADE_MIN_HORAS,
                                 D.VALIDADE_MAX_HORAS) if 'preco_max_horas' in vistos else None)
 
@@ -229,10 +232,11 @@ def filtros(pares):
 def _casa(o, f, agora):
     """Filtros que dependem da oferta pronta: genero (exato: qualquer um dos pedidos), preco_max_horas
     (disparo.preco_recente, a mesma regra da trava do disparo: preco_em nulo ou malformado não passa),
-    q (basta um termo no título) e desconto_min."""
+    q (basta um termo no título) e desconto_min. `f['preco_max_horas']` tem de ser um número: o `listar` troca
+    o None do pedido pela validade da config antes de chamar."""
     if f['generos'] and o['genero'] not in f['generos']:
         return False
-    if f['preco_max_horas'] is not None and not D.preco_recente(o['preco_em'], agora, f['preco_max_horas']):
+    if not D.preco_recente(o['preco_em'], agora, f['preco_max_horas']):
         return False
     if o['desconto_pct'] < f['desconto_min']:
         return False
@@ -251,16 +255,21 @@ def listar(con, f, eh_afiliado, agora):
     último `proximo` e volta depois buscar só as novidades. Demais ordens: disparo.ordenar e
     deslocamento; `proximo` vem null quando não há mais ofertas.
 
-    Com `preco_max_horas`, só ofertas com preço confirmado há no máximo essas horas, contadas de `agora`.
+    Só sai oferta com preço confirmado há no máximo `preco_max_horas` horas, contadas de `agora`. Sem o
+    filtro no pedido (None), vale o padrão: config.preco_validade_horas, lida a cada chamada
+    (disparo.validade_horas, a mesma trava do disparo; ausente ou inválida vale 24). O mesmo vale para
+    o cursor e para as ordens por deslocamento, já que o filtro roda antes da paginação.
     O SQL só estreita a leitura (comparação de texto, que deixaria passar BLOB ou texto fora do
     formato); quem decide é o _casa. Num banco de antes da v3 o SQL fica sem a coluna e nada passa.
     """
+    if f['preco_max_horas'] is None:
+        f = {**f, 'preco_max_horas': D.validade_horas(con)}
     sql, args = _SQL_BASE, []
     for coluna, valores in (('cat', f['cats']), ('loja', f['lojas'])):
         if valores:
             sql += f" AND {coluna} IN ({','.join('?' * len(valores))})"
             args += valores
-    if f['preco_max_horas'] is not None and _tem_preco_em(con):
+    if _tem_preco_em(con):
         sql += ' AND preco_em >= ?'
         args.append((agora - timedelta(hours=f['preco_max_horas'])).isoformat(timespec='seconds'))
     por_atualizacao = f['ordem'] == 'atualizacao'

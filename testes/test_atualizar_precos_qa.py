@@ -492,6 +492,11 @@ class V1PrecoMaxHorasNosDadosReais(CopiaMigrada):
         try:
             con.execute('UPDATE items SET preco_em = strftime(\'%Y-%m-%dT%H:%M:%S\', ?, \'-\' || (id % 200) || \' hours\')',
                         (iso(cls.agora),))
+            # a ordem padrão da v1 ("atualizacao") esconde o que foi gravado nos últimos 60 s antes do relógio
+            # (agora, fixo em 04/11): sem isto o total dependeria de quando o dono atualizou itens do banco real
+            con.execute('UPDATE items SET atualizado_em = ?', (iso(cls.agora - timedelta(days=1)),))
+            # validade padrão fixa na cópia: o assertLess do teste de "sem filtro" não pode depender da config real
+            con.execute("INSERT OR REPLACE INTO config (chave, valor) VALUES ('preco_validade_horas', '48')")
             con.commit()
         finally:
             con.close()
@@ -521,8 +526,11 @@ class V1PrecoMaxHorasNosDadosReais(CopiaMigrada):
         corte = iso(self.agora - timedelta(hours=10))
         for o in r['ofertas']:
             self.assertGreaterEqual(o['preco_em'], corte, o['chave'])
+        # sem o filtro vale o padrão: config.preco_validade_horas (Q1 da API v1, decisão do dono de 08/11/2026)
         sem_filtro = self.pedir('limite=1')
-        self.assertEqual(sem_filtro['total'], len(self.ofertas), 'sem o filtro nenhuma oferta some')
+        validade = D.validade_horas(self.con)
+        self.assertEqual(sem_filtro['total'], self.pedir(f'preco_max_horas={validade}&limite=1')['total'])
+        self.assertLess(sem_filtro['total'], self.pedir('preco_max_horas=168&limite=1')['total'])
 
 
 # ------------------------------------------------------------------ paridade do front (node) com o servidor

@@ -42,7 +42,10 @@ TS = TS2.TS
 A, D, S = T.A, T.D, T.S
 AFILIADO = T.AFILIADO
 AGORA = T.AGORA
-DEPOIS = datetime(2030, 1, 1)   # bem depois de qualquer horário gravado: nada fica na folga
+DEPOIS = datetime(2030, 1, 1)   # dados reais: bem depois de qualquer horário gravado, nada fica na folga
+# Dados sintéticos do T.Base (atualizado_em até 12:24, preco_em = AGORA): depois de todo horário gravado, sem
+# folga, e ainda dentro da validade padrão de 24 h do preço (a v1 sem preco_max_horas, Q1).
+LIVRE = AGORA + timedelta(hours=1)
 TAG = 'desejodemen01-20'
 PERFUMES = 'Perfumes e Perfumaria'
 CASA = 'Casa e Decoração'
@@ -53,7 +56,7 @@ def tearDownModule():
 
 
 # ------------------------------------------------------------------ apoio
-def varrer(con, extra=(), agora=DEPOIS, limite=200, ordem=None, cursor=None):
+def varrer(con, extra=(), agora=LIVRE, limite=200, ordem=None, cursor=None):
     """Segue `proximo` até o fim e devolve a lista de ofertas (sem repetir pedido a mais que o preciso)."""
     base = [('limite', str(limite))] + ([('ordem', ordem)] if ordem else []) + list(extra)
     saida = []
@@ -145,7 +148,7 @@ class ModeloDoCursor(T.Base):
             op = rng.choices(['novo', 'atualiza', 'invalida', 'revalida', 'tick', 'sonda'], [4, 3, 1, 1, 4, 2])[0]
             agora_txt = T.hora(relogio)
             if op == 'novo':
-                ids.append(self.gravar(atualizado_em=agora_txt, criado_em=agora_txt))
+                ids.append(self.gravar(atualizado_em=agora_txt, criado_em=agora_txt, preco_em=agora_txt))
             elif op == 'atualiza' and ids:
                 self.con.execute("UPDATE items SET preco='R$ 77,00', atualizado_em=? WHERE id=?",
                                  (agora_txt, rng.choice(ids)))
@@ -224,7 +227,8 @@ class ModeloDoCursor(T.Base):
 
     def test_ca4_escrita_concorrente_com_relogio_real_nao_perde_nem_repete(self):
         velho = T.hora(datetime.now() - timedelta(hours=2))
-        antigos = [self.gravar(atualizado_em=velho) for _ in range(40)]
+        # preço de agora: sem isso a validade padrão esconderia os itens novos e o teste da folga não provaria nada
+        antigos = [self.gravar(atualizado_em=velho, preco_em=T.hora(datetime.now())) for _ in range(40)]
         parar = threading.Event()
         erros = []
 
@@ -236,10 +240,10 @@ class ModeloDoCursor(T.Base):
                     n += 1
                     agora = T.hora(datetime.now())
                     con.execute("INSERT INTO items (loja,item_id,cat,busca,url,titulo,preco,tem_dados,posicao,"
-                                "criado_em,atualizado_em) VALUES ('amazon',?,?,?,?,?,?,1,?,?,?)",
+                                "criado_em,atualizado_em,preco_em) VALUES ('amazon',?,?,?,?,?,?,1,?,?,?,?)",
                                 (f'B0CONC{n:05d}', PERFUMES, 'perfume',
                                  f'https://www.amazon.com.br/dp/B0CONC{n:05d}?tag={TAG}', f'Perfume concorrente {n}',
-                                 'R$ 10,00', n, agora, agora))
+                                 'R$ 10,00', n, agora, agora, agora))
                     con.commit()
                     time.sleep(0.001)
             except Exception as e:   # noqa: BLE001
@@ -347,7 +351,7 @@ class CategoriasBatemComAsOfertas(T.Base):
         todas = varrer(self.con)
         self.assertEqual(resp['total'], len(todas))
         self.assertEqual(resp['total'], sum(c['total'] for c in resp['categorias']))
-        self.assertEqual(resp['total'], self.ofertas('limite=1', agora=DEPOIS)['total'])
+        self.assertEqual(resp['total'], self.ofertas('limite=1', agora=LIVRE)['total'])
         self.assertEqual(len({o['id'] for o in todas}), len(todas))
         for c in resp['categorias']:
             with self.subTest(aba=c['nome']):
@@ -500,20 +504,23 @@ class DadosReais(unittest.TestCase):
         cls.caminho = os.path.join(cls.dir, 'copia.db')
         if not copiar_banco_real(cls.caminho):
             raise unittest.SkipTest('sem achadinhos.db legível neste checkout: os testes de dados reais precisam dele')
-        # O retrato pode ser de antes da v3 (sem items.preco_em) e o oráculo D.elegiveis tira o preço velho:
-        # migra a cópia (descartável) e marca todo preço como confirmado em AGORA. Aqui se compara a v1
-        # com o disparo nos dados reais, não a trava de idade (essa tem testes próprios).
+        # O retrato pode ser de antes da v3 (sem items.preco_em) e a v1 e o oráculo D.elegiveis tiram o preço
+        # velho: migra a cópia (descartável) e marca todo preço como confirmado 1 h antes de DEPOIS, o relógio
+        # que a v1 e o oráculo usam aqui. Compara-se a v1 com o disparo nos dados reais, não a trava de idade
+        # (essa tem testes próprios). A validade vem da config da cópia, que o dono pode ter posto em 1 h:
+        # a cópia fica com 168 h.
         prep = sqlite3.connect(cls.caminho)
         try:
             D.migrar(prep)
-            prep.execute('UPDATE items SET preco_em=?', (T.hora(AGORA),))
+            prep.execute('UPDATE items SET preco_em=?', (T.hora(DEPOIS - timedelta(hours=1)),))
+            prep.execute("INSERT OR REPLACE INTO config (chave, valor) VALUES ('preco_validade_horas', '168')")
             prep.commit()
         finally:
             prep.close()
         cls.con = T.abrir(cls.caminho, so_leitura=True)
         cls.addClassCleanup(cls.con.close)
         cls.linhas = cls.con.execute('SELECT COUNT(*) FROM items').fetchone()[0]
-        cls.todas = varrer(cls.con)
+        cls.todas = varrer(cls.con, agora=DEPOIS)
 
     def test_a_copia_tem_dados_de_verdade(self):
         self.assertGreater(self.linhas, 1000)
@@ -606,7 +613,7 @@ class DadosReais(unittest.TestCase):
         regra = {'cats': cats, 'lojas': list(D.LOJAS), 'numero_id': -1, 'repetir_apos_dias': 7,
                  'desconto_min': 0, 'palavras': []}
         sairam = {o['id'] for o in self.todas}
-        base = sorted((it for it in D.elegiveis(self.con, regra, AGORA, AFILIADO) if it['id'] in sairam),
+        base = sorted((it for it in D.elegiveis(self.con, regra, DEPOIS, AFILIADO) if it['id'] in sairam),
                       key=lambda it: it['id'])
         self.assertEqual(len(base), len(self.todas))
         n = len(base)
@@ -623,10 +630,10 @@ class DadosReais(unittest.TestCase):
 
     def test_ca4_filtros_na_cadeia_real(self):
         loja_cat = self.todas[0]
-        parcial = varrer(self.con, [('cat', loja_cat['categoria']), ('loja', loja_cat['loja'])])
+        parcial = varrer(self.con, [('cat', loja_cat['categoria']), ('loja', loja_cat['loja'])], agora=DEPOIS)
         self.assertEqual({o['id'] for o in parcial},
                          {o['id'] for o in self.todas if o['categoria'] == loja_cat['categoria'] and o['loja'] == loja_cat['loja']})
-        grandes = varrer(self.con, [('desconto_min', '50')])
+        grandes = varrer(self.con, [('desconto_min', '50')], agora=DEPOIS)
         self.assertEqual({o['id'] for o in grandes}, {o['id'] for o in self.todas if o['desconto_pct'] >= 50})
 
     def test_ca9_a_leitura_nao_gravou_nada_na_copia(self):
@@ -911,6 +918,16 @@ class ServidorDadosReais(ServidorQa):
     def antes_de_subir(cls):
         if not copiar_banco_real(cls.db):
             raise unittest.SkipTest('sem achadinhos.db legível neste checkout')
+        # O servidor usa o relógio real e a v1 só traz preço dentro da validade (Q1): na cópia, todo preço
+        # é de agora e a validade é a de 168 h. O que se confere aqui é o cursor, não a idade do preço.
+        prep = sqlite3.connect(cls.db)
+        try:
+            D.migrar(prep)
+            prep.execute('UPDATE items SET preco_em=?', (T.hora(datetime.now()),))
+            prep.execute("INSERT OR REPLACE INTO config (chave, valor) VALUES ('preco_validade_horas', '168')")
+            prep.commit()
+        finally:
+            prep.close()
 
     @classmethod
     def depois_de_subir(cls):

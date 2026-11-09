@@ -38,18 +38,18 @@ for n in range(${TOTAL_BONS}):
            'ml': 'https://meli.la/QA%dx' % n, 'shopee': 'https://s.shopee.com.br/QA%dx' % n}[loja]
     foto = {'amazon': 'https://m.media-amazon.com/images/I/qa%d.jpg' % n, 'ml': 'https://http2.mlstatic.com/D_qa%d.jpg' % n,
             'shopee': 'https://evil.example/qa%d.jpg' % n}[loja]
-    quando = velho if n % 4 else mais_velho   # empates em dois horários
+    quando = velho if n % 4 else mais_velho   # empates em dois horários (o preço também é de 3 ou 5 h atrás: dentro das 24 h)
     con.execute("INSERT INTO items (loja,item_id,cat,busca,url,titulo,preco,preco_antigo,desconto,vendas,frete,imagem,"
-                "tem_dados,posicao,criado_em,atualizado_em) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+                "tem_dados,posicao,criado_em,atualizado_em,preco_em) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)",
                 (loja, 'QA%d' % n, 'Perfumes e Perfumaria' if n % 2 else 'Casa e Decoração', 'perfume', url,
                  'Produto QA %d' % n, 'R$ 100,00', 'R$ 150,00' if n % 5 else '', '-33%' if n % 5 else '',
-                 'Mais de 1 mil compras', 'Frete grátis' if n % 2 else '', foto, n, quando, quando))
+                 'Mais de 1 mil compras', 'Frete grátis' if n % 2 else '', foto, n, quando, quando, quando))
 for n in range(${TOTAL_RUINS}):
-    con.execute("INSERT INTO items (loja,item_id,cat,busca,url,titulo,preco,tem_dados,posicao,criado_em,atualizado_em) "
-                "VALUES (?,?,?,?,?,?,?,1,?,?,?)",
+    con.execute("INSERT INTO items (loja,item_id,cat,busca,url,titulo,preco,tem_dados,posicao,criado_em,atualizado_em,preco_em) "
+                "VALUES (?,?,?,?,?,?,?,1,?,?,?,?)",
                 ('ml', 'RU%d' % n, 'Casa e Decoração', 'x',
                  'https://produto.mercadolivre.com.br/MLB-%d' % n if n % 2 else 'https://meli.la/RU%d' % n,
-                 'Capinha i.Phone %d' % n if n % 2 == 0 else 'Produto comum %d' % n, 'R$ 10,00', n, velho, velho))
+                 'Capinha i.Phone %d' % n if n % 2 == 0 else 'Produto comum %d' % n, 'R$ 10,00', n, velho, velho, velho))   # preço recente: só a regra de link pode excluir
 con.commit()
 con.close()
 `;
