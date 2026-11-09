@@ -127,7 +127,7 @@ PORTA=8766 node testes/rodar.mjs disparo
 
 ## API para o Achadinho Turbo
 
-O servidor tem uma API só de leitura, `/api/v1/ofertas` e `/api/v1/categorias`, para o Achadinho Turbo (no mesmo computador) buscar ofertas. Toda oferta sai com link de afiliado da própria loja. Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+O servidor tem uma API só de leitura, `/api/v1/ofertas` e `/api/v1/categorias`, para o Achadinho Turbo (no mesmo computador) buscar ofertas. Toda oferta sai com link de afiliado da própria loja e com preço dentro da validade (veja "Atualizar os preços"). Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 **Ligar:** crie o token e reinicie o servidor. O `api_token.txt` fica ao lado do `servidor.py` e está no `.gitignore`.
 
@@ -535,25 +535,58 @@ Nenhum desses últimos é gravado: o preço do item **envelhece**, como em "O qu
 
 ### Shopee
 
-O dono **ainda não tem a credencial da Open API da Shopee**. Até ter, a Shopee se atualiza pelo `importar` do painel, um termo por vez:
+Atualiza o **preço** dos itens da Shopee que já estão no banco pela Open API de afiliados, **um item por chamada** (`productOfferV2` com o `shopId` e o `itemId` do item, não pela busca do termo). Plano: `docs/produto/planos/atualizar-precos-shopee-por-item.md`. A coleta de itens novos (`coletar_shopee.py buscas`) e o `importar` do painel não mudam.
+
+**Antes da primeira rodada (portão G1, só o dono):** o filtro por `shopId` e `itemId` vem de fontes de terceiros, não do painel oficial. Prove-o uma vez, num terminal só para isso, sem `export` (como em "Coleta da Shopee"):
 
 ```
-python3 coletar_shopee.py importar ARQUIVO
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 coletar_shopee.py conferir --por-item; unset S
 ```
 
-Veja "Coleta da Shopee" (importar do painel) para o formato do arquivo e os cuidados. O `importar` grava `preco_em` pelo mesmo caminho da coleta, então conta como atualização; ao contrário do `atualizar_precos.py`, ele também insere item novo. Estimativa de uns 1 a 2 min por termo (não verificada).
+Ele faz o `conferir` de sempre (o link gerado é do dono) e depois consulta por item o primeiro produto válido da busca. Passa com saída 0 só se a API devolver o produto pedido, com os mesmos ids, com o que a rodada exige (link curto de afiliado, título, piso e não usado) e com preço legível. Na saída 0, a última linha mostra os ids e o preço lido (`Produto <shopId>.<itemId>: preço lido R$ 49,90. ...`): abra esse produto no site da Shopee e confira que o preço tem a mesma ordem de grandeza (não 100 vezes maior nem menor); se não bater, **pare** e leve a saída ao lead. O que fazer com a saída 1:
 
-Quando a credencial chegar, o comando de lote da Shopee já está pronto (testado só com resposta falsa). Use **um terminal só para isso** e passe as credenciais só ao comando, sem `export`, como em "Coleta da Shopee":
+- **código 10010 ou 11001:** a API recusou o argumento. Leve a saída ao lead (o ajuste é o tipo do id).
+- **"a consulta por item não devolveu o produto pedido":** **pare**. A API não filtra por item e o `atualizar_precos.py shopee` não deve rodar.
+- **"devolveu o produto pedido, mas a rodada o recusaria":** **pare** e leve a saída ao lead. O produto voltou sem link curto de afiliado, sem título, abaixo do piso ou com título de usado; numa rodada real, todo item acabaria "indisponível" ou "fora do piso" e nada seria gravado.
+- **"devolveu o produto pedido, mas sem preço legível":** **pare** e leve a saída ao lead. Numa rodada real, todo item contaria "sem preço legível" e nada seria gravado.
+
+O `conferir` sem a flag continua fazendo uma chamada só.
+
+**Depois do G1, faça um backup** (seção "Backup"; pode ser com o servidor no ar). **Faça este passo uma vez só**, antes da primeira rodada: repeti-lo depois **sobrescreve** `backups/antes-shopee-item.db` sem perguntar.
 
 ```
-read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria"; unset S
+mkdir -p backups
+python3 -c "import sqlite3;s=sqlite3.connect('file:achadinhos.db?mode=ro',uri=True);d=sqlite3.connect('backups/antes-shopee-item.db');s.backup(d);d.close()"
 ```
 
-- **`--cat` é obrigatório:** a Shopee atualiza uma aba por vez. Lê os termos da aba nas ordens que já constam em `coleta_shopee_feitos.txt` (relevância, se nenhuma).
-- **Antes de gravar o primeiro item**, confere que o link gerado é do dono (`utm_source=an_<ID_AFILIADO_SHOPEE>`); se falhar, não grava nada e sai com 1. O Secret só é lido do ambiente do comando, nunca vai para argumento, arquivo, saída ou erro. **Nunca escreva o AppID nem o Secret em arquivo, no git, na conversa ou neste README**, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`.
-- **Tempo (estimativa, não medida):** 42 termos na "Perfumes e Perfumaria", com pausa de 1 a 3 s entre as chamadas: poucos minutos por aba.
-- **Saídas:** 0 ok; 1 erro (link que não é do dono, API recusou ou resposta fora do formato); 2 configuração (credenciais ausentes, `ID_AFILIADO_SHOPEE` inválido, aba fora do `buscas.json`); **3 limite da API**: o progresso está salvo, espere de 15 a 30 min e rode o mesmo comando de novo. O progresso é o mesmo `atualizar_precos_feitos.txt` da Amazon, por loja e por dia.
-- O formato da resposta da API ainda está "a confirmar" (veja "Coleta da Shopee"): se o comando terminar com "recusou" ou "fora do formato esperado", comece por aí.
+**Primeira vez:** um lote pequeno, também sem `export`, e confira uns 5 itens atualizados no site da Shopee antes de seguir:
+
+```
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria" --max-chamadas 200; unset S
+```
+
+**Depois, a aba inteira:**
+
+```
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria"; unset S
+```
+
+- **`--cat` é obrigatório:** a Shopee atualiza uma aba por vez. **`--max-chamadas N`** (1 a 5000, padrão 1000) é o teto de chamadas à API por rodada.
+- **Como lê:** consulta cada item da aba, do **preço mais antigo para o mais novo**, com pausa de 1 a 3 s entre as chamadas. Item cujo preço já foi confirmado hoje fica de fora. Só vale o produto devolvido com o mesmo `shopId` e `itemId` do item. O item que a API **não devolveu** desde o último preço dele (resposta vazia, só com outros produtos ou com erro naquele item) vai para o **fim da fila**, em qualquer dia: assim um item que a API não acha não trava as rodadas seguintes.
+- **O que muda:** só `preco`, `preco_antigo` e `desconto` (e o `preco_em`, que registra a hora), sobre a linha relida do banco logo antes de gravar, como no ML. Título, nota, vendas, foto e o link de afiliado ficam os do banco. **Nunca insere** item e nunca troca o link. O `preco_antigo` fica vazio: a API não dá o preço cheio. O piso (nota 4,5 e 50 vendas) e a recusa de usado continuam valendo, pelos dados que a API devolve; item sem preço legível não é gravado (mantém os dados).
+- **Antes de gravar o primeiro item**, confere que o link que a API gera é do dono (`utm_source=an_<ID_AFILIADO_SHOPEE>`); se falhar, não grava nada e sai com 1. O Secret só é lido do ambiente do comando, nunca vai para argumento, arquivo, saída ou erro. Antes de lê-lo, o comando fecha o `/proc/<pid>/environ` dele para os outros programas do seu usuário durante a rodada; se o sistema não deixar, a rodada segue com uma linha `AVISO:` (o Secret fica legível ali para outro programa seu enquanto o comando durar). **Nunca escreva o AppID nem o Secret em arquivo, no git, na conversa ou neste README**, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`.
+- **Tempo (estimativa pelas pausas do código, não medida):** com 540 itens e pausa média de 2 s mais a rede, **~20 a 25 min para 540 itens, não medido**. O padrão de 1000 chamadas comporta a aba inteira.
+- **Progresso:** `atualizar_precos_feitos.txt`, uma linha por item consultado: `shopee|<AAAA-MM-DD>|item|<shopId>.<itemId>` quando a API devolveu o produto e `shopee|<AAAA-MM-DD>|tentado|<shopId>.<itemId>` quando não devolveu (ou errou naquele item). As duas pulam o item **no mesmo dia**: Ctrl+C e rodar de novo no mesmo dia retoma pelos itens ainda não marcados; no dia seguinte, todos voltam, com os `tentado` no fim da fila. **Não apague as linhas `tentado` de dias anteriores**: são elas que mandam esses itens para o fim (sem elas, uma rodada pode parar com "não filtrou" nos primeiros itens; rodar de novo no mesmo dia passa por eles). O limite da API e o teto não marcam o item.
+- **Saídas:** 0 ok; 1 erro (link que não é do dono, API recusou, resposta fora do formato, rede, ou **"não filtrou"**, abaixo); 2 configuração (credenciais ausentes, `ID_AFILIADO_SHOPEE` inválido, aba fora do `buscas.json`); **3 limite da API (10030 ou HTTP 429) ou teto do `--max-chamadas`**: o progresso e o que foi gravado ficam; no teto, rode de novo **sem esperar**; no limite da API, espere de 15 a 30 min e rode o mesmo comando.
+- **Erro da API num item:** se ele tem cara de ser só daquele produto (a API respondeu `productOfferV2: null`, ou um código de erro que não é dos gerais, com HTTP 200), o item fica `tentado` e a rodada segue. Se é geral (assinatura ou credencial, 10010, 11001, status HTTP de erro) ou a resposta vem fora do formato, o item fica `tentado` e a rodada para com 1 ("a API da Shopee recusou (código N)" ou "fora do formato esperado"); o que já foi gravado fica e a próxima rodada passa por ele.
+- **Saída 1 "não filtrou":** enquanto nenhum item casou desde o início da rodada, 5 respostas (no total, não precisam ser seguidas) que só trouxeram outros produtos, ou 20 respostas sem o produto pedido (vazias, com outros produtos ou com erro do item), param o comando com "PAROU: a API não filtrou pelo item; rode coletar_shopee.py conferir --por-item", para não gastar a cota. Só contam os itens que ainda não tinham sido tentados sem sucesso. Rode o G1 (`conferir --por-item`) e leve a saída ao lead. Os itens consultados até ali ficam `tentado`: rodar de novo no mesmo dia segue pelos outros.
+- **RESUMO** (só contagens e até 20 ids `<shopId>.<itemId>`; nunca título nem link):
+  - `atualizados`: preço, preço antigo e desconto gravados.
+  - `indisponíveis`: a API respondeu sem nenhum produto para aquele item (pode ter saído do ar), ou devolveu o produto sem título ou sem link curto de afiliado. O preço dele envelhece.
+  - `não vistos`: a resposta trouxe só outros produtos, ou a API errou só naquele item (nos dois casos ele fica `tentado`: não repete no dia e, nos dias seguintes, vai para o fim da fila), o id passa do limite do Int64 e não vai à API, ou a rodada parou (teto, limite, erro) antes dele.
+  - `fora do piso`, `usados` e `sem preço legível` não são gravados.
+- O formato da resposta da API e o nome e tipo dos argumentos ainda estão "a confirmar" (veja "Coleta da Shopee" e o G1): se o comando terminar com "recusou" ou "fora do formato esperado", comece por aí.
+- **Sem credencial**, a Shopee ainda se atualiza pelo `importar` do painel, um termo por vez (`python3 coletar_shopee.py importar ARQUIVO`; formato e cuidados em "Coleta da Shopee"). Ao contrário do `atualizar_precos.py`, ele também insere item novo. Estimativa de uns 1 a 2 min por termo (não verificada).
 
 ### O que acontece com o item que sumiu ou mudou
 
@@ -563,13 +596,14 @@ Item que sumiu da busca, ficou indisponível, caiu do piso ou virou usado **não
 
 - **No site:** o cartão mostra a idade ("Preço de hoje, 14:20", "Preço de 03/11 (há 2 dias)") e o selo "Desatualizado" quando passou da validade. A lista tem uma faixa com a contagem da aba, o filtro de preço (Todos, Desatualizados, Em dia) e a ordem "Preço mais antigo primeiro". O "Atualizar preço" do cartão da Amazon também renova a idade. O site **não busca preços sozinho**: o quadro "Como atualizar os preços" só mostra o comando de cada loja, as contagens e o campo da validade.
 - **No disparo:** a regra não cria mensagem (nem mostra na prévia) para item com `preco_em` nulo, ilegível ou mais velho que a validade. Quando um horário fica sem mensagem só por isso, a regra grava o aviso "Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de N h. Atualize os preços." A prévia com informações traz a contagem `preco_velho`.
-- **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). O filtro opcional `preco_max_horas` (1 a 168) só devolve ofertas com preço dessa idade ou mais novo; sem ele a resposta é a de sempre, mais o campo. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+- **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). Desde 08/11/2026, sem o filtro `preco_max_horas` a API aplica a mesma validade do disparo (`config/preco_validade_horas`): oferta com preço vencido, sem data ou com data no futuro não sai, então o Turbo não recebe preço velho. Com o filtro (1 a 168), vale a idade pedida, mesmo maior que a validade. O `/api/v1/categorias` continua contando todas. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 ### Reverter
 
 - **Um lote ruim:** pare o `servidor.py` e use o backup de antes dele (`python3 migrar_categorias.py --restaurar backups/<arquivo>.db`; ele devolve o banco **inteiro**, então números, regras, envios e correções feitos depois do backup somem; o estado de antes fica em `backups/`).
 - **A migração v3:** voltar o código é seguro; a coluna `preco_em` fica sem efeito.
-- **O progresso do dia:** para repetir uma página, apague a linha dela em `atualizar_precos_feitos.txt` (Amazon e Shopee) ou use `ColetaML.zerar()` (ML).
+- **O progresso do dia:** para repetir uma página (ou, na Shopee, um item `item|<id>` ou `tentado|<id>` de hoje), apague a linha dela em `atualizar_precos_feitos.txt` (Amazon e Shopee) ou use `ColetaML.zerar()` (ML). Na Shopee, apagar um `tentado` de outro dia só tira o item do fim da fila.
+- **Shopee por item:** pare o `servidor.py` **e o `atualizar_precos.py`** e use o backup `backups/antes-shopee-item.db`, feito em "Shopee" antes da primeira rodada (`python3 migrar_categorias.py --restaurar backups/antes-shopee-item.db`; devolve o banco **inteiro**, como acima). Sem migração de esquema, voltar o código basta para parar novas gravações; o link de afiliado nunca muda.
 
 ## Plugin do Chrome
 
