@@ -2,22 +2,23 @@
 """Atualiza em lote os preços dos itens que já estão no achadinhos.db (nunca insere, nunca troca link de afiliado).
 
 Uso:  python3 atualizar_precos.py amazon [--cat "<aba>"] [--produtos N]
-      python3 atualizar_precos.py shopee --cat "<aba>"
+      python3 atualizar_precos.py shopee --cat "<aba>" [--max-chamadas N]
       python3 atualizar_precos.py ml [--cat "<aba>"] [--vincular N] [--max-chamadas N]
 
 Plano: docs/produto/planos/atualizar-precos.md, etapa 4 (CA2, CA4, CA5, CA10 e CA11); a fonte `ml` vem de
-docs/produto/planos/api-oficial-ml-catalogo.md, etapa 3 (CA4, CA5 e CA8).
+docs/produto/planos/api-oficial-ml-catalogo.md, etapa 3 (CA4, CA5 e CA8); a fonte `shopee` por item vem de
+docs/produto/planos/atualizar-precos-shopee-por-item.md, etapa 2 (CA1 a CA5).
 
 Ponto de troca (CA10): a seleção dos itens, a gravação e o resumo ficam aqui; cada loja é uma fonte em
 `FONTES`. Uma fonte é `fonte(itens, opcoes)`: recebe `{item_id: linha}` e gera `(rotulo, [Observacao, ...])`,
-uma vez por página lida. Quando chegar uma API oficial (PA-API, API do ML, consulta da Shopee por itemId),
-entra uma fonte nova por id, e o resto não muda.
+uma vez por página lida. Quando chega uma API oficial (a PA-API ainda não; a do ML e a consulta da Shopee por
+item já entraram), entra uma fonte nova por id, e o resto não muda.
 
 - Seleção: itens da loja nas abas (`--cat` ou todas as do buscas.json), com id no formato da loja (ASIN ou
   <shopId>.<itemId>) e cujo preço não foi confirmado hoje (preco_em de outro dia, nulo ou malformado).
 - Gravação: só observação `ok` de item selecionado, com título e preço legível (servidor.ler_preco), pelo
-  `servidor.upsert(..., inserir=False)`, com commit por página (no ml, por item: a releitura abre uma transação
-  para cada um). Item sem preço legível não vai ao upsert
+  `servidor.upsert(..., inserir=False)`, com commit por página (no ml e na shopee, por item: a releitura abre uma
+  transação para cada um). Item sem preço legível não vai ao upsert
   (que apagaria o preço e zeraria o preco_em): conta como "sem preço" e mantém os dados antigos.
   Item que sumiu, ficou indisponível, caiu do piso ou virou usado não é gravado nem apagado: entra no resumo,
   o preço dele envelhece e a trava do disparo o tira de lá (CA5).
@@ -30,11 +31,28 @@ a mesma recusa de usado (`eh_usado`) da coleta; para o termo quando ele não tem
 a validade (config.preco_validade_horas), com pausa entre um e outro; a url é montada pelo ASIN, nunca lida do
 banco. Captcha, 503 ou 429 param com saída 3.
 
-Shopee (`fonte_shopee_api`): pela Open API, com `coletar_shopee.credenciais`/`buscar`/`no_para_item`/
-`conferir_dono`. O link do dono é conferido antes da primeira gravação. Limite da API para com saída 3.
+Shopee (`fonte_shopee_item`): pela Open API, uma chamada por item selecionado, productOfferV2(shopId, itemId)
+(`coletar_shopee.buscar_item`), do preco_em mais antigo para o mais novo (nulo ou malformado primeiro). Só vale o nó
+com os mesmos ids (`coletar_shopee.no_do_item`); o piso e a recusa de usado são os da coleta, pelos dados que a API
+devolve (`no_para_item`). Como no ml, só preco, preco_antigo (sempre vazio: a API não dá o preço cheio) e desconto
+mudam, sobre a linha relida (RELER); título, nota, vendas, foto e link ficam os do banco. Resposta com o produto
+pedido: rótulo `item|<iid>`. Resposta sem o produto pedido (sem nó: o item fica `indisponivel`; só nós de outros
+produtos: não visto) e erro da API naquele item: rótulo `tentado|<iid>`, gravado antes de seguir ou de parar. O item
+com `tentado` de um dia igual ou posterior ao do preco_em dele (tentado sem sucesso desde o último preço) vai para o
+fim da fila, em qualquer dia, e a resposta dele não conta para a parada abaixo: assim um item que a API não devolve
+não trava as rodadas seguintes. Parada do filtro (FiltroIgnorado, saída 1, sem gastar o resto da cota): sem nenhum nó
+casado na rodada, DIVERGENTES_PARA_PARAR respostas novas só com outros produtos, ou SEM_PRODUTO_PARA_PARAR respostas
+novas sem o produto pedido (vazias, só com outros ou com erro do item). Erro da API com cara de ser do item
+(`coletar_shopee.erro_do_item`: productOfferV2 null, ou código fora dos gerais com HTTP 200) marca e segue; erro geral
+(assinatura, credencial, 10010/11001, HTTP de erro) e resposta fora do formato marcam e param com saída 1. Id acima do
+Int64 não vai à API (não visto). O link do dono é conferido no primeiro `ok`, antes da primeira gravação. Teto de
+--max-chamadas chamadas à API (padrão 1000, máximo 5000) com pausa de 1 a 3 s entre elas; o teto e o limite da API
+(10030 ou 429) param com saída 3 e não marcam o item.
   Credenciais só no ambiente deste comando, num terminal só para isso, sem export:
     read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat ...; unset S
-  O Secret é lido com pop e nunca vai para argumento, arquivo, saída ou mensagem de erro.
+  O Secret é lido com pop e nunca vai para argumento, arquivo, saída ou mensagem de erro. Antes de lê-lo (aqui e no
+  ml), `proteger_processo()` fecha o /proc/<pid>/environ para os outros processos do usuário durante a rodada; se o
+  sistema recusar, a rodada segue com um AVISO.
 
 Mercado Livre (`fonte_ml_catalogo`): pela API oficial (ml_api.py), só pelo catálogo. O anúncio do banco se liga a um
 produto de catálogo com prova (ml_api.vincular; cache em ml_catalogo.json, lido antes de qualquer gravação e gravado
@@ -51,11 +69,14 @@ Tokens do `ml_api.py autorizar`; o Secret só é usado se o token precisar ser r
 Premissa: uma máquina e um comando por vez (o arquivo de vínculos não tem trava).
 
 Progresso por dia em atualizar_precos_feitos.txt (ACHADINHOS_FEITOS_ATUALIZAR troca o arquivo), linhas
-`<loja>|<AAAA-MM-DD>|<ordem>|<termo>` (na página do produto, `<loja>|<AAAA-MM-DD>|produto|<ASIN>`; no ML,
+`<loja>|<AAAA-MM-DD>|<ordem>|<termo>` (na página do produto, `<loja>|<AAAA-MM-DD>|produto|<ASIN>`; na Shopee,
+`shopee|<AAAA-MM-DD>|item|<shopId>.<itemId>` quando a API devolve o produto e `shopee|<AAAA-MM-DD>|tentado|<shopId>.<itemId>`
+quando não devolve ou erra naquele item; os dois pulam o item no mesmo dia; no ML,
 `ml|<AAAA-MM-DD>|catalogo|<1º produto do lote>`, só registro: o ML retoma pelo preco_em). Rodar de novo
 no mesmo dia retoma de onde parou. Não lê nem grava coleta_amazon_feitos.txt além de consultar as ordens.
 
-Saída: 0 ok; 1 erro (dono errado, API recusou, resposta fora do formato, rede); 2 argumento ou configuração
+Saída: 0 ok; 1 erro (dono errado, API recusou, resposta fora do formato, rede; na Shopee, a API não filtrou pelo
+item); 2 argumento ou configuração
 (aba fora do buscas.json, ID de afiliado ou credenciais da Shopee; no ML, tokens ausentes ou recusados, falta do
 Secret com o token vencido, renovação recusada, permissão do app ou arquivo de vínculos recusado); 3 bloqueio,
 limite ou teto de chamadas (o progresso fica salvo).
@@ -77,6 +98,11 @@ ID_DA_LOJA = {'amazon': re.compile(r'[A-Z0-9]{10}'), 'shopee': re.compile(r'[0-9
               'ml': re.compile(r'MLB[0-9]{6,19}')}
 VINCULAR_PADRAO, MAX_VINCULAR = 300, 1000          # itens vinculados pela API por rodada (ml)
 CHAMADAS_PADRAO, MAX_CHAMADAS = 3000, 10000        # teto de GETs por rodada (ml)
+CHAMADAS_SHOPEE_PADRAO, MAX_CHAMADAS_SHOPEE = 1000, 5000   # teto de chamadas à Open API por rodada (shopee)
+DIVERGENTES_PARA_PARAR = 5   # respostas novas da Shopee só com outros produtos, sem nenhum casado: a API ignora o filtro
+SEM_PRODUTO_PARA_PARAR = 20  # respostas novas sem o produto pedido (vazias, outros produtos ou erro do item), sem casado
+TENTADO = 'tentado'          # rótulo do progresso da Shopee: consultado sem o produto pedido (vai para o fim da fila)
+RX_DIA = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', re.A)
 PRODUTOS_POR_LOTE = 20     # produtos de catálogo por página do ml (rótulo catalogo|<1º produto>)
 VINCULOS_POR_GRAVACAO = 20  # vínculos novos entre duas gravações do ml_catalogo.json
 PRECO_MIN_ML = 0.01        # abaixo disso o formatar_preco daria "R$ 0,00": sem preço
@@ -85,15 +111,16 @@ TENTATIVAS_PAGINA = 3   # às vezes a Amazon devolve uma página sem resultados 
 
 # item_id e situacao (SITUACOES); `it` no formato do servidor.upsert, só quando a situação é 'ok'
 Observacao = namedtuple('Observacao', 'item_id situacao it')
-# marcador em `it` (fonte ml): o gravar_pagina relê a linha e troca só os CAMPOS_DO_PRECO sobre ela
+# marcador em `it` (fontes ml e shopee): o gravar_pagina relê a linha e troca só os CAMPOS_DO_PRECO sobre ela
 RELER = 'reler'
 CAMPOS_DO_PRECO = ('preco', 'preco_antigo', 'desconto')
 TETO = 'teto'   # motivo do Bloqueio quando o teto de chamadas (--max-chamadas) foi atingido
 
 
 class Bloqueio(Exception):
-    """Captcha, 503 ou 429 da Amazon, limite da API da Shopee, ou 429 e teto de chamadas da API do ML: para com
-    saída 3 e o progresso salvo. `motivo` é None (a loja bloqueou) ou TETO (o teto posto pelo dono)."""
+    """Captcha, 503 ou 429 da Amazon, limite (10030 ou 429) e teto de chamadas da API da Shopee, ou 429 e teto de
+    chamadas da API do ML: para com saída 3 e o progresso salvo. `motivo` é None (a loja bloqueou) ou TETO (o teto
+    posto pelo dono)."""
 
     def __init__(self, motivo=None):
         super().__init__()
@@ -102,6 +129,21 @@ class Bloqueio(Exception):
 
 class ArgInvalido(ValueError):
     pass
+
+
+class FiltroIgnorado(Exception):
+    """A consulta por item da Shopee não trouxe o produto pedido em respostas novas seguidas, sem nenhum casado: a API
+    não está filtrando por shopId e itemId. `motivo` 'outros' (DIVERGENTES_PARA_PARAR respostas só com outros
+    produtos) ou 'nenhum' (SEM_PRODUTO_PARA_PARAR sem o produto, vazias ou com erro do item). Para com saída 1. Texto
+    fixo, sem id nem dado da resposta."""
+    DETALHES = {'outros': f'{DIVERGENTES_PARA_PARAR} respostas seguidas só com outros produtos',
+                'nenhum': f'{SEM_PRODUTO_PARA_PARAR} respostas seguidas sem o produto pedido (vazias, com outros '
+                          'produtos ou com erro do item)'}
+
+    def __init__(self, motivo='outros'):
+        super().__init__('a API não filtrou pelo item')
+        self.motivo = motivo
+        self.detalhe = self.DETALHES[motivo]
 
 
 # ---------- progresso ----------
@@ -121,6 +163,20 @@ def feitos(loja, dia):
 def marcar(loja, dia, rotulo):
     with open(FEITOS, 'a', encoding='utf-8') as f:
         f.write(f'{loja}|{dia}|{rotulo}\n')
+
+
+def tentativas(loja):
+    """{item_id: último dia} das linhas `<loja>|<AAAA-MM-DD>|tentado|<item_id>` de qualquer dia (só a Shopee as grava).
+    Linha fora desse formato é ignorada."""
+    if not os.path.exists(FEITOS):
+        return {}
+    ultimo = {}
+    with open(FEITOS, encoding='utf-8') as f:
+        for linha in f.read().splitlines():
+            partes = linha.split('|')
+            if len(partes) == 4 and partes[0] == loja and partes[2] == TENTADO and RX_DIA.fullmatch(partes[1]):
+                ultimo[partes[3]] = max(ultimo.get(partes[3], ''), partes[1])
+    return ultimo
 
 
 # ---------- seleção ----------
@@ -150,8 +206,8 @@ def selecionar(con, loja, abas, dia):
     "Confirmado no dia" usa o mesmo parse estrito da trava (disparo.ler_preco_em): preco_em malformado
     é velho e entra na seleção, qualquer que seja o prefixo.
     A linha traz também os S.CAMPOS. Na fonte ml ela só alimenta o vínculo (o título), o eh_usado e a montagem da
-    observação: o que é gravado vem da linha relida no banco logo antes (RELER, em _gravar_relendo), com só os
-    CAMPOS_DO_PRECO trocados.
+    observação; nas fontes ml e shopee, o que é gravado vem da linha relida no banco logo antes (RELER, em
+    _gravar_relendo), com só os CAMPOS_DO_PRECO trocados.
     """
     if not abas:
         return {}, 0
@@ -390,7 +446,7 @@ def _observar_produto(C, asin, linha):
     return _observacao_amazon(C, asin, linha, {c: r.get(c) or '' for c in S.CAMPOS})
 
 
-# ---------- fonte da Shopee: Open API ----------
+# ---------- fonte da Shopee: Open API, por item ----------
 def _observacao_shopee(CS, no, termo, cat, itens):
     """Observação de um nó de productOfferV2, ou None se o nó não é de item selecionado."""
     if not isinstance(no, dict):
@@ -409,33 +465,114 @@ def _observacao_shopee(CS, no, termo, cat, itens):
     return Observacao(iid, 'indisponivel', None)   # sem título ou sem link curto de afiliado
 
 
-def fonte_shopee_api(itens, opcoes):
+def _mais_velho_primeiro(itens, no_fim=frozenset()):
+    """Ids de `itens` do preco_em mais antigo para o mais novo; nulo ou malformado (velho para a trava) primeiro. Os de
+    `no_fim` (tentados sem sucesso) vêm depois de todos os outros, na mesma ordem entre eles."""
+    def chave(iid):
+        quando = D.ler_preco_em(itens[iid].get('preco_em'))
+        return (iid in no_fim, quando is not None, quando or datetime.min, iid)
+    return sorted(itens, key=chave)
+
+
+def _tentado_sem_sucesso(linha, dia_tentado):
+    """True se o item foi tentado sem sucesso (`dia_tentado`, o último `tentado` dele) desde o último preço: o dia da
+    tentativa não é anterior ao do preco_em. preco_em nulo ou malformado conta como preço nunca confirmado."""
+    if not dia_tentado:
+        return False
+    quando = D.ler_preco_em(linha.get('preco_em'))
+    return quando is None or dia_tentado >= quando.date().isoformat()
+
+
+def _parar_se_nao_filtra(casados, divergentes, sem_produto):
+    """FiltroIgnorado se nenhum nó casou na rodada e as respostas novas sem o produto pedido passaram do limite."""
+    if casados:
+        return
+    if divergentes >= DIVERGENTES_PARA_PARAR:
+        raise FiltroIgnorado('outros')
+    if sem_produto >= SEM_PRODUTO_PARA_PARAR:
+        raise FiltroIgnorado('nenhum')
+
+
+def _ids_consultaveis(CS, iid):
+    """(shopId, itemId) do item_id, ou None se a consulta por item o recusaria (id acima do Int64): esse item não vai
+    à API e fica não visto. A regra é a do próprio coletar_shopee.corpo_item, que não toca a rede."""
+    shop, _, item = iid.partition('.')
+    try:
+        CS.corpo_item(shop, item)
+    except ValueError:
+        return None
+    return shop, item
+
+
+def fonte_shopee_item(itens, opcoes):
+    """Preço pela Open API, uma chamada por item (ver a docstring do módulo). `opcoes` traz `cred`, `max_chamadas`
+    e `feitos` (rótulos de hoje). Uma página por item consultado: ('item|<iid>', [Observacao]) quando a API devolve o
+    produto, ('tentado|<iid>', [indisponivel] ou []) quando não devolve ou erra naquele item."""
     import coletar_shopee as CS
-    cred = opcoes['cred']
-    (cat, termos), = opcoes['buscas'].items()   # o `shopee` exige --cat: uma aba só
-    pendentes, grupos, feitos_hoje = set(itens), por_termo(itens), opcoes['feitos']
-    ja_coleta, conferido, primeira = CS.feitos(), False, True
-    for termo in termos:
-        for ordem in [o for o in CS.ORDENS if CS.chave(o, termo) in ja_coleta] or ['relevancia']:
-            if not grupos.get(termo, set()) & pendentes:
-                break
-            rotulo = f'{ordem}|{termo}'
-            if rotulo in feitos_hoje:
-                continue
-            if not primeira:
-                CS.pausa()
-            primeira = False
-            try:
-                nos = CS.buscar(cred, termo, ordem)
-            except CS.LimiteAtingido:
-                raise Bloqueio() from None
-            obs = [o for o in (_observacao_shopee(CS, n, termo, cat, itens) for n in nos) if o]
-            oks = [o for o in obs if o.situacao == 'ok']
-            if oks and not conferido:   # antes da primeira gravação: o link tem que ser do dono
-                CS.conferir_dono(oks[0].it['url'])
+    cred, feitos_hoje = opcoes['cred'], opcoes['feitos']
+    maximo = opcoes.get('max_chamadas', CHAMADAS_SHOPEE_PADRAO)
+    ultimas = tentativas('shopee')
+    no_fim = {iid for iid, linha in itens.items() if _tentado_sem_sucesso(linha, ultimas.get(iid))}
+    feitas = casados = fora_do_int64 = 0
+    divergentes = erros = 0              # todos os da rodada (para o aviso no fim)
+    divergentes_novos = sem_produto = 0  # só dos itens fora de `no_fim` (para a parada do filtro)
+    conferido = False
+    for iid in _mais_velho_primeiro(itens, no_fim):
+        rotulo = f'item|{iid}'
+        tentado = f'{TENTADO}|{iid}'
+        if rotulo in feitos_hoje or tentado in feitos_hoje:
+            continue
+        ids = _ids_consultaveis(CS, iid)
+        if ids is None:
+            fora_do_int64 += 1
+            continue
+        if feitas >= maximo:
+            print(f'[shopee] parou no teto de {maximo} chamadas (--max-chamadas); rode de novo para seguir.', flush=True)
+            raise Bloqueio(TETO)
+        if feitas:
+            CS.pausa()
+        feitas += 1
+        novo = iid not in no_fim   # resposta de item já tentado sem sucesso não conta para a parada do filtro
+        try:
+            nos = CS.buscar_item(cred, *ids)
+        except CS.LimiteAtingido:   # não marca: o item não teve resposta
+            raise Bloqueio() from None
+        except (CS.ErroApi, CS.RespostaInvalida) as e:
+            # marcado antes de seguir ou de parar: a próxima rodada passa por ele (e, em outro dia, ele vai para o fim)
+            yield tentado, []
+            if not CS.erro_do_item(e):
+                raise   # erro geral (assinatura, credencial, parâmetro, HTTP) ou fora do formato: saída 1
+            erros += 1
+            sem_produto += novo
+            _parar_se_nao_filtra(casados, divergentes_novos, sem_produto)
+            continue
+        no = CS.no_do_item(nos, *ids)
+        if no is None:
+            # sem nó: a API não achou o produto (indisponível); só outros produtos: não visto
+            if nos:
+                divergentes += 1
+                divergentes_novos += novo
+            sem_produto += novo
+            yield tentado, ([] if nos else [Observacao(iid, 'indisponivel', None)])
+            _parar_se_nao_filtra(casados, divergentes_novos, sem_produto)
+            continue
+        casados += 1
+        linha = itens[iid]
+        obs = _observacao_shopee(CS, no, linha['busca'], linha['cat'], itens)
+        if obs is None:   # não acontece: o nó casou pelos mesmos ids do item selecionado
+            continue
+        if obs.situacao == 'ok':
+            if not conferido:   # antes da primeira gravação: o link tem que ser do dono
+                CS.conferir_dono(obs.it['url'])
                 conferido = True
-            pendentes -= {o.item_id for o in obs}
-            yield rotulo, obs
+            obs = Observacao(iid, 'ok', {**obs.it, RELER: True})
+        yield rotulo, [obs]
+    if divergentes:
+        print(f'[shopee] {divergentes} itens: a API devolveu outros produtos (não vistos).', flush=True)
+    if erros:
+        print(f'[shopee] {erros} itens: a API recusou a consulta só daquele item (não vistos).', flush=True)
+    if fora_do_int64:
+        print(f'[shopee] {fora_do_int64} itens com id acima do Int64 não foram à API (não vistos).', flush=True)
 
 
 # ---------- fonte do Mercado Livre: API oficial pelo catálogo ----------
@@ -556,7 +693,7 @@ def fonte_ml_catalogo(itens, opcoes):
             raise Bloqueio(TETO) from None
 
 
-FONTES = {'amazon': fonte_amazon_busca, 'shopee': fonte_shopee_api, 'ml': fonte_ml_catalogo}
+FONTES = {'amazon': fonte_amazon_busca, 'shopee': fonte_shopee_item, 'ml': fonte_ml_catalogo}
 
 
 # ---------- linha de comando ----------
@@ -584,6 +721,9 @@ def ler_argumentos(argv):
                    help=f'abre a página do produto de até N itens não vistos e velhos (0 a {MAX_PRODUTOS}, padrão 0)')
     s = sub.add_parser('shopee', help='pela Open API de afiliados (credenciais só no ambiente do comando)')
     s.add_argument('--cat', required=True, help='aba do buscas.json')
+    s.add_argument('--max-chamadas', type=_inteiro_de(1, MAX_CHAMADAS_SHOPEE), default=CHAMADAS_SHOPEE_PADRAO,
+                   help=f'teto de chamadas à API nesta rodada, uma por item (1 a {MAX_CHAMADAS_SHOPEE}, '
+                        f'padrão {CHAMADAS_SHOPEE_PADRAO})')
     m = sub.add_parser('ml', help='pela API oficial do Mercado Livre, só pelo catálogo (tokens do ml_api.py autorizar)')
     m.add_argument('--cat', help='só os itens desta aba do buscas.json')
     m.add_argument('--vincular', type=_inteiro_de(0, MAX_VINCULAR), default=VINCULAR_PADRAO,
@@ -623,6 +763,8 @@ def _rodar_shopee(args):
     if not CS.id_afiliado_ok():
         print('ERRO: preencha ID_AFILIADO_SHOPEE no coletar_shopee.py.', file=sys.stderr, flush=True)
         return 2
+    if not CS.proteger_processo():   # antes de ler o Secret: a rodada dura de minutos a horas
+        print(CS.AVISO_PROCESSO, file=sys.stderr, flush=True)
     cred = CS.credenciais()   # pop do Secret: sai do ambiente deste processo
     if cred is None:
         print('ERRO: defina ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET só para este comando, sem export, '
@@ -632,7 +774,12 @@ def _rodar_shopee(args):
         return 2
     try:
         S.criar_banco()
-        return _resultado(atualizar('shopee', args.abas, {'cred': cred}))
+        return _resultado(atualizar('shopee', args.abas, {'cred': cred, 'max_chamadas': args.max_chamadas}))
+    except FiltroIgnorado as e:
+        # sem nenhum nó casado não houve `ok`: nada foi gravado nesta rodada
+        print(f'PAROU: a API não filtrou pelo item; rode coletar_shopee.py conferir --por-item. ({e.detalhe}.) '
+              'Nada foi gravado nesta rodada.', file=sys.stderr, flush=True)
+        return 1
     except CS.DonoErrado:
         print(f'PAROU: o link gerado não leva a utm_source=an_{CS.ID_AFILIADO_SHOPEE}. Nada foi gravado. '
               'Confira as credenciais e o ID_AFILIADO_SHOPEE.', file=sys.stderr, flush=True)
@@ -654,6 +801,8 @@ MSG_SECRET_ML = ('o acesso ao Mercado Livre venceu e precisa ser renovado com o 
 
 def _rodar_ml(args):
     import ml_api as M
+    if not M.proteger_processo():   # antes de ler o Secret: a rodada dura horas
+        print(M.AVISO_PROCESSO, file=sys.stderr, flush=True)
     sessao = M.sessao_do_ambiente()   # pop do Secret: sai do ambiente deste processo
     try:
         # tokens antes do banco: sem arquivo, sem o Secret com o token vencido ou com a renovação recusada, para aqui

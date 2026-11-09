@@ -606,6 +606,408 @@ class TestLimite(Base):
                 self.assertEqual(codigo, 3)
 
 
+# ---------- consulta por item (atualizar-precos-shopee-por-item.md, etapa 1: CA1, CA4, CA5) ----------
+SHOP, ITEM = '112233', '22334455667'   # os ids do no() padrão, como texto (como no item_id do banco)
+
+
+def ids_do_corpo(corpo):
+    """(shopId, itemId) das variáveis da consulta por item. Exige texto só de dígitos (Int64: número JSON dá 10010)."""
+    v = corpo['variables']
+    if not all(isinstance(v.get(k), str) and re.fullmatch(r'[0-9]+', v[k], re.A) for k in ('shopId', 'itemId')):
+        return None
+    return int(v['shopId']), int(v['itemId'])
+
+
+class TestCorpoItem(unittest.TestCase):
+    def test_ids_como_texto_nas_variaveis_int64_e_fora_da_query(self):
+        """Int64 da Shopee: como número JSON a API recusa com 10010 (garimpo #37/#38, G1 de 09/11/2026)."""
+        bruto = C.corpo_item(SHOP, ITEM)
+        corpo = json.loads(bruto)
+        self.assertEqual(set(corpo), {'query', 'variables'})
+        self.assertEqual(corpo['query'], C.CONSULTA_ITEM)
+        self.assertEqual(corpo['variables'], {'shopId': '112233', 'itemId': '22334455667', 'page': 1,
+                                              'limit': C.POR_ITEM})
+        for nome in ('shopId', 'itemId'):
+            self.assertIs(type(corpo['variables'][nome]), str, nome)
+        for nome in ('page', 'limit'):
+            self.assertIs(type(corpo['variables'][nome]), int, nome)
+        self.assertEqual(bruto.count(ITEM), 1, 'o id aparece uma vez só, nas variáveis')
+        self.assertNotIn(ITEM, corpo['query'])
+        self.assertNotIn(SHOP, corpo['query'])
+
+    def test_zero_a_esquerda_sai_do_texto_enviado(self):
+        """O texto enviado vem de str(int()): '007' vai como '7', nunca com o zero (R2 de 09/11/2026)."""
+        corpo = json.loads(C.corpo_item('007', '0001'))
+        self.assertEqual((corpo['variables']['shopId'], corpo['variables']['itemId']), ('7', '1'))
+        self.assertEqual(ids_do_corpo(corpo), (7, 1))
+        self.assertEqual(json.loads(C.corpo_item(7, 1))['variables'], corpo['variables'])
+
+    def test_query_igual_para_qualquer_id(self):
+        a, b = json.loads(C.corpo_item('1', '2')), json.loads(C.corpo_item(987, 2**63 - 1))
+        self.assertEqual(a['query'], b['query'])
+        self.assertEqual(b['variables']['itemId'], str(2**63 - 1))
+        for trecho in ('$shopId: Int64', '$itemId: Int64', 'shopId: $shopId', 'itemId: $itemId', 'offerLink', 'priceMin'):
+            self.assertIn(trecho, a['query'])
+        self.assertNotIn('keyword', a['query'])
+        self.assertEqual(C.POR_ITEM, 5)
+
+    def test_id_invalido_ou_acima_do_int64_levanta_antes_da_rede(self):
+        for ruim in ('', 'abc', '1 OR 1', ' 1', '1 ', '-1', '+1', '1.0', '1e5', '1' * 21, str(2**63), 2**63, -1,
+                     True, False, None, 1.5, ['1'], '١٢'):
+            with self.subTest(ruim=ruim):
+                for args in ((ruim, ITEM), (SHOP, ruim)):
+                    with self.assertRaises(ValueError) as cm:
+                        C.corpo_item(*args)
+                    self.assertEqual(str(cm.exception), 'id da Shopee inválido para a consulta por item')
+
+
+class TestNoDoItem(unittest.TestCase):
+    def test_devolve_o_no_com_os_mesmos_ids(self):
+        certo = no()
+        nos = [no(itemId=1), no(shopId=1), certo, no(productName='outro')]
+        self.assertIs(C.no_do_item(nos, SHOP, ITEM), certo)
+        self.assertIs(C.no_do_item([certo], 112233, 22334455667), certo)
+
+    def test_ignora_no_de_outro_id(self):
+        for nos in ([], [no(itemId=1)], [no(shopId=1)], [no(shopId=22334455667, itemId=112233)],
+                    [no(itemId=22334455668)], [{'productName': 'sem ids'}], ['x', None, 3, [no()]]):
+            with self.subTest(nos=nos):
+                self.assertIsNone(C.no_do_item(nos, SHOP, ITEM))
+
+    def test_id_em_texto_so_casa_se_for_so_digitos(self):
+        """Mesma regra do item_id do no_para_item (_inteiro): texto só de dígitos é o mesmo id; o resto não."""
+        self.assertIsNotNone(C.no_do_item([no(shopId=SHOP, itemId=ITEM)], SHOP, ITEM))
+        for ruim in (' 22334455667', '22334455667 ', '+22334455667', '022334455667', '22334455667.0', '2.2334455667e10',
+                     '22334455667a', '٢٢٣', ''):
+            with self.subTest(ruim=ruim):
+                self.assertIsNone(C.no_do_item([no(itemId=ruim)], SHOP, ITEM))
+                self.assertIsNone(C.no_do_item([no(shopId=ruim.replace('22334455667', SHOP))], SHOP, ITEM))
+
+    def test_bool_float_e_nulo_nao_casam(self):
+        for ruim in (True, False, 22334455667.0, None, float('nan'), [22334455667], {'id': 22334455667}):
+            with self.subTest(ruim=ruim):
+                self.assertIsNone(C.no_do_item([no(itemId=ruim)], SHOP, ITEM))
+        self.assertIsNone(C.no_do_item([no(shopId=True, itemId=True)], '1', '1'), 'True não é o id 1')
+        self.assertIsNone(C.no_do_item([no(shopId=False, itemId=1)], '0', '1'), 'False não é o id 0')
+
+    def test_pedido_invalido_ou_nos_que_nao_sao_lista(self):
+        for shop, item in (('', ITEM), (SHOP, None), (True, ITEM), (SHOP, 'abc')):
+            self.assertIsNone(C.no_do_item([no()], shop, item))
+        for nos in (None, no(), 'x', (no(),)):
+            self.assertIsNone(C.no_do_item(nos, SHOP, ITEM))
+
+
+class TestBuscarItem(Base):
+    def test_mesmo_host_assinatura_e_authorization_do_buscar(self):
+        api = ApiFalsa(resposta([no()]), resposta([no()]))
+        cred = (APP_ID, C.Segredo(SECRET))
+        with mock.patch.object(C.OPENER_API, 'open', api), \
+                mock.patch.dict(os.environ, {'ACHADINHOS_SHOPEE_URL': 'http://127.0.0.1:1/graphql'}):
+            self.assertEqual(C.buscar_item(cred, SHOP, ITEM), [no()])
+            C.buscar(cred, 'perfume', 'relevancia')
+        item, busca = api.pedidos
+        self.assertEqual(item.data.decode('utf-8'), C.corpo_item(SHOP, ITEM))
+        for req in (item, busca):
+            self.assertEqual(req.full_url, 'https://open-api.affiliate.shopee.com.br/graphql')
+            self.assertEqual(req.get_method(), 'POST')
+        sem_auth = lambda req: sorted((k, v) for k, v in req.header_items() if k != 'Authorization')  # noqa: E731
+        self.assertEqual(sem_auth(item), sem_auth(busca), 'mesmos cabeçalhos do buscar, menos a assinatura')
+        self.assertEqual({k for k, _ in item.header_items()}, {k for k, _ in busca.header_items()})
+        self.assertEqual(item.get_header('Content-type'), 'application/json')
+        self.assertEqual(item.get_header('User-agent'), S.UA)
+        cab = item.get_header('Authorization')
+        m = re.fullmatch(rf'SHA256 Credential={APP_ID}, Timestamp=(\d+), Signature=([0-9a-f]{{64}})', cab)
+        self.assertIsNotNone(m, cab)
+        corpo = item.data.decode('utf-8')
+        self.assertEqual(m.group(2), hashlib.sha256((APP_ID + m.group(1) + corpo + SECRET).encode()).hexdigest())
+        for parte in (item.full_url, corpo, repr(item.headers), repr(item)):
+            self.assertNotIn(SECRET, parte)
+
+    def test_pedir_e_o_unico_ponto_de_rede_e_nao_recebe_url(self):
+        import inspect
+        with open(os.path.join(RAIZ, 'coletar_shopee.py'), encoding='utf-8') as f:
+            fonte = f.read()
+        self.assertEqual(len(re.findall(r'OPENER_API\.open\(', fonte)), 1)
+        self.assertIn('OPENER_API.open(', inspect.getsource(C._pedir))
+        self.assertEqual(list(inspect.signature(C._pedir).parameters), ['cred', 'corpo'])
+        for f in (C.buscar, C.buscar_item):
+            self.assertNotIn('OPENER_API', inspect.getsource(f))
+
+    def test_limite_10030_e_429_levantam_limite_atingido(self):
+        cred = (APP_ID, C.Segredo(SECRET))
+        for r in (erro(10030), erro('10030'),
+                  urllib.error.HTTPError(C.URL_API, 429, 'x', http.client.HTTPMessage(), io.BytesIO(b'')),
+                  urllib.error.HTTPError(C.URL_API, 403, 'x', http.client.HTTPMessage(),
+                                         io.BytesIO(json.dumps(erro(10030)).encode()))):
+            with self.subTest(r=getattr(r, 'code', r)):
+                with mock.patch.object(C.OPENER_API, 'open', ApiFalsa(r)), self.assertRaises(C.LimiteAtingido):
+                    C.buscar_item(cred, SHOP, ITEM)
+
+    def test_erro_da_api_traz_so_o_codigo_e_o_status(self):
+        cred = (APP_ID, C.Segredo(SECRET))
+        corpo = {'errors': [{'message': f'Invalid {SECRET}', 'extensions': {'code': 11001}}]}
+        casos = ((corpo, 11001, None), (erro(10010), 10010, None),
+                 (urllib.error.HTTPError(C.URL_API, 400, f'Bad {SECRET}', http.client.HTTPMessage(),
+                                         io.BytesIO(json.dumps(corpo).encode())), 11001, 400))
+        for r, codigo, status in casos:
+            with self.subTest(codigo=codigo, status=status):
+                with mock.patch.object(C.OPENER_API, 'open', ApiFalsa(r)), self.assertRaises(C.ErroApi) as cm:
+                    C.buscar_item(cred, SHOP, ITEM)
+                self.assertEqual((cm.exception.codigo, cm.exception.http), (codigo, status))
+                self.assertNotIn(SECRET, repr(cm.exception) + str(cm.exception) + repr(cm.exception.__cause__))
+                self.assertIsNone(cm.exception.__cause__)
+
+    def test_id_invalido_nao_chama_a_api(self):
+        api = ApiFalsa(resposta([no()]))
+        with mock.patch.object(C.OPENER_API, 'open', api):
+            for shop, item in (('abc', ITEM), (SHOP, str(2**63)), (SHOP, '')):
+                with self.assertRaises(ValueError):
+                    C.buscar_item((APP_ID, C.Segredo(SECRET)), shop, item)
+        self.assertEqual(api.pedidos, [])
+
+    def test_product_offer_null_sem_errors_levanta_sem_produto(self):
+        """SemProduto é RespostaInvalida: a busca por termo continua tratando como "fora do formato"."""
+        cred = (APP_ID, C.Segredo(SECRET))
+        with mock.patch.object(C.OPENER_API, 'open', ApiFalsa({'data': {'productOfferV2': None}})), \
+                self.assertRaises(C.SemProduto):
+            C.buscar_item(cred, SHOP, ITEM)
+        self.assertTrue(issubclass(C.SemProduto, C.RespostaInvalida))
+        for r in ({'data': None}, {'data': {}}, {'data': {'productOfferV2': {}}}, {'data': {'productOfferV2': []}},
+                  {'data': {'productOfferV2': {'nodes': None}}}):
+            with self.subTest(r=r), mock.patch.object(C.OPENER_API, 'open', ApiFalsa(r)):
+                with self.assertRaises(C.RespostaInvalida) as cm:
+                    C.buscar_item(cred, SHOP, ITEM)
+                self.assertNotIsInstance(cm.exception, C.SemProduto)
+        # com "errors", vale o código, mesmo com productOfferV2 null
+        corpo = {'errors': [{'message': 'x', 'extensions': {'code': 11001}}], 'data': {'productOfferV2': None}}
+        with mock.patch.object(C.OPENER_API, 'open', ApiFalsa(corpo)), self.assertRaises(C.ErroApi):
+            C.buscar_item(cred, SHOP, ITEM)
+
+
+class TestErroDoItem(unittest.TestCase):
+    def test_so_product_offer_null_e_codigo_fora_dos_gerais_com_200_sao_do_item(self):
+        do_item = (C.SemProduto(), C.ErroApi(10000), C.ErroApi(10000, 200), C.ErroApi(11000, 200), C.ErroApi(99999))
+        gerais = [C.ErroApi(c) for c in sorted(C.ERROS_GERAIS)] + [
+            C.ErroApi(c, 200) for c in sorted(C.ERROS_GERAIS)] + [
+            C.ErroApi(0), C.ErroApi(None, 200), C.ErroApi(None), C.ErroApi(10000, 500), C.ErroApi(10000, 400),
+            C.ErroApi(None, 302), C.ErroApi(None, 401), C.ErroApi(True, 200), C.ErroApi('10000', 200),
+            C.ErroApi(C.ERRO_LIMITE, 200), C.RespostaInvalida(), C.LimiteAtingido(), C.DonoErrado(), ValueError()]
+        for e in do_item:
+            with self.subTest(e=repr(e)):
+                self.assertTrue(C.erro_do_item(e))
+        for e in gerais:
+            with self.subTest(e=repr(e)):
+                self.assertFalse(C.erro_do_item(e))
+
+    def test_gerais_do_plano(self):
+        for codigo in (10010, 10020, 11001):   # parse, assinatura/credencial e parâmetro
+            self.assertIn(codigo, C.ERROS_GERAIS)
+        self.assertNotIn(C.ERRO_LIMITE, C.ERROS_GERAIS)   # o limite tem tratamento próprio (saída 3)
+
+
+class Ordem:
+    """Anota, numa lista só, as chamadas à API, as conferências do dono e as pausas, na ordem em que acontecem."""
+    def __init__(self, api, conf):
+        self.eventos = []
+        self.api, self.conf = api, conf
+
+    def chamar_api(self, req, timeout=None):
+        self.eventos.append('api')
+        return self.api(req, timeout)
+
+    def conferir(self, req, timeout=None):
+        self.eventos.append('dono')
+        return self.conf(req, timeout)
+
+    def pausa(self, *a, **k):
+        self.eventos.append('pausa')
+
+
+class TestConferirPorItem(Base):
+    def item_por_item(self, *respostas_item, conf=None):
+        """conferir --por-item com a busca devolvendo [no()] e a consulta por item devolvendo as respostas dadas."""
+        api = ApiFalsa(resposta([no()]), *respostas_item)
+        return self.rodar(['conferir', '--por-item'], api=api, conf=conf) + (api,)
+
+    def test_mesmo_no_com_preco_sai_com_0_sem_gravar(self):
+        codigo, out, err, api = self.item_por_item(resposta([no(itemId=1), no()]))
+        self.assertEqual(codigo, 0, err)
+        self.assertIn(f'afiliado {ID}', out)
+        self.assertIn('devolveu o produto pedido, com preço', out)
+        self.assertEqual(len(api.pedidos), 2)
+        busca, item = (json.loads(p.data) for p in api.pedidos)
+        self.assertEqual(busca['variables']['keyword'], C.TERMO_CONFERENCIA)
+        self.assertEqual(item['query'], C.CONSULTA_ITEM)
+        self.assertEqual(ids_do_corpo(item), (112233, 22334455667))
+        self.assertEqual(item['variables'], {'shopId': '112233', 'itemId': '22334455667', 'page': 1,
+                                             'limit': C.POR_ITEM})
+        self.assertFalse(os.path.exists(S.DB))
+        self.assertFalse(os.path.exists(C.FEITOS))
+
+    def test_consulta_o_primeiro_no_valido_da_busca(self):
+        api = ApiFalsa(resposta([no(offerLink='https://shopee.com.br/x', itemId=1), no(sales=0, itemId=2),
+                                 no(shopId=77, itemId=8), no(itemId=9)]),
+                       resposta([no(shopId=77, itemId=8)]))
+        codigo, _, err = self.rodar(['conferir', '--por-item'], api=api)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(api.variaveis()[1], {'shopId': '77', 'itemId': '8', 'page': 1, 'limit': C.POR_ITEM})
+        self.assertEqual(ids_do_corpo(json.loads(api.pedidos[1].data)), (77, 8))
+        self.assertEqual(self.conf.links, [LINK])
+
+    def test_lista_vazia_sai_com_1(self):
+        codigo, out, err, api = self.item_por_item(resposta([]))
+        self.assertEqual(codigo, 1)
+        self.assertIn('a consulta por item não devolveu o produto pedido', err)
+        self.assertNotIn('com preço', out)
+        self.assertEqual(len(api.pedidos), 2)
+
+    def test_no_de_outro_id_sai_com_1(self):
+        for nos in ([no(itemId=1)], [no(shopId=1)], [no(itemId=1), no(shopId=9, itemId=22334455667)],
+                    [no(itemId=True)], [no(itemId=22334455667.0)], [no(itemId=' 22334455667')]):
+            with self.subTest(nos=nos):
+                codigo, _, err, _ = self.item_por_item(resposta(nos))
+                self.assertEqual(codigo, 1)
+                self.assertIn('não devolveu o produto pedido', err)
+
+    def test_mesmo_no_sem_preco_legivel_sai_com_1(self):
+        for preco in (None, '', '0', 0, -5, 'abc', '1,5', 10**9, True, float('inf')):
+            with self.subTest(preco=preco):
+                codigo, _, err, _ = self.item_por_item(resposta([no(priceMin=preco)]))
+                self.assertEqual(codigo, 1)
+                self.assertIn('sem preço legível', err)
+        semp = no(); del semp['priceMin']
+        self.assertEqual(self.item_por_item(resposta([semp]))[0], 1)
+
+    def test_mesmo_no_que_a_rodada_recusaria_sai_com_1(self):
+        """R3: o nó da consulta por item tem de passar no no_para_item, senão a rodada marcaria tudo indisponível."""
+        sem_titulo, sem_link = no(), no()
+        del sem_titulo['productName'], sem_link['offerLink']
+        for nos in ([no(offerLink='https://shopee.com.br/x')], [no(offerLink=None)], [sem_link], [sem_titulo],
+                    [no(productName='')], [no(productName='Perfume Usado')], [no(ratingStar='4.0')], [no(sales=10)],
+                    [no(ratingStar=None)]):
+            with self.subTest(nos=nos):
+                codigo, out, err, api = self.item_por_item(resposta(nos))
+                self.assertEqual(codigo, 1)
+                self.assertIn('a consulta por item devolveu o produto pedido, mas a rodada o recusaria', err)
+                self.assertNotIn('OK: a consulta por item', out)
+                self.assertNotIn('preço lido', out)
+                self.assertEqual(len(api.pedidos), 2)
+
+    def test_saida_0_mostra_os_ids_e_o_preco_lido_sem_titulo_nem_link(self):
+        """Q2 do qa: o dono confere no site que a ordem de grandeza do preço bate."""
+        codigo, out, err, _ = self.item_por_item(resposta([no(priceMin='49.9')]))
+        self.assertEqual(codigo, 0, err)
+        self.assertIn('Produto 112233.22334455667: preço lido R$ 49,90.', out)
+        self.assertNotIn('Perfume', out + err)
+        self.assertNotIn(LINK, out + err)
+        self.assertNotIn('http', out + err)
+
+    def test_api_recusa_o_argumento_sai_com_1_e_o_codigo(self):
+        """10010/11001 = argumento não aceito: o código aparece; o Secret e o texto da API, não."""
+        for codigo_api in (11001, 10010, '11001'):
+            corpo = {'errors': [{'message': f'Invalid shopId {SECRET}', 'extensions': {'code': codigo_api}}]}
+            with self.subTest(codigo=codigo_api):
+                codigo, _, err, api = self.item_por_item(corpo)   # rodar() já reprova o Secret na saída
+                self.assertEqual(codigo, 1)
+                self.assertIn(f'código {int(codigo_api)}', err)
+                self.assertNotIn('Invalid', err)
+                self.assertEqual(len(api.pedidos), 2)
+        e = urllib.error.HTTPError(C.URL_API, 400, f'Bad {SECRET}', http.client.HTTPMessage(),
+                                   io.BytesIO(json.dumps(erro(11001)).encode()))
+        codigo, _, err, _ = self.item_por_item(e)
+        self.assertEqual(codigo, 1)
+        self.assertIn('código 11001, HTTP 400', err)
+
+    def test_limite_na_consulta_por_item_sai_com_3(self):
+        for r in (erro(10030), urllib.error.HTTPError(C.URL_API, 429, 'x', http.client.HTTPMessage(), io.BytesIO(b''))):
+            with self.subTest(r=getattr(r, 'code', r)):
+                codigo, _, err, _ = self.item_por_item(r)
+                self.assertEqual(codigo, 3)
+                self.assertIn('10030', err)
+
+    def test_excecao_com_o_secret_na_segunda_chamada_mostra_so_o_tipo(self):
+        for exc in (OSError(SECRET), RuntimeError(f'x {SECRET}'), urllib.error.URLError(SECRET)):
+            with self.subTest(tipo=type(exc).__name__):
+                codigo, _, err, _ = self.item_por_item(exc)
+                self.assertEqual(codigo, 1)
+                self.assertIn(f'ERRO: {type(exc).__name__}', err)
+
+    def test_duas_chamadas_com_o_dono_conferido_antes_da_segunda(self):
+        ordem = Ordem(ApiFalsa(resposta([no()]), resposta([no()])), ConferenciaFalsa())
+        with mock.patch.object(C, 'pausa', ordem.pausa):
+            codigo, _, err = self.rodar(['conferir', '--por-item'], api=ordem.chamar_api, conf=ordem.conferir)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(ordem.eventos, ['api', 'dono', 'pausa', 'api'])
+
+    def test_dono_errado_nao_faz_a_segunda_chamada(self):
+        for conf in (ConferenciaFalsa(DESTINO_RUIM), ConferenciaFalsa(location=None), ConferenciaFalsa(codigo=200)):
+            with self.subTest(location=conf.location, codigo=conf.codigo):
+                codigo, _, err, api = self.item_por_item(resposta([no()]), conf=conf)
+                self.assertEqual(codigo, 1)
+                self.assertIn('PAROU', err)
+                self.assertEqual(len(api.pedidos), 1)
+
+    def test_busca_sem_link_nao_faz_a_segunda_chamada(self):
+        api = ApiFalsa(resposta([no(sales=0)]), resposta([no()]))
+        codigo, _, _ = self.rodar(['conferir', '--por-item'], api=api)
+        self.assertEqual(codigo, 1)
+        self.assertEqual((len(api.pedidos), self.conf.links), (1, []))
+
+    def test_conferir_sem_a_flag_continua_com_uma_chamada(self):
+        api = ApiFalsa(resposta([no()]), resposta([]))
+        codigo, out, err = self.rodar(['conferir'], api=api)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(api.pedidos), 1)
+        self.assertNotIn('consulta por item', out + err)
+
+    def test_argumentos_e_credencial(self):
+        for argv in (['conferir', '--por-item', 'x'], ['buscas', '--cat', CAT, '--por-item'], ['importar', '--por-item'],
+                     ['conferir', '--por-item=1']):
+            with self.subTest(argv=argv):
+                api = ApiFalsa()
+                self.assertEqual(self.rodar(argv, api=api)[0], 2)
+                self.assertEqual(api.pedidos, [])
+        api = ApiFalsa()
+        codigo, _, err = self.rodar(['conferir', '--por-item'], api=api,
+                                    env={'ACHADINHOS_SHOPEE_APP_ID': APP_ID, 'ACHADINHOS_SHOPEE_SECRET': ''})
+        self.assertEqual((codigo, api.pedidos), (2, []))
+        self.assertIn('ACHADINHOS_SHOPEE_SECRET="$S"', err)
+
+    def test_secret_sai_do_ambiente_antes_das_duas_chamadas(self):
+        visto = []
+        api = ApiFalsa(resposta([no()]), resposta([no()]))
+
+        def espiao(req, timeout=None):
+            visto.append('ACHADINHOS_SHOPEE_SECRET' in os.environ)
+            return api(req, timeout)
+        self.assertEqual(self.rodar(['conferir', '--por-item'], api=espiao)[0], 0)
+        self.assertEqual(visto, [False, False])
+
+    def test_subprocesso_com_falha_na_segunda_chamada_nao_imprime_o_secret(self):
+        """Script de verdade, sem rede: a busca responde, o dono confere e a consulta por item levanta com o Secret."""
+        codigo = ('import io, json, os, sys, urllib.error, http.client; sys.path.insert(0, %r); import coletar_shopee as C\n'
+                  'SEG = os.environ["ACHADINHOS_SHOPEE_SECRET"]\n'
+                  'C.ID_AFILIADO_SHOPEE = %r; C.pausa = lambda *a, **k: None\n'
+                  'fila = [json.dumps(%r).encode()]\n'
+                  'def api(req, timeout=None):\n'
+                  '    if fila: return io.BytesIO(fila.pop(0))\n'
+                  '    raise OSError(SEG)\n'
+                  'def conf(req, timeout=None):\n'
+                  '    h = http.client.HTTPMessage(); h["Location"] = %r\n'
+                  '    raise urllib.error.HTTPError(req.full_url, 302, SEG, h, io.BytesIO(b""))\n'
+                  'def urlopen(*a, **k): raise OSError(SEG)\n'
+                  'import urllib.request; urllib.request.urlopen = urlopen\n'
+                  'C.OPENER_API.open = api; C.OPENER_CONFERENCIA.open = conf\n'
+                  'sys.exit(C.main(["conferir", "--por-item"]))\n') % (RAIZ, ID, resposta([no()]), DESTINO_BOM)
+        r = subprocess.run([sys.executable, '-c', codigo], env=dict(os.environ, **ENV), cwd=TMP,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f'afiliado {ID}', r.stdout)
+        self.assertIn('ERRO: OSError', r.stderr)
+        self.assertNotIn(SECRET, r.stdout + r.stderr)
+        self.assertNotIn('Traceback', r.stderr)
+
+
 class TestConfiguracao(Base):
     def test_id_vazio_sai_com_2_sem_chamar_a_api(self):
         for id_ in ('', 'abc', ' 123'):
@@ -729,6 +1131,7 @@ class TestSegredo(Base):
                    'urllib.request.urlopen = f; C.OPENER_API.open = f; C.OPENER_CONFERENCIA.open = f\n') % RAIZ
         casos = [("C.ID_AFILIADO_SHOPEE = ''", ['conferir'], 2),
                  (f"C.ID_AFILIADO_SHOPEE = '{ID}'", ['conferir'], 1),
+                 (f"C.ID_AFILIADO_SHOPEE = '{ID}'", ['conferir', '--por-item'], 1),
                  (f"C.ID_AFILIADO_SHOPEE = '{ID}'", ['buscas', '--cat', CAT], 1)]
         for ajuste, argv, esperado in casos:
             with self.subTest(argv=argv, ajuste=ajuste):
@@ -763,6 +1166,60 @@ class TestSegredo(Base):
                 self.assertNotIn(SECRET, r.stdout + r.stderr)
                 self.assertNotIn('Traceback', r.stderr)
         self.assertFalse(os.path.exists(C.FEITOS))
+
+
+class TestProtegerProcesso(Base):
+    """S1 da rodada 1: o /proc/<pid>/environ fechado antes de ler o Secret (prova em subprocesso no
+    test_atualizar_precos.py, TestProcessoProtegido)."""
+
+    def test_chama_o_prctl_certo(self):
+        chamadas = []
+
+        class Libc:
+            def prctl(self, *a):
+                chamadas.append(a)
+                return 0
+        with mock.patch('ctypes.CDLL', return_value=Libc()) as cdll:
+            self.assertIs(C.proteger_processo(), True)
+        cdll.assert_called_once_with(None, use_errno=True)
+        self.assertEqual(chamadas, [(4, 0, 0, 0, 0)])   # PR_SET_DUMPABLE = 0
+
+    def test_falha_devolve_falso_sem_levantar(self):
+        class Recusa:
+            def prctl(self, *a):
+                return -1
+        for efeito in ({'side_effect': OSError('sem libc')}, {'side_effect': AttributeError('prctl')},
+                       {'return_value': Recusa()}, {'return_value': object()}):
+            with self.subTest(efeito=str(efeito)), mock.patch('ctypes.CDLL', **efeito):
+                self.assertIs(C.proteger_processo(), False)
+
+    def test_protege_antes_de_ler_a_credencial_em_conferir_e_buscas(self):
+        for argv in (['conferir'], ['conferir', '--por-item'], ['buscas', '--cat', CAT]):
+            with self.subTest(argv=argv):
+                eventos, credenciais = [], C.credenciais
+
+                def ler():
+                    eventos.append(('credencial', 'ACHADINHOS_SHOPEE_SECRET' in os.environ))
+                    return credenciais()
+                with mock.patch.object(C, 'proteger_processo', lambda: eventos.append(('protege', None)) or True), \
+                        mock.patch.object(C, 'credenciais', ler):
+                    self.rodar(argv)
+                self.assertEqual(eventos, [('protege', None), ('credencial', True)])
+
+    def test_importar_nao_protege_porque_nao_le_o_secret(self):
+        with mock.patch.object(C, 'proteger_processo', side_effect=AssertionError('importar não lê o Secret')):
+            codigo, _, _ = self.rodar(['importar', os.path.join(TMP, 'nao-existe.json')])
+        self.assertEqual(codigo, 2)
+
+    def test_sem_protecao_segue_com_aviso_fixo(self):
+        with mock.patch.object(C, 'proteger_processo', return_value=False):
+            codigo, out, err = self.rodar(['conferir'], api=ApiFalsa(resposta([no()])))
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(err.strip(), C.AVISO_PROCESSO)
+        self.assertTrue(C.AVISO_PROCESSO.startswith('AVISO: '))
+        with mock.patch.object(C, 'proteger_processo', return_value=True):
+            codigo, _, err = self.rodar(['conferir'], api=ApiFalsa(resposta([no()])))
+        self.assertEqual((codigo, err), (0, ''))
 
 
 MARCA = 'CONTEUDO-DO-ARQUIVO-4e1b'   # vai no arquivo do importar: nunca pode aparecer na saída

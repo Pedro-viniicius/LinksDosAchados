@@ -19,6 +19,9 @@ Ambiente:
       access_token precisa ser renovado. Lido com pop (sai do ambiente do processo) e guardado num Segredo;
       vai só no corpo do POST /oauth/token ao host fixo. Num terminal só para isso, sem export:
         read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py autorizar; unset S
+      Antes de lê-lo (todos os subcomandos menos o `sair`), `proteger_processo()` fecha o /proc/<pid>/environ para os
+      outros processos do usuário: o pop não apaga o Secret dali, e o `autorizar` espera o dono colar o endereço; se
+      o sistema recusar, o comando segue com um AVISO.
   ACHADINHOS_ML_TOKENS  arquivo dos tokens (padrão ml_tokens.json ao lado deste arquivo, no .gitignore).
   ACHADINHOS_DB  banco de onde o `sondar` lê 3 ids MLB (e o `sondar --catalogo`, a amostra), em modo só leitura
       (como no servidor.py).
@@ -735,6 +738,22 @@ def montar_url(caminho, params=None):
 
 
 # ---------- ambiente ----------
+AVISO_PROCESSO = ('AVISO: o sistema não deixou fechar o /proc/<pid>/environ deste processo; outro processo do seu '
+                  'usuário pode ler o ambiente (com o Secret) enquanto o comando durar.')
+
+
+def proteger_processo():
+    """PR_SET_DUMPABLE = 0 (o mesmo do coletar_shopee.py e do tools/garimpo_feminino/garimpo.py; cópia para este módulo
+    não importar outro do projeto): outro processo do mesmo usuário não lê o /proc/<pid>/environ, onde o Secret fica até
+    o fim do comando (o pop só tira do os.environ). Chame antes de ler o Secret. True se o sistema aceitou; False em
+    qualquer falha (fora do Linux, por exemplo), sem levantar."""
+    try:
+        import ctypes
+        return ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0
+    except (ImportError, OSError, AttributeError):
+        return False
+
+
 def ler_segredo():
     """Segredo do ambiente (pop: sai do os.environ do processo), ou None se faltar."""
     valor = os.environ.pop('ACHADINHOS_ML_SECRET', '') or ''
@@ -1834,6 +1853,8 @@ def main(argv=None):
     try:
         if args.comando == 'sair':
             return sair(TOKENS)
+        if not proteger_processo():   # antes de ler o Secret (o autorizar espera o dono colar o endereço)
+            print(AVISO_PROCESSO, file=sys.stderr, flush=True)
         if args.comando == 'autorizar':
             return autorizar(TOKENS, ler_segredo())
         sessao = sessao_do_ambiente()

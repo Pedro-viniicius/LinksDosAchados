@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Testes do atualizar_precos.py (docs/produto/planos/atualizar-precos.md, etapa 4: CA2, CA4, CA5, CA10 e CA11).
+"""Testes do atualizar_precos.py (docs/produto/planos/atualizar-precos.md, etapa 4: CA2, CA4, CA5, CA10 e CA11;
+a fonte da Shopee por item, docs/produto/planos/atualizar-precos-shopee-por-item.md, etapa 2: CA1 a CA5).
 
 Uso:  python3 testes/test_atualizar_precos.py -v
 
 ACHADINHOS_DB e os três arquivos de progresso (ACHADINHOS_FEITOS da coleta da Amazon,
 ACHADINHOS_FEITOS_SHOPEE e ACHADINHOS_FEITOS_ATUALIZAR) apontam para um diretório temporário antes do
 import. O buscas.json do teste também é temporário. `coletar_amazon.baixar`,
-`servidor.buscar_produto_amazon`, `coletar_shopee.buscar` e `coletar_shopee.destino` são falsos, e os
-openers de verdade (urlopen, OPENER_AMAZON, OPENER_API, OPENER_CONFERENCIA) levantam erro: nenhum teste
+`servidor.buscar_produto_amazon`, `coletar_shopee.buscar_item` e `coletar_shopee.destino` são falsos (a busca por
+termo, `coletar_shopee.buscar`, reprova se for chamada), e os openers de verdade (urlopen, OPENER_AMAZON,
+OPENER_API, OPENER_CONFERENCIA) levantam erro: nenhum teste
 acessa a Amazon, a Shopee, o achadinhos.db real ou os arquivos de progresso reais. Qualquer saída
 acidental para a rede bate num proxy morto. As credenciais são marcadores falsos.
 """
@@ -20,11 +22,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from unittest import mock
+
+
+def ids_do_corpo(corpo):
+    """(shopId, itemId) das variáveis da consulta por item. Exige texto só de dígitos (Int64: número JSON dá 10010)."""
+    v = corpo['variables']
+    if not all(isinstance(v.get(k), str) and re.fullmatch(r'[0-9]+', v[k], re.A) for k in ('shopId', 'itemId')):
+        return None
+    return int(v['shopId']), int(v['itemId'])
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix='teste-atualizar-precos-')
@@ -62,6 +73,7 @@ DESTINO_BOM = f'https://shopee.com.br/product/1/2?utm_source=an_{ID}&utm_medium=
 DESTINO_RUIM = 'https://shopee.com.br/product/1/2?utm_source=an_99999999999&utm_medium=affiliates'
 FOTO = 'https://down-br.img.susercontent.com/file/br-11134207-abc'
 ENV_SHOPEE = {'ACHADINHOS_SHOPEE_APP_ID': APP_ID, 'ACHADINHOS_SHOPEE_SECRET': SECRET}
+BUSCAR_ITEM = CS.buscar_item   # o de verdade, guardado antes de qualquer mock
 
 
 def tearDownModule():
@@ -534,11 +546,12 @@ class TestFonteFalsa(Base):
         self.assertNotIn('http', out)
 
     def test_fontes_tem_as_tres_lojas(self):
-        self.assertEqual(A.FONTES, {'amazon': A.fonte_amazon_busca, 'shopee': A.fonte_shopee_api,
+        self.assertEqual(A.FONTES, {'amazon': A.fonte_amazon_busca, 'shopee': A.fonte_shopee_item,
                                     'ml': A.fonte_ml_catalogo})
+        self.assertFalse(hasattr(A, 'fonte_shopee_api'), 'a busca por termo saiu do atualizar (sem fallback)')
 
 
-# ---------- Shopee pela Open API (CA4, CA5) ----------
+# ---------- Shopee pela Open API, por item (plano atualizar-precos-shopee-por-item: CA1 a CA5) ----------
 def no(item, **k):
     base = {'itemId': item, 'shopId': 112233, 'productName': 'Perfume Floral 100ml', 'priceMin': '1234.5',
             'priceDiscountRate': 20, 'ratingStar': '4.8', 'sales': 1234, 'imageUrl': FOTO, 'offerLink': LINK_B}
@@ -547,50 +560,443 @@ def no(item, **k):
 
 
 class TestShopee(Base):
+    """Fonte da Shopee por item (plano atualizar-precos-shopee-por-item, etapa 2): CS.buscar_item falso, nós por id."""
+    IDS = ('112233.1001', '112233.1002', '112233.1003', '112233.1004', '112233.1005')
+
     def setUp(self):
         super().setUp()
-        for n in (1001, 1002, 1003, 1004, 1005):
-            self.inserir('shopee', f'112233.{n}', 'Perfume Floral')
-        self.nos = [no(1001), no(1002, productName='Perfume Floral Seminovo'), no(1003, ratingStar='4.2'),
-                    no(1004, priceMin=None), no(1005, offerLink='https://shopee.com.br/produto-1005'), no(9999)]
-        self.chamadas, self.destinos = [], []
+        for iid in self.IDS:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        con = S.conectar()   # dados do banco que a fonte não pode trocar (só preço, preço antigo e desconto mudam)
+        con.execute("UPDATE items SET avaliacao='4,9 de 5 estrelas', vendas='9.999 vendidos', imagem=?, "
+                    "cupom='CUPOM10', preco_antigo='R$ 60,00', desconto='-17%'", (FOTO + '-banco',))
+        con.commit()
+        con.close()
+        # 1001 ok; 1002 usado; 1003 fora do piso; 1004 sem preço; 1005 a API não achou (lista vazia)
+        self.respostas = {'112233.1001': [no(1001)], '112233.1002': [no(1002, productName='Perfume Floral Seminovo')],
+                          '112233.1003': [no(1003, ratingStar='4.2')], '112233.1004': [no(1004, priceMin=None)],
+                          '112233.1005': []}
+        self.chamadas, self.destinos, self.efeitos = [], [], {}
         self.destino = DESTINO_BOM
 
-        def buscar(cred, termo, ordem):
-            self.chamadas.append((termo, ordem))
+        def buscar_item(cred, shop, item):
+            self.chamadas.append(f'{shop}.{item}')
             self.assertEqual(cred[1].valor(), SECRET)
-            if isinstance(self.nos, Exception):
-                raise self.nos
-            return self.nos
+            self.assertIsInstance(shop, str)
+            if f'{shop}.{item}' in self.efeitos:
+                self.efeitos[f'{shop}.{item}']()
+            r = self.respostas.get(f'{shop}.{item}', [])
+            if isinstance(r, Exception):
+                raise r
+            return r
 
         def destino(link):
-            self.destinos.append((link, self.linha('112233.1001')['preco']))
+            linha = self.linha('112233.1001')
+            self.destinos.append((link, linha and linha['preco']))
             return self.destino
-        for nome, novo in (('buscar', buscar), ('destino', destino)):
+        for nome, novo in (('buscar_item', buscar_item), ('destino', destino),
+                           ('buscar', mock.Mock(side_effect=AssertionError('a busca por termo saiu do atualizar')))):
             p = mock.patch.object(CS, nome, novo)
             p.start()
             self.addCleanup(p.stop)
+
+    def rotulos(self, *ids):
+        return [f'shopee|{A.hoje()}|item|{iid}' for iid in ids]
+
+    def tentados(self, *ids, dia=None):
+        return [f'shopee|{dia or A.hoje()}|tentado|{iid}' for iid in ids]
 
     def test_atualiza_com_o_dono_conferido_antes_e_tira_o_secret_do_ambiente(self):
         antes = self.todas()
         codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
         self.assertEqual(codigo, 0, err)
         self.assertIsNone(self.secret_no_ambiente)   # pop
-        self.assertEqual(self.chamadas, [('Perfume Floral', 'relevancia')])
-        self.assertEqual(self.destinos, [(LINK_B, 'R$ 50,00')])   # conferido antes de gravar
-        a = self.linha('112233.1001')
-        self.assertEqual((a['preco'], a['desconto']), ('R$ 1.234,50', '-20%'))
+        self.assertEqual(self.chamadas, list(self.IDS))   # cada selecionado uma vez, pelo id
+        self.assertEqual(self.pausas, [('shopee', 1, 3)] * 4)   # entre as chamadas, não antes da primeira
+        self.assertEqual(self.destinos, [(LINK_B, 'R$ 50,00')])   # conferido uma vez, antes de gravar
+        a, b = self.linha('112233.1001'), antes['112233.1001']
+        self.assertEqual((a['preco'], a['preco_antigo'], a['desconto']), ('R$ 1.234,50', '', '-20%'))
         self.assertTrue(a['preco_em'].startswith(hoje()))
-        self.assertEqual(a['url'], LINK_A)   # o link de afiliado gravado não muda
+        for campo in ('url', 'titulo', 'avaliacao', 'num_avaliacoes', 'vendas', 'frete', 'cupom', 'imagem', 'cat',
+                      'busca', 'criado_em'):
+            self.assertEqual(a[campo], b[campo], campo)   # link e dados do banco ficam; só o preço muda
         depois = self.todas()
-        for iid in ('112233.1002', '112233.1003', '112233.1004', '112233.1005'):
-            self.assertEqual(depois[iid], antes[iid], iid)
-        self.assertNotIn('112233.9999', depois)
-        self.assertEqual(self.progresso(), [f'shopee|{A.hoje()}|relevancia|Perfume Floral'])
+        for iid in self.IDS[1:]:
+            self.assertEqual(depois[iid], antes[iid], iid)   # usado, piso, sem preço e indisponível não gravam
+        self.assertEqual(len(depois), len(antes))
+        # o 1005 (resposta vazia) é "tentado": consultado sem o produto pedido
+        self.assertEqual(self.progresso(), self.rotulos(*self.IDS[:4]) + self.tentados('112233.1005'))
+        self.assertFalse(os.path.exists(CS.FEITOS), 'não lê nem grava o progresso da coleta')
         self.assertIn('1 atualizados, 1 sem preço legível (dados mantidos), 1 fora do piso, 1 usados, '
                       '1 indisponíveis, 0 sumidos, 0 não vistos', out)
         self.assertNotIn(SECRET, out + err)
         self.assertNotIn('http', out + err)
+        self.assertNotIn('Perfume', out + err)
+
+    def test_o_mais_velho_e_consultado_primeiro(self):
+        idades = {'112233.1001': '2026-03-01T00:00:00', '112233.1002': None, '112233.1003': 'lixo',
+                  '112233.1004': '2026-01-01T00:00:00', '112233.1005': '2026-02-01T00:00:00'}
+        con = S.conectar()
+        con.executemany('UPDATE items SET preco_em=? WHERE item_id=?', [(v, k) for k, v in idades.items()])
+        con.commit()
+        con.close()
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
+        # nulo e malformado são velhos para a trava: vêm primeiro
+        self.assertEqual(self.chamadas, ['112233.1002', '112233.1003', '112233.1004', '112233.1005', '112233.1001'])
+
+    def test_so_vale_o_no_do_id_pedido(self):
+        # a resposta do 1001 traz antes o 1002 (também selecionado) com outro preço: não pode gravar no 1002
+        self.respostas['112233.1001'] = [no(1002, priceMin='1.00'), no(9999), no(1001), no(1001, priceMin='7.00')]
+        self.respostas['112233.1002'] = [no(1002, shopId=445566, priceMin='2.00')]   # mesmo itemId, outra loja
+        antes = self.todas()
+        codigo, out, _ = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.linha('112233.1001')['preco'], 'R$ 1.234,50')   # o primeiro nó casado
+        self.assertEqual(self.linha('112233.1002'), antes['112233.1002'])
+        self.assertNotIn(self.rotulos('112233.1002')[0], self.progresso())   # outro produto: não visto
+        self.assertIn(self.tentados('112233.1002')[0], self.progresso())
+        self.assertIn('1 não vistos', out)
+
+    def test_releitura_mantem_o_que_o_site_mudou_no_meio_da_rodada(self):
+        def site_muda():
+            con = S.conectar()
+            con.execute("UPDATE items SET titulo='Título do site', cupom='CUPOM-SITE' WHERE item_id='112233.1001'")
+            con.commit()
+            con.close()
+        self.efeitos['112233.1001'] = site_muda
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
+        a = self.linha('112233.1001')
+        self.assertEqual((a['titulo'], a['cupom'], a['preco']), ('Título do site', 'CUPOM-SITE', 'R$ 1.234,50'))
+
+    def test_item_excluido_no_meio_da_rodada_nao_e_reinserido(self):
+        def excluir():
+            con = S.conectar()
+            con.execute("DELETE FROM items WHERE item_id='112233.1001'")
+            con.commit()
+            con.close()
+        self.efeitos['112233.1001'] = excluir
+        codigo, out, _ = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0)
+        self.assertIsNone(self.linha('112233.1001'))
+        self.assertIn('1 sumidos', out)
+
+    def test_dono_errado_nada_e_gravado(self):
+        self.destino = DESTINO_RUIM
+        antes = self.todas()
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 1)
+        self.assertIn('Nada foi gravado', err)
+        self.assertEqual(self.chamadas, ['112233.1001'])   # para no primeiro ok
+        self.assertEqual(self.todas(), antes)
+        self.assertEqual(self.progresso(), [])
+
+    def test_dono_conferido_no_primeiro_ok_mesmo_depois_de_outros_itens(self):
+        self.respostas['112233.1001'] = []
+        self.respostas['112233.1003'] = [no(1003)]
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
+        self.assertEqual(self.destinos, [(LINK_B, 'R$ 50,00')])
+        self.assertEqual(self.linha('112233.1003')['preco'], 'R$ 1.234,50')
+
+    def test_limite_da_api_sai_com_3_imprime_o_resumo_e_retoma(self):
+        self.respostas['112233.1003'] = CS.LimiteAtingido()
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 3)
+        self.assertIn('PAROU: a loja bloqueou', err)
+        self.assertIn('RESUMO shopee', out)
+        self.assertEqual(self.linha('112233.1001')['preco'], 'R$ 1.234,50')   # o já gravado fica
+        self.assertEqual(self.progresso(), self.rotulos('112233.1001', '112233.1002'))
+        # mesmo dia: 1001 saiu da seleção (preco_em de hoje) e 1002 está marcado
+        self.respostas['112233.1003'] = [no(1003, ratingStar='4.2')]
+        self.chamadas.clear()
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
+        self.assertEqual(self.chamadas, ['112233.1003', '112233.1004', '112233.1005'])
+
+    def test_10030_e_429_pela_requisicao_de_verdade_saem_com_3(self):
+        pedidos = []
+
+        def abrir(resposta):
+            def open_(req, timeout=None):
+                pedidos.append(req)
+                if isinstance(resposta, Exception):
+                    raise resposta
+                return io.BytesIO(json.dumps(resposta).encode())
+            return open_
+        casos = (('10030', abrir({'errors': [{'message': 'limite', 'extensions': {'code': 10030}}]})),
+                 ('429', abrir(urllib.error.HTTPError(CS.URL_API, 429, 'x', {}, io.BytesIO(b'{}')))))
+        for nome, open_ in casos:
+            with self.subTest(nome):
+                pedidos.clear()
+                with mock.patch.object(CS, 'buscar_item', BUSCAR_ITEM), mock.patch.object(CS.OPENER_API, 'open', open_):
+                    codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+                self.assertEqual(codigo, 3)
+                self.assertIn('PAROU', err)
+                self.assertIn('RESUMO shopee', out)
+                self.assertEqual(len(pedidos), 1)
+                self.assertEqual(self.progresso(), [])
+
+    def test_requisicao_de_verdade_leva_os_ids_como_inteiros_e_nao_o_secret(self):
+        pedidos = []
+
+        def open_(req, timeout=None):
+            pedidos.append(req)
+            corpo = json.loads(req.data)
+            nos = [no(ids_do_corpo(corpo)[1])]
+            return io.BytesIO(json.dumps({'data': {'productOfferV2': {'nodes': nos}}}).encode())
+        with mock.patch.object(CS, 'buscar_item', BUSCAR_ITEM), mock.patch.object(CS.OPENER_API, 'open', open_):
+            codigo, out, err = self.rodar(['shopee', '--cat', CAT, '--max-chamadas', '1'], ENV_SHOPEE)
+        self.assertEqual(codigo, 3, err)   # 5 itens, teto 1
+        self.assertEqual(len(pedidos), 1)
+        req = pedidos[0]
+        self.assertEqual(req.full_url, CS.URL_API)
+        self.assertEqual(json.loads(req.data)['variables'], {'shopId': '112233', 'itemId': '1001', 'page': 1,
+                                                             'limit': CS.POR_ITEM})
+        self.assertEqual(ids_do_corpo(json.loads(req.data)), (112233, 1001))
+        self.assertNotIn(SECRET, req.data.decode() + repr(req.header_items()))
+        self.assertEqual(self.linha('112233.1001')['preco'], 'R$ 1.234,50')
+
+    def test_teto_sai_com_3_e_a_rodada_seguinte_pula_os_marcados(self):
+        self.respostas['112233.1001'] = [no(1001, ratingStar='4.0')]   # marcado, mas não atualizado
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT, '--max-chamadas', '2'], ENV_SHOPEE)
+        self.assertEqual(codigo, 3)
+        self.assertIn('PAROU: chegou ao teto de chamadas (--max-chamadas)', err)
+        self.assertIn('[shopee] parou no teto de 2 chamadas (--max-chamadas); rode de novo para seguir.', out)
+        self.assertIn('RESUMO shopee', out)
+        self.assertEqual(self.chamadas, ['112233.1001', '112233.1002'])
+        self.assertEqual(self.progresso(), self.rotulos('112233.1001', '112233.1002'))
+        self.chamadas.clear()
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT, '--max-chamadas', '2'], ENV_SHOPEE)[0], 3)
+        self.assertEqual(self.chamadas, ['112233.1003', '112233.1004'])
+        self.chamadas.clear()
+        # teto igual ao que falta: termina sem bloqueio
+        codigo, out, _ = self.rodar(['shopee', '--cat', CAT, '--max-chamadas', '1'], ENV_SHOPEE)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.chamadas, ['112233.1005'])
+        self.assertIn('(0 já confirmados hoje ficaram de fora)', out)
+        self.assertEqual(self.progresso(), self.rotulos(*self.IDS[:4]) + self.tentados('112233.1005'))
+
+    def test_cinco_divergentes_sem_casado_saem_com_1(self):
+        self.inserir('shopee', '112233.1006', 'Perfume Floral')
+        self.respostas = {iid: [no(9999)] for iid in self.IDS + ('112233.1006',)}
+        antes = self.todas()
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 1)
+        self.assertEqual(err.strip(), 'PAROU: a API não filtrou pelo item; rode coletar_shopee.py conferir --por-item. '
+                                      '(5 respostas seguidas só com outros produtos.) Nada foi gravado nesta rodada.')
+        self.assertEqual(len(self.chamadas), A.DIVERGENTES_PARA_PARAR)   # o sexto não gasta cota
+        self.assertEqual(self.todas(), antes)
+        self.assertEqual(self.progresso(), self.tentados(*self.IDS))   # marcados antes da parada
+        self.assertEqual(self.destinos, [])
+
+    def test_divergentes_depois_de_um_casado_nao_param(self):
+        self.inserir('shopee', '112233.1006', 'Perfume Floral')
+        self.respostas = {iid: [no(9999)] for iid in self.IDS[1:] + ('112233.1006',)}
+        self.respostas['112233.1001'] = [no(1001)]
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.chamadas), 6)
+        # divergente é marcado como tentado (não repete hoje e, em outro dia, vai para o fim da fila)
+        self.assertEqual(self.progresso(), self.rotulos('112233.1001') + self.tentados(*self.IDS[1:], '112233.1006'))
+        self.assertIn('[shopee] 5 itens: a API devolveu outros produtos (não vistos).', out)
+        self.assertIn('1 atualizados', out)
+        self.assertIn('5 não vistos', out)
+
+    def test_quatro_divergentes_e_um_vazio_nao_param(self):
+        self.respostas = {iid: [no(9999)] for iid in self.IDS[:4]}
+        self.respostas['112233.1005'] = []
+        codigo, out, _ = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0)
+        self.assertIn('1 indisponíveis', out)
+        self.assertIn('4 não vistos', out)
+
+    # ---------- R1/Q2/Q3/S2 da rodada 1: tentados sem sucesso não travam a fila nem disparam a parada ----------
+    def amanha(self):
+        return (datetime.now() + timedelta(days=1)).date().isoformat()
+
+    def test_divergentes_persistentes_nao_travam_as_rodadas_seguintes(self):
+        """A prova do revisor: 2 itens que casam e 5 que a API responde com outro produto (filtro funcionando).
+        Rodada 1, rodada 2 no mesmo dia e rodada 3 no dia seguinte: nenhuma para com "não filtrou"."""
+        con = S.conectar()
+        con.execute('DELETE FROM items')
+        con.commit()
+        con.close()
+        bons = ['112233.1001', '112233.1002']
+        ruins = [f'112233.{n}' for n in range(2001, 2006)]
+        for iid in bons + ruins:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        self.respostas = {iid: [no(int(iid.split('.')[1]))] for iid in bons}
+        self.respostas.update({iid: [no(9999)] for iid in ruins})
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(self.chamadas, bons + ruins)
+        self.assertIn('2 atualizados', out)
+        self.chamadas.clear()
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)   # mesmo dia
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(self.chamadas, [], 'os 5 já foram tentados hoje')
+        self.chamadas.clear()
+        with mock.patch.object(A, 'hoje', return_value=self.amanha()):   # dia seguinte: os bons ficam de ontem
+            codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(self.chamadas, bons + ruins, 'os tentados vão para o fim da fila')
+        self.assertNotIn('não filtrou', err)
+
+    def test_tentados_no_comeco_da_fila_nao_disparam_a_parada(self):
+        """Os 5 divergentes têm o preço mais velho (seriam os primeiros): tentados ontem, vão para o fim."""
+        ontem = (datetime.now() - timedelta(days=1)).date().isoformat()
+        con = S.conectar()
+        con.execute('DELETE FROM items')
+        con.commit()
+        con.close()
+        ruins = [f'112233.{n}' for n in range(1001, 1007)]
+        for iid in ruins:
+            self.inserir('shopee', iid, 'Perfume Floral', preco_em='2026-01-01T08:00:00')
+        self.inserir('shopee', '112233.3001', 'Perfume Floral', preco_em='2026-02-01T08:00:00')
+        self.respostas = {iid: [no(9999)] for iid in ruins}
+        self.respostas['112233.3001'] = [no(3001)]
+        with open(A.FEITOS, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.tentados(*ruins, dia=ontem)) + '\n')
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(self.chamadas, ['112233.3001'] + ruins)
+        # sem nenhum casado e só com tentados, também não para (eles não contam)
+        self.chamadas.clear()
+        with mock.patch.object(A, 'hoje', return_value=self.amanha()):
+            self.respostas['112233.3001'] = []
+            con = S.conectar()
+            con.execute("UPDATE items SET preco_em='2026-02-01T08:00:00' WHERE item_id='112233.3001'")
+            con.commit()
+            con.close()
+            codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.chamadas), 7)
+
+    def test_tentado_antes_do_ultimo_preco_volta_para_a_fila_normal(self):
+        """Tentado sem sucesso em 05/01, mas com preço confirmado depois (10/01): conta como item novo."""
+        self.respostas = {iid: [no(9999)] for iid in self.IDS}
+        with open(A.FEITOS, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.tentados(*self.IDS, dia='2026-01-05')) + '\n')
+        codigo, _, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)   # preco_em de todos: 10/01
+        self.assertEqual(codigo, 1)
+        self.assertIn('a API não filtrou pelo item', err)
+        # tentado no mesmo dia do preço (ou depois) ainda conta como tentado sem sucesso
+        os.remove(A.FEITOS)
+        with open(A.FEITOS, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.tentados(*self.IDS, dia=ANTIGO[:10])) + '\n')
+        self.chamadas.clear()
+        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
+        self.assertEqual(len(self.chamadas), 5)
+
+    def test_tentado_com_preco_em_nulo_ou_malformado_tambem_vai_para_o_fim(self):
+        """Sem preço legível, o item nunca teve preço confirmado: qualquer tentativa conta (e eles viriam primeiro)."""
+        ontem = (datetime.now() - timedelta(days=1)).date().isoformat()
+        self.respostas = {iid: [no(9999)] for iid in self.IDS}
+        self.inserir('shopee', '112233.3001', 'Perfume Floral')
+        self.respostas['112233.3001'] = [no(3001)]
+        con = S.conectar()
+        con.executemany('UPDATE items SET preco_em=? WHERE item_id=?',
+                        [(v, k) for k, v in zip(self.IDS, (None, '', 'lixo', None, '2026-02-30T00:00:00'))])
+        con.commit()
+        con.close()
+        with open(A.FEITOS, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(self.tentados(*self.IDS, dia=ontem)) + '\n')
+        codigo, _, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(self.chamadas[0], '112233.3001')
+        self.assertEqual(sorted(self.chamadas[1:]), sorted(self.IDS))
+
+    def test_erro_geral_persistente_num_item_nao_trava_as_rodadas_seguintes(self):
+        veneno = '112233.1001'   # o mais velho: o primeiro da fila
+        for erro in (CS.ErroApi(11001, 200), CS.RespostaInvalida()):
+            with self.subTest(type(erro).__name__):
+                if os.path.exists(A.FEITOS):
+                    os.remove(A.FEITOS)
+                con = S.conectar()
+                con.execute('UPDATE items SET preco_em=?', (ANTIGO,))
+                con.commit()
+                con.close()
+                self.chamadas.clear()
+                self.respostas = {iid: [no(int(iid.split('.')[1]))] for iid in self.IDS}
+                self.respostas[veneno] = erro
+                self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 1)
+                self.assertEqual(self.chamadas, [veneno])
+                self.chamadas.clear()
+                codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)   # mesmo dia: passa por ele
+                self.assertEqual(codigo, 0, err)
+                self.assertEqual(self.chamadas, list(self.IDS[1:]))
+                self.assertIn('4 atualizados', out)
+                self.chamadas.clear()
+                with mock.patch.object(A, 'hoje', return_value=self.amanha()):   # outro dia: ele vai para o fim
+                    self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 1)
+                self.assertEqual(self.chamadas, list(self.IDS[1:]) + [veneno])
+                self.assertEqual(self.linha('112233.1005')['preco_em'][:10], datetime.now().date().isoformat())
+
+    def test_so_respostas_vazias_param_sem_gastar_a_cota(self):
+        con = S.conectar()
+        con.execute('DELETE FROM items')
+        con.commit()
+        con.close()
+        ids = [f'1.{n}' for n in range(100, 140)]
+        for iid in ids:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        self.respostas = {}   # todas vazias
+        antes = self.todas()
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 1)
+        self.assertEqual(err.strip(), 'PAROU: a API não filtrou pelo item; rode coletar_shopee.py conferir --por-item. '
+                                      '(20 respostas seguidas sem o produto pedido (vazias, com outros produtos ou com '
+                                      'erro do item).) Nada foi gravado nesta rodada.')
+        self.assertEqual(len(self.chamadas), A.SEM_PRODUTO_PARA_PARAR)
+        self.assertEqual(self.progresso(), self.tentados(*ids[:20]))
+        self.assertEqual(self.todas(), antes)
+
+    def test_vazios_divergentes_e_erros_do_item_somam_na_parada_sem_produto(self):
+        con = S.conectar()
+        con.execute('DELETE FROM items')
+        con.commit()
+        con.close()
+        ids = [f'1.{n}' for n in range(100, 125)]
+        for iid in ids:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        tipos = [[], [no(9999)], CS.SemProduto(), CS.ErroApi(10000, 200)]
+        self.respostas = {iid: tipos[i % 4] for i, iid in enumerate(ids) if i % 4 != 1 or i < 16}
+        codigo, _, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)   # 4 divergentes, nunca 5
+        self.assertEqual(codigo, 1)
+        self.assertIn('20 respostas seguidas sem o produto pedido', err)
+        self.assertEqual(len(self.chamadas), 20)
+
+    def test_um_casado_desliga_a_parada_sem_produto(self):
+        con = S.conectar()
+        con.execute('DELETE FROM items')
+        con.commit()
+        con.close()
+        ids = [f'1.{n}' for n in range(100, 130)]
+        for iid in ids:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        self.respostas = {ids[0]: [no(100, shopId=1, ratingStar='4.0')]}   # casado (fora do piso); o resto vazio
+        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0, err)
+        self.assertEqual(len(self.chamadas), 30)
+        self.assertIn('29 indisponíveis', out)
+
+    def test_tentativas_le_o_ultimo_dia_e_ignora_linha_fora_do_formato(self):
+        with open(A.FEITOS, 'w', encoding='utf-8') as f:
+            f.write('shopee|2026-01-02|tentado|1.2\nshopee|2026-01-05|tentado|1.2\nshopee|2026-01-03|tentado|1.2\n'
+                    'shopee|2026-01-09|item|1.3\nml|2026-01-09|tentado|1.4\nshopee|ontem|tentado|1.5\n'
+                    'shopee|2026-01-09|tentado|1.6|x\nshopee|2026-01-09|tentado\n\nshopee|2026-01-07|tentado|1.7\n')
+        self.assertEqual(A.tentativas('shopee'), {'1.2': '2026-01-05', '1.7': '2026-01-07'})
+        os.remove(A.FEITOS)
+        self.assertEqual(A.tentativas('shopee'), {})
+
+    def test_id_acima_do_int64_nao_vai_a_api(self):
+        grandes = (f'112233.{2**63}', f'{2**63}.1001', f'112233.{2**63 - 1}')
+        for iid in grandes:
+            self.inserir('shopee', iid, 'Perfume Floral')
+        codigo, out, _ = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(self.chamadas, list(self.IDS) + [f'112233.{2**63 - 1}'])   # o limite exato ainda vai
+        self.assertIn('[shopee] 2 itens com id acima do Int64 não foram à API (não vistos).', out)
+        self.assertIn('2 indisponíveis, 0 sumidos, 2 não vistos', out)   # o do limite foi à API (resposta vazia)
+        self.assertNotIn(f'112233.{2**63}', ''.join(self.progresso()))
 
     def test_secret_ausente_sai_com_2_sem_chamar_a_api(self):
         for env in ({'ACHADINHOS_SHOPEE_APP_ID': APP_ID}, {'ACHADINHOS_SHOPEE_SECRET': SECRET},
@@ -610,46 +1016,48 @@ class TestShopee(Base):
         self.assertEqual(codigo, 2)
         self.assertEqual(self.chamadas, [])
 
-    def test_dono_errado_nada_e_gravado(self):
-        self.destino = DESTINO_RUIM
-        antes = self.todas()
-        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
-        self.assertEqual(codigo, 1)
-        self.assertIn('Nada foi gravado', err)
-        self.assertEqual(self.todas(), antes)
-        self.assertEqual(self.progresso(), [])
-
-    def test_limite_da_api_sai_com_3(self):
-        self.nos = CS.LimiteAtingido()
-        codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
-        self.assertEqual(codigo, 3)
-        self.assertIn('PAROU', err)
-        self.assertIn('RESUMO shopee', out)
-
-    def test_erro_da_api_e_resposta_invalida_saem_com_1(self):
-        for erro, texto in ((CS.ErroApi(10020, 400), 'código 10020, HTTP 400'), (CS.RespostaInvalida(), 'fora do formato')):
+    def test_erro_geral_da_api_e_resposta_invalida_saem_com_1_e_marcam_o_item(self):
+        for erro, texto in ((CS.ErroApi(10020, 400), 'código 10020, HTTP 400'), (CS.ErroApi(10020, 200), 'código 10020'),
+                            (CS.ErroApi(11001, 200), 'código 11001'), (CS.ErroApi(10010), 'código 10010'),
+                            (CS.ErroApi(0, 200), 'código 0'), (CS.ErroApi(None, 503), 'HTTP 503'),
+                            (CS.ErroApi(10000, 500), 'código 10000, HTTP 500'), (CS.RespostaInvalida(), 'fora do formato')):
             with self.subTest(texto):
-                self.nos = erro
+                if os.path.exists(A.FEITOS):
+                    os.remove(A.FEITOS)
+                self.chamadas.clear()
+                self.respostas['112233.1001'] = erro
                 codigo, _, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
                 self.assertEqual(codigo, 1)
                 self.assertIn(texto, err)
+                self.assertEqual(self.chamadas, ['112233.1001'])
+                self.assertEqual(self.progresso(), self.tentados('112233.1001'))   # marcado antes de parar
+
+    def test_erro_do_item_marca_e_segue(self):
+        for erro in (CS.SemProduto(), CS.ErroApi(10000, 200), CS.ErroApi(11000), CS.ErroApi(99999, 200)):
+            with self.subTest(erro=repr(erro)):
+                if os.path.exists(A.FEITOS):
+                    os.remove(A.FEITOS)
+                con = S.conectar()
+                con.execute('UPDATE items SET preco_em=?', (ANTIGO,))
+                con.commit()
+                con.close()
+                self.chamadas.clear()
+                self.respostas['112233.1001'] = erro
+                self.respostas['112233.1003'] = [no(1003)]
+                codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+                self.assertEqual(codigo, 0, err)
+                self.assertEqual(self.chamadas, list(self.IDS))
+                self.assertIn(self.tentados('112233.1001')[0], self.progresso())
+                self.assertEqual(self.linha('112233.1003')['preco'], 'R$ 1.234,50')
+                self.assertIn('[shopee] 1 itens: a API recusou a consulta só daquele item (não vistos).', out)
+                self.assertIn('1 não vistos', out)
 
     def test_secret_nunca_sai_nem_em_excecao(self):
-        self.nos = RuntimeError(f'falhou com {SECRET}')
+        self.respostas['112233.1001'] = RuntimeError(f'falhou com {SECRET}')
         codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
         self.assertEqual(codigo, 1)
         self.assertEqual(err.strip(), 'ERRO: RuntimeError')
         self.assertNotIn(SECRET, out + err)
-
-    def test_usa_as_ordens_da_coleta_da_shopee(self):
-        with open(CS.FEITOS, 'w', encoding='utf-8') as f:
-            f.write('vendidos|Perfume Floral\ncaros|Perfume Floral\n')
-        self.nos = [no(1001)]
-        self.assertEqual(self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)[0], 0)
-        # vendidos deixou pendentes; caros também é lido; o termo seguinte não tem item
-        self.assertEqual(self.chamadas, [('Perfume Floral', 'vendidos'), ('Perfume Floral', 'caros')])
-        self.assertEqual(self.destinos, [(LINK_B, 'R$ 50,00')])   # uma conferência só
-        self.assertEqual(self.pausas, [('shopee', 1, 3)])
 
     def test_amazon_nao_le_o_secret(self):
         with mock.patch.object(C, 'baixar', side_effect=AssertionError('sem item da Amazon, sem busca')):
@@ -667,6 +1075,18 @@ class TestArgumentos(Base):
             with self.subTest(argv):
                 codigo, out, err = self.rodar(argv)
                 self.assertEqual(codigo, 2)
+
+    def test_limites_do_max_chamadas_da_shopee(self):
+        self.assertEqual(A.ler_argumentos(['shopee', '--cat', CAT]).max_chamadas, 1000)
+        self.assertEqual(A.ler_argumentos(['shopee', '--cat', CAT, '--max-chamadas', '5000']).max_chamadas, 5000)
+        self.assertEqual(A.ler_argumentos(['shopee', '--cat', CAT, '--max-chamadas', '1']).max_chamadas, 1)
+        # pelo argparse (sem chegar às credenciais, que também dariam 2)
+        for extra in (['--max-chamadas', '0'], ['--max-chamadas', '5001'], ['--max-chamadas', 'abc'],
+                      ['--max-chamadas', '-1'], ['--max-chamadas', '١'], ['--max-chamadas', ''], ['--vincular', '1']):
+            with self.subTest(extra), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as e:
+                    A.ler_argumentos(['shopee', '--cat', CAT] + extra)
+                self.assertEqual(e.exception.code, 2)
 
     def test_limites_do_produtos(self):
         self.assertEqual(A.ler_argumentos(['amazon', '--produtos', '500']).produtos, 500)
@@ -725,6 +1145,199 @@ sys.exit(A.main(['shopee', '--cat', {CAT!r}]))
         r = subprocess.run([sys.executable, '-c', 'import atualizar_precos as A; print(A.FEITOS)'],
                            cwd=TMP, env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.stdout.strip(), os.path.join(RAIZ, 'atualizar_precos_feitos.txt'))
+
+
+# ---------- S1 da rodada 1: /proc/<pid>/environ fechado durante a rodada (shopee, ml e ml_api.py) ----------
+class TestProtegeAntesDeLerOSecret(Base):
+    """Ordem e AVISO em processo; a prova de que outro processo não lê o ambiente fica no TestProcessoProtegido."""
+
+    def test_shopee_protege_antes_do_pop_e_avisa_se_o_sistema_recusar(self):
+        for aceitou in (True, False):
+            with self.subTest(aceitou=aceitou):
+                eventos, credenciais = [], CS.credenciais
+
+                def ler():
+                    eventos.append(('credencial', 'ACHADINHOS_SHOPEE_SECRET' in os.environ))
+                    return credenciais()
+                with mock.patch.object(CS, 'proteger_processo', lambda: eventos.append(('protege', None)) or aceitou), \
+                        mock.patch.object(CS, 'credenciais', ler):
+                    codigo, out, err = self.rodar(['shopee', '--cat', CAT], ENV_SHOPEE)
+                self.assertEqual(codigo, 0, err)   # sem item da Shopee no banco: termina sem chamar a API
+                self.assertEqual(eventos, [('protege', None), ('credencial', True)])
+                self.assertEqual(err.strip(), '' if aceitou else CS.AVISO_PROCESSO)
+                self.assertNotIn(SECRET, out + err)
+
+    def test_amazon_nao_protege(self):
+        with mock.patch.object(CS, 'proteger_processo', side_effect=AssertionError('a Amazon não lê Secret')), \
+                mock.patch.object(C, 'baixar', side_effect=AssertionError('sem item da Amazon, sem busca')):
+            self.assertEqual(self.rodar(['amazon'])[0], 0)
+
+    def test_ml_protege_antes_de_ler_o_secret_e_avisa_se_o_sistema_recusar(self):
+        import ml_api as M
+        for aceitou in (True, False):
+            with self.subTest(aceitou=aceitou):
+                eventos = []
+
+                class Sessao:
+                    def token(self):   # para antes de qualquer arquivo ou rede (saída 2)
+                        raise M.RefazerAutorizacao()
+
+                def sessao():
+                    eventos.append(('sessao', 'ACHADINHOS_ML_SECRET' in os.environ))
+                    return Sessao()
+                with mock.patch.object(M, 'proteger_processo', lambda: eventos.append(('protege', None)) or aceitou), \
+                        mock.patch.object(M, 'sessao_do_ambiente', sessao):
+                    codigo, out, err = self.rodar(['ml', '--cat', CAT], {'ACHADINHOS_ML_SECRET': SECRET})
+                self.assertEqual(codigo, 2)
+                self.assertEqual(eventos, [('protege', None), ('sessao', True)])
+                self.assertEqual(err.startswith(M.AVISO_PROCESSO), not aceitou, err)
+                self.assertNotIn(SECRET, out + err)
+
+    def test_ml_api_protege_antes_de_ler_o_secret_menos_no_sair(self):
+        import ml_api as M
+        for argv, comando in ((['autorizar'], 'autorizar'), (['conferir'], 'conferir'), (['sondar'], 'sondar'),
+                              (['sondar', '--catalogo'], 'sondar_catalogo'), (['sair'], 'sair')):
+            with self.subTest(argv=argv):
+                eventos = []
+
+                def ler():
+                    eventos.append(('secret', 'ACHADINHOS_ML_SECRET' in os.environ))
+                    os.environ.pop('ACHADINHOS_ML_SECRET', None)
+                    return None
+                falsos = {nome: (lambda *a, nome=nome, **k: eventos.append((nome, None)) or 0)
+                          for nome in ('autorizar', 'conferir', 'sondar', 'sondar_catalogo', 'sair')}
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.multiple(M, proteger_processo=lambda: eventos.append(('protege', None)) or False,
+                                         ler_segredo=ler, **falsos), \
+                        mock.patch.dict(os.environ, {'ACHADINHOS_ML_SECRET': SECRET}), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(M.main(argv), 0)
+                if comando == 'sair':
+                    self.assertEqual(eventos, [('sair', None)])
+                    self.assertEqual(err.getvalue(), '')
+                else:
+                    self.assertEqual(eventos, [('protege', None), ('secret', True), (comando, None)])
+                    self.assertEqual(err.getvalue().strip(), M.AVISO_PROCESSO)
+
+    def test_copia_do_ml_api_chama_o_prctl_certo_e_nao_levanta(self):
+        import ml_api as M
+        chamadas = []
+
+        class Libc:
+            def prctl(self, *a):
+                chamadas.append(a)
+                return 0
+        with mock.patch('ctypes.CDLL', return_value=Libc()) as cdll:
+            self.assertIs(M.proteger_processo(), True)
+        cdll.assert_called_once_with(None, use_errno=True)
+        self.assertEqual(chamadas, [(4, 0, 0, 0, 0)])
+        for efeito in ({'side_effect': OSError('sem libc')}, {'side_effect': AttributeError('prctl')},
+                       {'return_value': object()}):
+            with self.subTest(efeito=str(efeito)), mock.patch('ctypes.CDLL', **efeito):
+                self.assertIs(M.proteger_processo(), False)
+        self.assertEqual(M.AVISO_PROCESSO, CS.AVISO_PROCESSO)
+
+
+# Sem rede: o leitor do Secret (já com o pop feito) avisa "PRONTO" e fica parado até o teste matar o processo.
+# Argumentos: raiz, módulo e função que viram a pausa, módulo cujo proteger_processo vira False ('-' para nenhum),
+# módulo do main e os argumentos dele. O marcador do Secret é falso.
+SCRIPT_PARADO = r'''
+import importlib, signal, sys
+sys.path.insert(0, sys.argv[1])
+alvo = importlib.import_module(sys.argv[2])
+real = getattr(alvo, sys.argv[3])
+def parado(*a, **k):
+    real(*a, **k)
+    print('PRONTO', flush=True)
+    signal.pause()
+setattr(alvo, sys.argv[3], parado)
+if sys.argv[4] != '-':
+    importlib.import_module(sys.argv[4]).proteger_processo = lambda: False
+sys.exit(importlib.import_module(sys.argv[5]).main(sys.argv[6:]))
+'''
+FOLGA = 30   # segundos até o relógio de guarda matar o subprocesso
+CASOS_PROC = (('atualizar shopee', 'coletar_shopee', 'credenciais', 'coletar_shopee', 'atualizar_precos',
+               ['shopee', '--cat', CAT]),
+              ('atualizar ml', 'ml_api', 'sessao_do_ambiente', 'ml_api', 'atualizar_precos', ['ml', '--cat', CAT]),
+              ('coletar conferir', 'coletar_shopee', 'credenciais', 'coletar_shopee', 'coletar_shopee', ['conferir']),
+              ('coletar buscas', 'coletar_shopee', 'credenciais', 'coletar_shopee', 'coletar_shopee',
+               ['buscas', '--cat', CAT]),
+              ('ml_api autorizar', 'ml_api', 'ler_segredo', 'ml_api', 'ml_api', ['autorizar']),
+              ('ml_api conferir', 'ml_api', 'ler_segredo', 'ml_api', 'ml_api', ['conferir']))
+
+
+def ler_environ(pid):
+    """Só em subprocesso deste teste, com marcador falso."""
+    with open(f'/proc/{pid}/environ', 'rb') as f:
+        return f.read()
+
+
+class Parado:
+    """Sobe o SCRIPT_PARADO; `with` garante que nada sobra, mesmo com o teste falhando."""
+
+    def __init__(self, caso, protegido):
+        _, modulo, funcao, protecao, principal, argv = caso
+        env = {k: v for k, v in os.environ.items() if not k.startswith('ACHADINHOS_')}
+        pasta = tempfile.mkdtemp(dir=TMP)
+        env.update(PROXIES, no_proxy='', PYTHONDONTWRITEBYTECODE='1', ACHADINHOS_DB=os.path.join(pasta, 'a.db'),
+                   ACHADINHOS_FEITOS=os.path.join(pasta, 'c.txt'), ACHADINHOS_FEITOS_SHOPEE=os.path.join(pasta, 's.txt'),
+                   ACHADINHOS_FEITOS_ATUALIZAR=os.path.join(pasta, 'f.txt'),
+                   ACHADINHOS_ML_TOKENS=os.path.join(pasta, 'tokens.json'),
+                   ACHADINHOS_ML_CATALOGO=os.path.join(pasta, 'catalogo.json'),
+                   ACHADINHOS_SHOPEE_APP_ID=APP_ID, ACHADINHOS_SHOPEE_SECRET=SECRET, ACHADINHOS_ML_SECRET=SECRET)
+        self.p = subprocess.Popen([sys.executable, '-c', SCRIPT_PARADO, RAIZ, modulo, funcao,
+                                   '-' if protegido else protecao, principal, *argv],
+                                  env=env, cwd=pasta, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        self.guarda = threading.Timer(FOLGA, self.p.kill)
+        self.guarda.start()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.guarda.cancel()
+        if self.p.poll() is None:
+            self.p.kill()
+        self.p.wait()
+        for f in (self.p.stdout, self.p.stderr):
+            f.close()
+
+    def esperar_pronto(self):
+        for linha in self.p.stdout:
+            if b'PRONTO' in linha:
+                return
+        raise AssertionError('o subprocesso terminou antes de ler o Secret: ' + self.p.stderr.read().decode())
+
+    def erro(self):
+        """stderr inteiro, depois de matar o processo."""
+        self.p.kill()
+        self.p.wait()
+        return self.p.stderr.read().decode()
+
+
+@unittest.skipUnless(sys.platform == 'linux' and os.path.isdir('/proc/self'), 'só no Linux')
+@unittest.skipIf(os.geteuid() == 0, 'root lê /proc/<pid>/environ de qualquer jeito')
+class TestProcessoProtegido(unittest.TestCase):
+    def test_controle_sem_protecao_o_environ_e_legivel_e_sai_o_aviso(self):
+        """Sem isto, o teste seguinte passaria até com o /proc fechado por outro motivo."""
+        for caso in CASOS_PROC:
+            with self.subTest(caso[0]), Parado(caso, protegido=False) as parado:
+                parado.esperar_pronto()
+                self.assertIn(SECRET.encode(), ler_environ(parado.p.pid))   # o pop não apaga dali
+                err = parado.erro()
+                self.assertIn(CS.AVISO_PROCESSO, err)
+                self.assertNotIn(SECRET, err)
+
+    def test_outro_processo_nao_le_o_ambiente_durante_o_comando(self):
+        for caso in CASOS_PROC:
+            with self.subTest(caso[0]), Parado(caso, protegido=True) as parado:
+                parado.esperar_pronto()
+                with self.assertRaises(PermissionError):
+                    ler_environ(parado.p.pid)
+                err = parado.erro()
+                self.assertNotIn('AVISO', err)
+                self.assertNotIn(SECRET, err)
 
 
 if __name__ == '__main__':
