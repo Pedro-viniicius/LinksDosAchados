@@ -48,3 +48,9 @@ Vistas na etapa 3 (docs, 2026-11-03):
 - Linha de requisição malformada (`HTTP/9`, 4 palavras): o `http.server` responde no estilo HTTP/0.9, SÓ o corpo, sem linha de status. Teste por `b'Error code: 400' in resposta`, não por `startswith(b'HTTP/1.0 400')`.
 - Rodada 2 (R4): o `ambiente()` de `test_servidor.py` aponta `ACHADINHOS_API_TOKEN_ARQUIVO` para `SEM_TOKEN_API` (nunca existe); os `.mjs` que sobem o servidor põem `path.join(s.dir, 'sem-api-token.txt')`. Teste novo que sobe `servidor.py` precisa disso (há guarda estática em `test_api_ofertas_servidor.py`).
 - Com o `qa` rodando a suíte dele em paralelo, `test_api_ofertas_qa.py` deu 4 erros transitórios; isolado passou. Rode de novo antes de relatar.
+
+Vistas na correção Q1 (validade padrão na v1, 2026-11-08):
+
+- **Desde Q1 a v1 sem `preco_max_horas` aplica `D.validade_horas(con)` no `listar`** (o `filtros()` continua devolvendo `None`). Todo teste que grava item precisa de `preco_em` recente: `Base.gravar` e `TS2.inserir` já trazem o padrão (AGORA / relógio real). Teste com relógio injetado diferente do `AGORA` (ModeloDoCursor, DEPOIS=2030) tem de passar `preco_em` relativo a esse relógio; senão a lista vem vazia sem erro.
+- O fixture do `ServidorApi` mantém o ML com `preco_em` de 2020 porque o `PeloHttp` do `test_api_ofertas_validade_qa.py` conta com isso; `TestApiLigada.ml_recente()` troca o preço no banco só dentro do bloco.
+- Cópia do banco real: pôr `preco_em` relativo ao relógio do teste e `config.preco_validade_horas='168'` na cópia (a config real pode ter prazo curto). `test_genero_qa.V1NadaQueExistiaMuda` e `test_atualizar_precos_qa.V1PrecoMaxHorasNosDadosReais` têm falhas anteriores e sem relação: foto grande (`_AC_SL1000_` x `_AC_UL320_`, o "código antigo" não a tem) e folga de 60 s com dados reais depois do `agora` fixo.

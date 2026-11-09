@@ -1,6 +1,6 @@
 ---
 name: atualizar-precos-testes
-description: Armadilhas da migração v3 (items.preco_em), do upsert(inserir=), do so_existentes e da trava de preço velho no disparo; testes que fixam versão e chaves; falhas do test_genero_qa que dependem dos dados reais
+description: Armadilhas da migração v3 (items.preco_em), do upsert(inserir=), do so_existentes e da trava de preço velho no disparo; testes que fixam versão e chaves; falhas do test_genero_qa que dependem dos dados reais; fonte da Shopee por item (limites pelo ler_argumentos, _pedir real)
 metadata:
   type: project
 ---
@@ -32,4 +32,20 @@ Vistas na etapa 4 (`atualizar_precos.py`, 2026-11-04):
 - Ordem alfabética do unittest: um teste de subprocesso que cria `script.db` quebra o "não criou o banco" de outro. Use um banco por método (`self._testMethodName`).
 - `urllib.error.HTTPError(url, código, msg, {}, io.BytesIO())` em teste: feche-o (`e.close()`) no código, senão aparece ResourceWarning do tempfile.
 
+Etapa 2 de atualizar-precos-shopee-por-item (`fonte_shopee_item`, 2026-11-08):
+
+- Teste de limite de argumento da `shopee` pelo `main()` engana: sem credencial no `env`, a saída 2 vem do `credenciais()` e não do argparse (o mutante "MAX_CHAMADAS_SHOPEE = 9999" sobreviveu). Teste os limites com `A.ler_argumentos(...)` + `assertRaises(SystemExit)`.
+- Para exercitar o `_pedir` de verdade dentro do `TestShopee`: guarde `BUSCAR_ITEM = CS.buscar_item` no topo do módulo (antes de qualquer mock) e troque `CS.OPENER_API.open` por função que devolve `io.BytesIO(json)` (já serve de context manager); 429 é `HTTPError(CS.URL_API, 429, 'x', {}, io.BytesIO(b'{}'))`.
+- O `destino` falso que lê a linha do item para provar "conferido antes de gravar" quebra (TypeError → saída 1) no teste do item excluído no meio da rodada: trate `linha is None`.
+- Mutantes: copie também `coletar_amazon.py`, `buscas.json` e `testes/fixtures/amazon-busca.html` para a cópia; 19 mutantes da fonte rodam em ~1 min.
+
 **How to apply:** nas etapas 2 a 6 desse plano e em qualquer migração nova. Relacionado: [[disparo-testes]], [[genero-testes]], [[cota-tmp]].
+
+Rodada 1 de correção da Shopee por item (R1/S1, 2026-11-08):
+
+- Marcar antes de parar, dentro da fonte: `yield 'tentado|<iid>', []` no `except` e depois `raise` puro (o gerador guarda a exceção entre o yield e a volta). O `atualizar()` grava o rótulo antes de pedir o próximo item.
+- O "tentado" só funciona com o histórico de dias anteriores no `atualizar_precos_feitos.txt`. A prova do revisor (`prova_divergentes.py`) simula o "outro dia" com `open(A.FEITOS, 'w')`, que apaga esse histórico: lá a rodada 3 continua dando 1, e isso é esperado. Para simular a virada do dia, use `mock.patch.object(A, 'hoje', ...)`.
+- `_rodar_ml` chama `M.sessao_do_ambiente()` fora do `try`: a exceção levantada ali vira "ERRO: <tipo>" com saída 1. Para parar com 2 sem tocar arquivo, devolva uma sessão falsa cujo `token()` levante `M.RefazerAutorizacao()`.
+- Prova do /proc para vários comandos com um script só: `SCRIPT_PARADO` recebe módulo e função que viram a pausa (o leitor do Secret, depois do pop) e o módulo cujo `proteger_processo` vira False (controle). 12 subprocessos em ~1 s.
+- Mutantes que rodam `test_shopee_por_item_qa.py` precisam de `README.md`, `CLAUDE.md` e `migrar_categorias.py` na cópia (TestDocumentacao). Sem eles, a cópia sem mutação já falha e os mutantes parecem mortos.
+- Para o "antes" sem git (etapas sem commit), troque na cópia o trecho novo da fonte pelo antigo, guardado no relatório, e rode as suítes.

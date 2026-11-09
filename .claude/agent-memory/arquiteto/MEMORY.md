@@ -13,3 +13,4 @@
 - [API do ML pelo catálogo](decisao-api-oficial-ml-catalogo.md) — pós-G1: vínculo anúncio→produto provado por pertença, cache ml_catalogo.json, G2 (F7–F15), coleta só no G3 (reviews 403)
 - [Shopee por item](decisao-shopee-por-item.md) — productOfferV2(shopId,itemId), G1 conferir --por-item, RELER na Shopee, teto, item|<id>, teste T07:00 frágil
 - [Garimpo feminino Shopee](decisao-garimpo-feminino.md) — tools/garimpo_feminino isolado, 2º ponto de rede com CS.OPENER_API, achados.json entre fases, fatos de relatório/feed
+- [Endurecer engenharia](decisao-endurecer-engenharia.md) — verificar.py, trava por loja saída 4, backup auto-*, operacao/, /api/versao; testes leem CLAUDE.md

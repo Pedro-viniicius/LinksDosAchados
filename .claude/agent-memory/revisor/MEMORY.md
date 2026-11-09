@@ -5,11 +5,11 @@
 - [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo; some todas as fases; backup antes dos comandos; na r2, grep em toda consequência nova
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
-- [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
+- [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado, números do contrato; Q1 (validade padrão): mutantes e fixture "ruim" sem preco_em
 - [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
 - [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
-- [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente
+- [Preço sempre atualizado](padroes-atualizar-precos.md) — lote x PATCH; v1 x undici; item não marcado = trava; formato da API Shopee: confira medições do garimpo
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
 - [API oficial do ML](padroes-ml-api.md) — etapas 1-3 e catálogo 1-3 aprovadas; catálogo etapa 4 (README) aprovada na conferência pós-r2
 - [Garimpo feminino](padroes-garimpo-feminino.md) — r1 das etapas 1-7: erro vira medição, erro trava a categoria, nó ruim, SIGTERM; prova sem rede; armadilha da chave na etapa 9
