@@ -16,7 +16,7 @@ Vistas em 2026-11-03, na etapa blindar-servidor:
 - Mutantes sem tocar os arquivos reais: copie `servidor.py`, `coletar_amazon.py`, `index.html` e `testes/` para o scratchpad, mute a cópia e rode os testes de lá (o `RAIZ` vem do local do arquivo de teste). Mutante que tira a limpeza da base deixa ~10 `python3 -u servidor.py` órfãos: liste com `readlink /proc/<pid>/cwd` e mate só os do scratchpad (o real tem cwd no projeto e cmdline `python3 servidor.py`).
 - `unittest`: `addClassCleanup` roda mesmo quando o `setUpClass` falha; a lista `_class_cleanups` é compartilhada entre classes (funciona porque as classes rodam em sequência).
 - `rm -f $S/...` com variável é barrado pela checagem de segurança: limpe o scratchpad com caminho absoluto literal (ou `"${S:?}"/...`).
-- `node testes/rodar.mjs abas` só passa sobre uma cópia JÁ migrada pelo `migrar_categorias.py`; contra o 8765 real falha nas precondições (não é regressão).
+- `node testes/rodar.mjs abas` só passa sobre uma cópia JÁ migrada pelo `migrar_categorias.py`. Desde a migração do banco real (visto em 2026-11-09), uma cópia direta dele serve: `python3 verificar.py --front` faz isso.
 - Handler do front sem página de teste nos meus arquivos: dá para provar com um script CDP avulso no scratchpad (navega no index.html, troca `window.open`, chama `renderCard(div, item)` e clica).
 - Num bash, `X=... && cmd &` põe a atribuição dentro do subshell em background: declare variáveis em linha separada.
 

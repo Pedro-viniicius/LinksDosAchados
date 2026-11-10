@@ -16,3 +16,4 @@
 - [Landing pages de grupo](revisao-landing-pages.md) — fora do repo: checks de cada site, 4 cópias do contar.php entre worktrees, origem nova sem teste
 - [Comportamento padrão do front](padroes-front-comportamento.md) — mudar o padrão quebra páginas fora da linha de base; rode todas; mutante por replace na 8767; anote achados da r1
 - [Foto grande (Q1)](padroes-foto-grande.md) — guarda de query sem teste (mutante), fuzz de paridade Python x front, números do banco
+- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — rodar verificar/dados reais; mutante do operacao/ no scratchpad; mensagem de laço (saída 4 na 2ª aba)

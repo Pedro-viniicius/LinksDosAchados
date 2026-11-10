@@ -28,3 +28,10 @@
 - [Etapa 8B do garimpo](garimpo-etapa8b.md) — consulta sem pageInfo, parada pelos nós, sonda com texto antigo, achados.json real
 - [Desmarcar a categoria (activeCat vazio)](desmarcar-aba-testes.md) — testes antigos de 'primeira aba'; painel Adicionar aberto p/ foco; stub removeItem; curl --noproxy
 - [Foto grande: tabela espelhada e teto](foto-grande-testes.md) — linhas nas duas tabelas; caso da guarda precisa terminar no padrão; teto 2048; mutantes
+- [Hora do dia e dados reais nos testes](testes-hora-e-dados-reais.md) — TZ POSIX p/ 03h; skipUnless ACHADINHOS_TESTE_DADOS_REAIS; oráculo com \b
+- [Backup datado do banco](backup-banco-testes.md) — corrupção que só o integrity_check pega; sinal sentinela; os.link sem sobrescrever; mutantes redundantes; .parcial velho pelo mtime
+- [Trava por loja (saída 4)](trava-rodada-testes.md) — .lock ao lado do banco quebra listdir()==[]; ordem provada com falsos; argumentos que param antes da rede
+- [verificar.py (etapas 5 e 8)](verificar-testes.md) — TZ Etc/GMT±N; teste sem unittest.main; front na cópia; portão: GIT_* do hook, repo temporário, APP_USR falsos; rodada 2: LENTOS só com dados reais, falsos de teste nos padrões
+- [Scripts de operacao/ e seus testes](operacao-scripts-testes.md) — tee -i + trap INT p/ Ctrl+C; python3/sleep falsos; buscas.json é aba→termos; estático do segredo; set +x e teste com bash -x
+- [Versão do código no ar (/api/versao)](versao-servidor-testes.md) — rota nova quebra lista fechada do test_servidor; servidor numa cópia dos 4 .py; api_ofertas em todo /api/
+- [Docs lidas por testes](docs-lidas-por-testes.md) — literais do README/CLAUDE.md exigidos por testes; bloco de backup do README é executado
