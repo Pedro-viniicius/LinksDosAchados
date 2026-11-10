@@ -1473,8 +1473,9 @@ class TestDocumentacao(unittest.TestCase):
         self.assertNotIn('fonte_shopee_api', self.claude + self.secao + self.atualizar)
 
     def test_readme_cita_o_backup_e_o_arquivo_que_a_reversao_usa(self):
-        self.assertIn('backups/antes-shopee-item.db', self.secao)
-        self.assertIn('backups/antes-shopee-item.db', self.reverter)
+        self.assertIn('backups/auto-', self.secao)
+        self.assertIn('backups/auto-', self.reverter)
+        self.assertNotIn('antes-shopee-item.db', self.secao + self.reverter, 'o nome fixo saiu: vale o backup datado')
         self.assertIn('migrar_categorias.py --restaurar', self.reverter)
         self.assertTrue(os.path.exists(os.path.join(RAIZ, 'migrar_categorias.py')))
 
@@ -1511,12 +1512,25 @@ class TestDocumentacao(unittest.TestCase):
             self.assertNotRegex(b, r'SECRET=["\']?[A-Za-z0-9]{8,}(?<!\$S)')
         self.assertNotIn(SECRET, self.secao)
 
+    def bloco_de_backup(self):
+        bloco = next(b for b in self.blocos() if 'backup_banco.py --motivo shopee' in b)
+        self.assertEqual(bloco.strip(), 'python3 backup_banco.py --motivo shopee')
+        return bloco
+
+    def rodar_backup_do_readme(self, bloco, banco, **extra):
+        """Roda o bloco do README na raiz do projeto (é onde o backup_banco.py está) com o banco apontado para a
+        pasta temporária. O ACHADINHOS_DB vai sempre, para o comando nunca chegar ao achadinhos.db real; os
+        backups caem em <pasta do banco>/backups."""
+        env = {**os.environ, 'ACHADINHOS_DB': banco, 'http_proxy': 'http://127.0.0.1:9',
+               'https_proxy': 'http://127.0.0.1:9', 'PYTHONDONTWRITEBYTECODE': '1', **extra}
+        self.assertNotEqual(os.path.abspath(banco), os.path.join(RAIZ, 'achadinhos.db'))
+        return subprocess.run(['bash', '-c', bloco], cwd=RAIZ, capture_output=True, text=True, timeout=60, env=env)
+
     def test_o_comando_de_backup_do_readme_faz_copia_integra_de_banco_em_wal_sem_alterar_o_original(self):
+        import glob
         import sqlite3
         import tempfile
-        bloco = next(b for b in self.blocos() if 'antes-shopee-item.db' in b)
-        self.assertIn('python3 -c', bloco)
-        self.assertNotIn('sqlite3 achadinhos', bloco, 'o comando da CLI sqlite3 saiu (R2): vale o de Python')
+        bloco = self.bloco_de_backup()
         pasta = tempfile.mkdtemp(dir=T.TMP)
         banco = os.path.join(pasta, 'achadinhos.db')
         con = sqlite3.connect(banco)
@@ -1527,11 +1541,13 @@ class TestDocumentacao(unittest.TestCase):
         con.commit()
         self.assertGreater(os.path.getsize(banco + '-wal'), 0)
         try:
-            for vez in (1, 2):   # repetir sobrescreve sem erro (o README avisa)
-                r = subprocess.run(['bash', '-c', bloco], cwd=pasta, capture_output=True, text=True, timeout=60,
-                                   env={**os.environ, 'ACHADINHOS_DB': banco})
+            for vez in (1, 2):   # repetir é seguro: cada vez grava um arquivo novo, sem sobrescrever
+                r = self.rodar_backup_do_readme(bloco, banco)
                 self.assertEqual(r.returncode, 0, (vez, r.stderr))
-            copia = sqlite3.connect(os.path.join(pasta, 'backups', 'antes-shopee-item.db'))
+            copias = sorted(glob.glob(os.path.join(pasta, 'backups', 'auto-shopee-*.db')))
+            self.assertEqual(len(copias), 2, copias)
+            self.assertFalse(glob.glob(os.path.join(pasta, 'backups', '*-wal')) + glob.glob(os.path.join(pasta, 'backups', '*-shm')))
+            copia = sqlite3.connect(copias[0])
             self.assertEqual(copia.execute('SELECT COUNT(*) FROM items').fetchone()[0], 50, 'inclui o que só estava no WAL')
             self.assertEqual(copia.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
             copia.close()
@@ -1543,16 +1559,17 @@ class TestDocumentacao(unittest.TestCase):
 
     def test_backup_do_readme_nao_cria_o_banco_se_ele_nao_existe(self):
         import tempfile
-        bloco = next(b for b in self.blocos() if 'antes-shopee-item.db' in b)
+        bloco = self.bloco_de_backup()
         pasta = tempfile.mkdtemp(dir=T.TMP)
-        r = subprocess.run(['bash', '-c', bloco], cwd=pasta, capture_output=True, text=True, timeout=60)
+        r = self.rodar_backup_do_readme(bloco, os.path.join(pasta, 'achadinhos.db'))
         self.assertNotEqual(r.returncode, 0)
-        self.assertFalse(os.path.exists(os.path.join(pasta, 'achadinhos.db')), 'mode=ro não cria arquivo')
+        self.assertEqual(os.listdir(pasta), [], 'sem banco, o backup não cria banco nem pasta backups/')
 
     def test_backup_do_readme_restaura_com_o_migrar_categorias_de_ponta_a_ponta(self):
         import socket
         import tempfile
-        bloco = next(b for b in self.blocos() if 'antes-shopee-item.db' in b)
+        import glob
+        bloco = self.bloco_de_backup()
         pasta = tempfile.mkdtemp(dir=T.TMP)
         banco = os.path.join(pasta, 'achadinhos.db')
         with socket.socket() as s:
@@ -1566,13 +1583,15 @@ class TestDocumentacao(unittest.TestCase):
                 "1,0,'2026-01-01T00:00:00','2026-01-01T00:00:00','2026-01-01T00:00:00')\"); con.commit(); con.close()") % RAIZ
         r = subprocess.run([sys.executable, '-c', prep], cwd=pasta, env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
-        r = subprocess.run(['bash', '-c', bloco], cwd=pasta, env=env, capture_output=True, text=True, timeout=60)
+        r = self.rodar_backup_do_readme(bloco, banco)
         self.assertEqual(r.returncode, 0, r.stderr)
+        backups = glob.glob(os.path.join(pasta, 'backups', 'auto-shopee-*.db'))
+        self.assertEqual(len(backups), 1, backups)
         mexer = ("import sys; sys.path.insert(0, %r); import servidor as S; con = S.conectar();"
                  "con.execute(\"UPDATE items SET preco='R$ 999,00'\"); con.commit(); con.close()") % RAIZ
         subprocess.run([sys.executable, '-c', mexer], cwd=pasta, env=env, check=True, timeout=60)
         r = subprocess.run([sys.executable, os.path.join(RAIZ, 'migrar_categorias.py'), '--restaurar',
-                            'backups/antes-shopee-item.db'], cwd=pasta, env=env, capture_output=True, text=True, timeout=60)
+                            os.path.relpath(backups[0], pasta)], cwd=pasta, env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         import sqlite3
         con = sqlite3.connect(banco)
