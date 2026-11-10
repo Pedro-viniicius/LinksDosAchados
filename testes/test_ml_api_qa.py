@@ -616,6 +616,9 @@ class TestServidorNaoExpoe(unittest.TestCase):
             if p.stderr:
                 p.stderr.close()
 
+    # Exceção ao CA3 do plano endurecer-engenharia-e-operacao (decisão do lead, 09/11/2026): fica fora do
+    # portão ACHADINHOS_TESTE_DADOS_REAIS porque é guarda de segurança (nenhum token do ML na config real),
+    # não oráculo de dado do dia. Só lê, em mode=ro + query_only.
     def test_config_do_banco_real_sem_chave_do_ml(self):
         real = os.path.join(RAIZ, 'achadinhos.db')
         if not os.path.exists(real):

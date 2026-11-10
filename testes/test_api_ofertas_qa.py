@@ -42,6 +42,10 @@ TS = TS2.TS
 A, D, S = T.A, T.D, T.S
 AFILIADO = T.AFILIADO
 AGORA = T.AGORA
+# As classes que leem o achadinhos.db real só rodam por pedido (verificar.py --dados-reais): o resultado delas
+# depende do que o dono coletou no dia, e uma suíte que falha por dado novo vira "falha conhecida".
+DADOS_REAIS = unittest.skipUnless(os.environ.get('ACHADINHOS_TESTE_DADOS_REAIS') == '1',
+                                  'dados reais: rode verificar.py --dados-reais')
 DEPOIS = datetime(2030, 1, 1)   # dados reais: bem depois de qualquer horário gravado, nada fica na folga
 # Dados sintéticos do T.Base (atualizado_em até 12:24, preco_em = AGORA): depois de todo horário gravado, sem
 # folga, e ainda dentro da validade padrão de 24 h do preço (a v1 sem preco_max_horas, Q1).
@@ -77,7 +81,10 @@ def normalizar(texto):
 
 
 # Oráculo independente de "parece link": esquema, www. ou rótulo.tld (a detecção do disparo é mais conservadora).
-_RE_PARECE_LINK = re.compile(r'(?i)(?:[a-z][a-z0-9+.-]*://|\bwww\.|[a-z0-9-]\.[a-z]{2,})')
+# O TLD exige fronteira depois dele (`\b`): sem ela, o código de modelo `S3nq12ja31l.eb2gam1-220v` de um título
+# real (ar-condicionado LG) virava "link" por causa de `l.eb`, e o oráculo reprovava uma oferta legítima. Um TLD de
+# verdade termina em fim de texto, barra, espaço ou pontuação; `eb2gam1` continua letra e dígito colados.
+_RE_PARECE_LINK = re.compile(r'(?i)(?:[a-z][a-z0-9+.-]*://|\bwww\.|[a-z0-9-]\.[a-z]{2,}\b)')
 
 
 def parece_link(texto):
@@ -468,6 +475,24 @@ class SoSaiOQueDeveFuzz(T.Base):
                 for c in self.cats()['categorias']:
                     self.assertFalse(parece_link(c['nome']), c['nome'])
 
+    TITULO_COM_CODIGO_DE_MODELO = ('Ar Condicionado Split 12000 Btus Lg Dual Inverter Voice +ia Frio '
+                                   'S3nq12ja31l.eb2gam1-220v')
+
+    def test_o_oraculo_com_fronteira_ainda_pega_link_de_verdade(self):
+        # tld seguido de pontuação, espaço, barra, porta ou fim de texto; e o modelo do ar-condicionado não é link
+        for t in ['Compre em golpe.net, aproveite', 'golpe.com promo', 'golpe.com:8080', 'veja golpe.org/x',
+                  'fale em golpe.com.br.', '(golpe.shop)', 'golpe.com?x=1', 'só golpe.io']:
+            self.assertTrue(parece_link(t), t)
+        self.assertFalse(parece_link(self.TITULO_COM_CODIGO_DE_MODELO))
+
+    def test_ca2_titulo_real_com_codigo_de_modelo_sai_e_nao_vira_link(self):
+        # dado real (amazon:B0GL9FF7Q5): `l.eb2gam1` parece rótulo.tld só para um oráculo sem fronteira
+        titulo = self.TITULO_COM_CODIGO_DE_MODELO
+        self.gravar(titulo=titulo)
+        self.assertEqual([o['titulo'] for o in varrer(self.con)], [titulo])
+        self.assertEqual(D.urls_da_mensagem(titulo), [])
+        self.assertFalse(parece_link(titulo))
+
     def test_ca2_titulos_legitimos_nao_sao_barrados_a_toa(self):
         for t in self.TITULOS_OK:
             self.gravar(titulo=t)
@@ -496,6 +521,7 @@ def copiar_banco_real(destino):
     return True
 
 
+@DADOS_REAIS
 class DadosReais(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -911,6 +937,7 @@ class TokenLidoUmaVezSo(ServidorQa):
         self.assertEqual(st, 200)
 
 
+@DADOS_REAIS
 class ServidorDadosReais(ServidorQa):
     """O servidor de verdade sobre a cópia do banco real: segue o cursor até o fim pelo HTTP."""
 

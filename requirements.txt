@@ -1,0 +1,6 @@
+# Dependências do Etiqueta, com as versões instaladas e testadas em 09/11/2026.
+# Python >= 3.14. Node >= 22 e Google Chrome em /usr/bin/google-chrome só para os testes do front.
+# O servidor (servidor.py, disparo.py, api_ofertas.py, genero.py) usa só a biblioteca padrão;
+# estas duas servem à coleta e à atualização de preços da Amazon (coletar_amazon.py, atualizar_precos.py amazon).
+beautifulsoup4==4.14.3
+lxml==6.0.2

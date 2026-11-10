@@ -250,7 +250,7 @@ class TestAmazonBusca(Base):
 
     def test_item_confirmado_hoje_nao_e_selecionado(self):
         con = S.conectar()
-        con.execute('UPDATE items SET preco_em=?', (A.hoje() + 'T07:00:00',))
+        con.execute('UPDATE items SET preco_em=?', (A.hoje() + 'T00:00:00',))
         con.commit()
         con.close()
         codigo, out, _ = self.rodar(['amazon'])
@@ -415,7 +415,7 @@ class TestFonteFalsa(Base):
         self.inserir('amazon', 'B0FALSA001', 'Perfume Floral')
         self.inserir('amazon', 'B0FALSA002', 'Perfume Floral')
         self.inserir('amazon', 'B0FALSA003', 'Perfume Floral')
-        self.inserir('amazon', 'B0HOJE0004', 'Perfume Floral', preco_em=A.hoje() + 'T06:00:00')
+        self.inserir('amazon', 'B0HOJE0004', 'Perfume Floral', preco_em=A.hoje() + 'T00:00:00')
         self.inserir('amazon', 'B0GERAL005', 'x', cat='Geral')               # aba fora do buscas.json
         self.inserir('amazon', 'https://amzn.to/abc', 'x')                    # id fora do formato
         self.inserir('ml', 'MLB123', 'Perfume Floral', url='https://meli.la/abc')

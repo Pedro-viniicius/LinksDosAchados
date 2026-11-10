@@ -45,6 +45,10 @@ RAIZ = T.RAIZ
 REAL = os.path.join(RAIZ, 'achadinhos.db')
 RX_ISO = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}')
 LOJAS = ('amazon', 'ml', 'shopee')
+# As classes que copiam o achadinhos.db real só rodam por pedido (verificar.py --dados-reais): o resultado delas
+# depende do que o dono coletou no dia, e uma suíte que falha por dado novo vira "falha conhecida".
+DADOS_REAIS = unittest.skipUnless(os.environ.get('ACHADINHOS_TESTE_DADOS_REAIS') == '1',
+                                  'dados reais: rode verificar.py --dados-reais')
 
 
 def tearDownModule():
@@ -105,6 +109,7 @@ def linhas(caminho, tabela='items', ordem='rowid'):
         con.close()
 
 
+@DADOS_REAIS   # as subclasses herdam o skip
 class CopiaMigrada(unittest.TestCase):
     """Base: uma cópia do banco real, devolvida à v2 e migrada pelo caminho do dono. Dá SkipTest sem o real."""
 
@@ -166,6 +171,7 @@ class MigracaoV3NoRetratoReal(CopiaMigrada):
 
 
 # ------------------------------------------------------------------ CA1: a migração com a coleta gravando e o código antigo depois
+@DADOS_REAIS
 class MigracaoComColetaEscrevendo(unittest.TestCase):
     """O banco real está sendo gravado por uma coleta (código da v2) quando o dono reinicia o servidor novo."""
 
@@ -230,6 +236,7 @@ class MigracaoComColetaEscrevendo(unittest.TestCase):
         self.assertTrue(sem, 'o teste não pegou escrita depois da migração (nenhum item da coleta ficou sem preco_em)')
 
 
+@DADOS_REAIS
 class CodigoAntigoSobreOBancoV3(unittest.TestCase):
     """Reverter é voltar o código: o servidor do commit anterior roda sobre o banco já migrado."""
 
