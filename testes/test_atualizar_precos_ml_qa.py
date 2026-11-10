@@ -1236,7 +1236,8 @@ class QaArquivosReais(unittest.TestCase):
         self.assertEqual(sensiveis(), raiz_antes)
         self.assertEqual(_catalogo_no_projeto(), CATALOGO_NO_PROJETO_ANTES)
         self.assertEqual(_feitos_real(), FEITOS_REAL_ANTES)
-        self.assertEqual(os.listdir(pasta), [])
+        # só a trava da rodada (endurecer-engenharia-e-operacao, etapa 3), ao lado do banco temporário
+        self.assertEqual(os.listdir(pasta), ['achadinhos.db.rodada-ml.lock'])
 
 
 if __name__ == '__main__':

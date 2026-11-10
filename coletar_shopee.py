@@ -54,10 +54,16 @@ gravação. Formato (JSON em UTF-8, até MAX_RESPOSTA bytes, objeto só com esta
   progresso da Open API (a ordem "Mais vendidos" do painel), então os dois caminhos não repetem o termo.
   Nada do conteúdo do arquivo vai para a saída: só contagens e motivos fixos.
 
+Trava por loja (servidor.travar_rodada): `buscas` e `importar` pegam `<banco>.rodada-shopee.lock` (ao lado do
+ACHADINHOS_DB) sem esperar, antes do proteger_processo, do Secret, do arquivo, do banco e do progresso; outra rodada
+da Shopee no ar (esta coleta ou o atualizar_precos.py shopee) faz sair com 4, sem tocar em nada. O `conferir` não
+grava e não trava.
+
 Saída: 0 ok (no `importar`, também quando nenhum nó passa no piso: o termo não é marcado); 1 erro (dono errado,
 API recusou, resposta ou arquivo fora do formato, arquivo grande demais); 2 configuração (ID de afiliado,
 credenciais, aba ou termo fora do buscas.json, arquivo inexistente ou ilegível, argumento); 3 limite de
-requisições da API (o progresso fica salvo, rode de novo depois).
+requisições da API (o progresso fica salvo, rode de novo depois); 4 outra rodada da Shopee em andamento, ou trava
+recusada (só `buscas` e `importar`; espere a outra terminar); 130 interrompido.
 """
 import argparse, hashlib, json, math, os, random, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 import servidor as S
@@ -718,8 +724,22 @@ def main(argv=None):
         print('ERRO: preencha ID_AFILIADO_SHOPEE no coletar_shopee.py (só números, o <ID> de utm_source=an_<ID>).',
               file=sys.stderr, flush=True)
         return 2
-    if args.modo == 'importar':   # sem credencial: não chama credenciais() nem lê o ambiente
-        return _rodar_importar(args.arquivo)
+    if args.modo == 'conferir':   # não grava nada: não trava (roda mesmo com outra rodada da Shopee no ar)
+        return _rodar_api(args)
+    try:
+        # buscas e importar gravam: a trava vem antes do proteger_processo, do Secret, do arquivo, do banco e do
+        # progresso. Pega ou não pega na hora (sem espera).
+        with S.travar_rodada('shopee'):
+            if args.modo == 'importar':   # sem credencial: não chama credenciais() nem lê o ambiente
+                return _rodar_importar(args.arquivo)
+            return _rodar_api(args)
+    except S.RodadaEmAndamento as e:   # só a entrada da trava levanta isto
+        print(f'PAROU: {e}', file=sys.stderr, flush=True)
+        return 4
+
+
+def _rodar_api(args):
+    """conferir e buscas: proteger_processo, credenciais e a Open API, com as saídas 0/1/2/3/130."""
     if not proteger_processo():   # antes de ler o Secret
         print(AVISO_PROCESSO, file=sys.stderr, flush=True)
     cred = credenciais()

@@ -9,14 +9,18 @@ WhatsApp Chat - AmazonLinks/
 WhatsApp Chat - AmazonLinks.zip
 _chat.txt
 
-# Logs e progresso de coleta
+# Logs e progresso de coleta (logs/: saídas do verificar.py e das rodadas operacionais)
 *.log
+logs/
 coleta_amazon_feitos.txt
 coleta_shopee_feitos.txt
 coleta_ml_feitos.txt
 atualizar_precos_feitos.txt
 # Backups do banco e do progresso (migrar_categorias.py e etapa 0 dos planos)
 backups/
+
+# Trava de rodada por loja (servidor.travar_rodada): <banco>.rodada-<loja>.lock ao lado do banco
+*.db.rodada-*.lock
 
 # Python
 __pycache__/

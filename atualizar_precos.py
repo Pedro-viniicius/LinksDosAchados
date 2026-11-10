@@ -66,7 +66,12 @@ Teto de --max-chamadas GETs (padrão 3000, máximo 10000) com pausa de 0,3 a 0,8
 itens novos ao chegar à metade do teto (a outra metade fica para as ofertas); o teto e o 429 param com saída 3.
 Tokens do `ml_api.py autorizar`; o Secret só é usado se o token precisar ser renovado:
     read -rs S; ACHADINHOS_ML_SECRET="$S" python3 atualizar_precos.py ml --cat ...; unset S
-Premissa: uma máquina e um comando por vez (o arquivo de vínculos não tem trava).
+Premissa: uma máquina só (o arquivo de vínculos não tem trava própria).
+
+Trava por loja (servidor.travar_rodada, plano docs/produto/planos/endurecer-engenharia-e-operacao.md, etapa 3):
+antes de ler credencial, tokens, banco ou progresso, a rodada pega `<banco>.rodada-<loja>.lock` (ao lado do
+ACHADINHOS_DB) sem esperar. Outra rodada da mesma loja (esta atualização ou a coleta da loja) no ar: sai com 4,
+sem tocar em nada. Lojas diferentes rodam juntas.
 
 Progresso por dia em atualizar_precos_feitos.txt (ACHADINHOS_FEITOS_ATUALIZAR troca o arquivo), linhas
 `<loja>|<AAAA-MM-DD>|<ordem>|<termo>` (na página do produto, `<loja>|<AAAA-MM-DD>|produto|<ASIN>`; na Shopee,
@@ -79,7 +84,8 @@ Saída: 0 ok; 1 erro (dono errado, API recusou, resposta fora do formato, rede; 
 item); 2 argumento ou configuração
 (aba fora do buscas.json, ID de afiliado ou credenciais da Shopee; no ML, tokens ausentes ou recusados, falta do
 Secret com o token vencido, renovação recusada, permissão do app ou arquivo de vínculos recusado); 3 bloqueio,
-limite ou teto de chamadas (o progresso fica salvo).
+limite ou teto de chamadas (o progresso fica salvo); 4 outra rodada da mesma loja em andamento, ou trava recusada
+(nada foi lido nem gravado; espere a outra terminar); 130 interrompido.
 """
 import argparse, contextlib, json, os, re, sys, unicodedata, urllib.error
 from collections import Counter, namedtuple
@@ -824,9 +830,15 @@ def _rodar_ml(args):
 def main(argv=None):
     args = ler_argumentos(sys.argv[1:] if argv is None else argv)
     try:
-        if args.loja == 'ml':
-            return _rodar_ml(args)
-        return _rodar_shopee(args) if args.loja == 'shopee' else _rodar_amazon(args)
+        # a trava vem antes de tudo o que a rodada lê ou grava: proteger_processo, Secret, tokens, vínculos,
+        # criar_banco e progresso. Pega ou não pega na hora (sem espera).
+        with S.travar_rodada(args.loja):
+            if args.loja == 'ml':
+                return _rodar_ml(args)
+            return _rodar_shopee(args) if args.loja == 'shopee' else _rodar_amazon(args)
+    except S.RodadaEmAndamento as e:   # só a entrada da trava levanta isto
+        print(f'PAROU: {e}', file=sys.stderr, flush=True)
+        return 4
     except KeyboardInterrupt:
         print('Interrompido. O progresso das páginas já gravadas foi salvo.', file=sys.stderr, flush=True)
         return 130

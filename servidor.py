@@ -11,6 +11,9 @@ liga o transporte de teste.
 API v1 de ofertas (api_ofertas.py, docs/produto/planos/api-achadinho-turbo.md): só liga com o token
 Bearer de api_token.txt, ao lado deste arquivo (ACHADINHOS_API_TOKEN_ARQUIVO troca o caminho). Sem o
 arquivo, toda rota /api/v1/ responde 503. Para trocar o token, troque o arquivo e reinicie.
+Versão do código (CA12 de docs/produto/planos/endurecer-engenharia-e-operacao.md): a subida registra no
+log o hash de ARQUIVOS_VERSAO e o último commit; GET /api/versao diz se o código em disco mudou desde
+então (`python3 verificar.py --servidor` usa isso para avisar que é preciso reiniciar).
 
 O disparo é importado dentro das funções que o usam (criar_banco, rotas e __main__): quem importa
 este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
@@ -20,6 +23,7 @@ banco (só aditivo: cria numeros, regras, envios, generos_manuais e a coluna ite
 (público de cada item, derivado na leitura) também é importado sob demanda aqui.
 """
 import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
+import contextlib, errno, fcntl, hashlib
 from datetime import datetime
 from decimal import Decimal
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -80,6 +84,73 @@ def conectar():
     return con
 
 
+class RodadaEmAndamento(Exception):
+    """A trava da rodada desta loja não pôde ser pega (os CLIs saem com 4).
+
+    `motivo` é None quando outra rodada da mesma loja segura a trava; senão, um texto fixo (nada de caminho
+    nem de mensagem do sistema). `nome` é só o nome do arquivo da trava, sem a pasta.
+    """
+
+    def __init__(self, loja, nome, motivo=None):
+        self.loja, self.nome, self.motivo = loja, nome, motivo
+        if motivo is None:
+            texto = f'outra rodada de {loja} está em andamento ({nome}); espere ela terminar.'
+        else:
+            texto = f'não consegui pegar a trava da rodada de {loja} ({nome}): {motivo}.'
+        super().__init__(texto)
+
+
+@contextlib.contextmanager
+def travar_rodada(loja):
+    """flock exclusivo e sem espera em <DB>.rodada-<loja>.lock enquanto durar o bloco (plano
+    docs/produto/planos/endurecer-engenharia-e-operacao.md, etapa 3, CA4).
+
+    Uma rodada por loja contra o mesmo banco: a coleta e a atualização de preços da mesma loja se excluem; lojas
+    diferentes rodam juntas. Os CLIs pegam a trava antes de ler credencial, tokens, banco ou progresso, e saem
+    com 4 quando ela levanta RodadaEmAndamento. O arquivo tem de ser comum e do próprio usuário (symlink é
+    recusado pelo O_NOFOLLOW) e fica em 0600. A trava some com o processo (kill -9 não deixa trava velha); o
+    arquivo nunca é apagado por aqui: apagá-lo à mão no meio de uma rodada deixa a seguinte entrar.
+    Cópia do `travar` de tools/garimpo_feminino/banco.py, sem importá-lo.
+    """
+    if loja not in LOJAS:
+        raise ValueError('loja desconhecida')
+    caminho = DB + '.rodada-' + loja + '.lock'   # DB lido agora: os testes trocam o servidor.DB
+    nome = os.path.basename(caminho)
+    try:
+        # O_NONBLOCK: um FIFO no lugar da trava não prende o open (e o S_ISREG o recusa logo depois)
+        fd = os.open(caminho, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+    except OSError:
+        raise RodadaEmAndamento(loja, nome,
+                                'não deu para abrir o arquivo da trava (symlink, pasta ou permissão)') from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RodadaEmAndamento(loja, nome, 'o arquivo da trava não é um arquivo comum do seu usuário')
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise RodadaEmAndamento(loja, nome) from None
+            raise RodadaEmAndamento(loja, nome, 'o sistema recusou a trava') from None
+        try:
+            # entre o open e o flock o arquivo pode ter sido trocado (apagado à mão e recriado por outra rodada):
+            # a trava só vale se o caminho ainda leva ao mesmo arquivo que está travado
+            atual = os.stat(caminho, follow_symlinks=False)
+        except OSError:
+            atual = None
+        if atual is None or (atual.st_dev, atual.st_ino) != (info.st_dev, info.st_ino):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            raise RodadaEmAndamento(loja, nome, 'o arquivo da trava foi trocado enquanto eu o abria')
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def criar_banco():
     con = conectar()
     con.executescript(f'''
@@ -110,6 +181,105 @@ def criar_banco():
 
 def agora():
     return datetime.now().isoformat(timespec='seconds')
+
+
+# ---------------------------------------------------------------- versão do código (/api/versao)
+# Arquivos .py que o servidor carrega. O index.html fica de fora: ele é lido do disco a cada pedido, então
+# mudança nele só pede recarregar a página. O genero.py e o api_ofertas.py são importados no primeiro pedido
+# que os usa; mudança neles depois da subida também conta como "mudou" (do lado seguro: reinicie).
+ARQUIVOS_VERSAO = ('servidor.py', 'disparo.py', 'genero.py', 'api_ofertas.py')
+TAMANHO_CODIGO = 12           # caracteres do sha256 no "codigo" e no "em_disco"
+TAMANHO_COMMIT = 7            # caracteres do commit, como no git log --oneline
+MAX_REF_GIT = 4096            # bytes lidos do .git/HEAD e de um ref solto (o normal é 41)
+MAX_PACKED_REFS = 8 * 1024 * 1024
+RE_SHA_GIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')   # sha1 ou sha256
+# Nome de ref aceito: só refs/..., componentes sem ponto no início (nem "..") e sem barra dupla. Um HEAD
+# que aponte para "../fora", caminho absoluto ou outro formato vira git null, sem abrir nada.
+RE_REF_GIT = re.compile(r'refs(?:/[A-Za-z0-9_+@-][A-Za-z0-9_.+@-]*)+')
+# Preenchida no __main__ (registrar_versao); importado como módulo, fica None e a rota responde 503.
+VERSAO = None
+
+
+def hash_do_codigo(base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """sha256[:12] dos bytes de cada arquivo, na ordem, com nome e tamanho no meio (dois arquivos nunca se
+    confundem). Arquivo que não abre entra como ausente: sumir ou voltar também muda o hash."""
+    h = hashlib.sha256()
+    for nome in arquivos:
+        try:
+            with open(os.path.join(base, nome), 'rb') as f:
+                dados = f.read()
+        except OSError:
+            h.update(f'{nome}\0ausente\0'.encode())
+            continue
+        h.update(f'{nome}\0{len(dados)}\0'.encode())
+        h.update(dados)
+    return h.hexdigest()[:TAMANHO_CODIGO]
+
+
+def _ler_dentro(pasta_git, relativo, limite=MAX_REF_GIT):
+    """Texto de um arquivo dentro da pasta .git (no máximo `limite` bytes), ou None. Recusa o que, depois
+    de resolver links, cair fora dela, e o que não for arquivo comum."""
+    raiz = os.path.realpath(pasta_git)
+    alvo = os.path.realpath(os.path.join(raiz, relativo))
+    if not alvo.startswith(raiz + os.sep) or not os.path.isfile(alvo):
+        return None
+    with open(alvo, 'rb') as f:
+        bruto = f.read(limite + 1)
+    if len(bruto) > limite:
+        return None
+    return bruto.decode('ascii')
+
+
+def _sha_curto(texto):
+    texto = (texto or '').strip()
+    return texto[:TAMANHO_COMMIT] if RE_SHA_GIT.fullmatch(texto) else None
+
+
+def commit_git(base=BASE):
+    """Commit curto do HEAD, lido direto de <base>/.git (sem subprocess), ou None.
+
+    HEAD com "ref: refs/..." lê o ref solto e, sem ele, o packed-refs; HEAD destacado traz o sha. Fica
+    None quando: não há .git (ou ele é um arquivo, como numa worktree), o ref é malformado ou sai da pasta
+    .git, o arquivo passa do tamanho esperado ou qualquer leitura falha. Nada além do sha curto sai daqui.
+    """
+    pasta_git = os.path.join(base, '.git')
+    try:
+        if os.path.islink(pasta_git) or not os.path.isdir(pasta_git):
+            return None
+        head = _ler_dentro(pasta_git, 'HEAD')
+        if head is None:
+            return None
+        head = head.strip()
+        if not head.startswith('ref:'):
+            return _sha_curto(head)
+        ref = head[len('ref:'):].strip()
+        if not RE_REF_GIT.fullmatch(ref) or '..' in ref or ref.endswith(('.', '/', '.lock')):
+            return None
+        solto = _ler_dentro(pasta_git, ref)
+        if solto is not None:
+            return _sha_curto(solto)
+        empacotado = _ler_dentro(pasta_git, 'packed-refs', MAX_PACKED_REFS)
+        for linha in (empacotado or '').splitlines():
+            sha, _, nome = linha.strip().partition(' ')
+            if nome == ref:
+                return _sha_curto(sha)
+        return None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def registrar_versao(base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """Guarda em VERSAO o código e o commit desta subida e devolve a linha do log."""
+    global VERSAO
+    VERSAO = {'codigo': hash_do_codigo(base, arquivos), 'git': commit_git(base), 'iniciado_em': agora()}
+    return f'Código {VERSAO["codigo"]} (último commit {VERSAO["git"] or "?"}; pode haver mudança sem commit)'
+
+
+def resposta_versao(versao, base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """JSON do GET /api/versao: o código da subida, o de agora no disco e se mudou."""
+    em_disco = hash_do_codigo(base, arquivos)
+    return {'codigo': versao['codigo'], 'em_disco': em_disco, 'mudou': em_disco != versao['codigo'],
+            'git': versao['git'], 'iniciado_em': versao['iniciado_em']}
 
 
 def linha_para_item(r, manuais=None):
@@ -751,6 +921,11 @@ class Handler(SimpleHTTPRequestHandler):
             if not self.estatico_permitido():
                 return self.json({'error': 'não encontrado'}, 404)
             return super().do_GET()
+        if caminho == '/api/versao':
+            # Fora de ROTAS_ML: o bloquear() já recusou Host estranho e origem que não é a local.
+            if VERSAO is None:
+                return self.json({'error': 'versão do código não registrada na subida'}, 503)
+            return self.json(resposta_versao(VERSAO))
         if caminho == '/api/ml-sem-afiliado':
             con = conectar()
             rows = con.execute("SELECT id, url FROM items WHERE loja='ml' AND url NOT LIKE 'https://meli.la/%' ORDER BY id").fetchall()
@@ -979,6 +1154,7 @@ if __name__ == '__main__':
     # bind antes do agendador: a porta ocupada impede uma segunda instância de disparar em dobro
     servidor = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Site em http://localhost:{PORT}/  (banco: {DB})')
+    print(registrar_versao(), flush=True)
     iniciar_api_v1()
     iniciar_disparo()
     try:

@@ -575,7 +575,9 @@ class TestVinculos(Base):
         self.assertEqual(codigo, 2)
         self.assertTrue(err.startswith('ERRO: arquivo de vínculos do catálogo recusado'), err)
         self.assertEqual(ordem, ['vinculos'])
-        self.assertEqual([n for n in os.listdir(self.dir) if n.startswith('banco-novo')], [])
+        # só a trava da rodada (endurecer-engenharia-e-operacao, etapa 3), sem banco nem -wal/-shm
+        self.assertEqual([n for n in os.listdir(self.dir) if n.startswith('banco-novo')],
+                         ['banco-novo.db.rodada-ml.lock'])
         self.assertEqual(self.ml.op.chamadas, [])
         self.assertEqual(out, '')
 
@@ -904,7 +906,8 @@ class TestScript(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertNotIn('Traceback', r.stderr)
         self.assertIn('rode `ml_api.py autorizar`', r.stderr)
-        self.assertEqual(os.listdir(pasta), [])   # nem banco, nem vínculos, nem progresso
+        # só a trava da rodada (endurecer-engenharia-e-operacao, etapa 3): nem banco, nem vínculos, nem progresso
+        self.assertEqual(os.listdir(pasta), ['achadinhos.db.rodada-ml.lock'])
 
 
 if __name__ == '__main__':
