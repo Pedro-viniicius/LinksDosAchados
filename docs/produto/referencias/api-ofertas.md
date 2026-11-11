@@ -292,7 +292,7 @@ const { ofertas, proximo, total } = await r.json();
 Relê agora a página de **uma** oferta da Amazon que já está no banco e, com preço legível, grava o preço. O Achadinho Turbo chama logo antes de enviar a oferta. É a mesma leitura do botão "Atualizar preço" do site (`buscar_produto_amazon`) e a mesma classificação do `atualizar_precos.py`. **É a única rota da v1 que grava.** Código: `confirmar_preco_amazon`, `FreioReleitura` e `Handler.despachar_confirmar_preco` em `servidor.py`.
 
 - **`<ASIN>`:** exatamente 10 caracteres de `A-Z` e `0-9`, conferidos no caminho cru (sem decodificar). Minúsculas, `%xx` ou outro tamanho dão 404 `rota não encontrada`. Outro formato de caminho (`/api/v1/amazon/<ASIN>`, barra a mais) é outra rota da v1: `POST` nela dá 405 com `Allow: GET`.
-- **O que é lido:** `https://www.amazon.com.br/dp/<ASIN>`, **sem tag** (a releitura não pode parecer clique de afiliado). A URL é montada pelo Etiqueta a partir do ASIN; nada vem do cliente. Os redirects passam pela mesma conferência do `/api/fetch` (só hosts da Amazon). Prazo de 10 s por operação de rede.
+- **O que é lido:** `https://www.amazon.com.br/dp/<ASIN>`, **sem tag** (a releitura não pode parecer clique de afiliado). A URL é montada pelo Etiqueta a partir do ASIN; nada vem do cliente. Os redirects passam pela mesma conferência do `/api/fetch` (só hosts da Amazon). **Limites da leitura:** prazo total de 8 s para a leitura inteira, redirects incluídos (conferido a cada redirect e antes de cada bloco de 64 KB da página); cada operação de rede (conexão, cabeçalho, cada bloco) espera no máximo 4 s (depois de um redirect, no máximo o que resta do prazo); página que passa de 4 MB é abandonada. Estourado o prazo ou o teto, a conexão é fechada e a resposta é `falha_rede`, sem gravar nada. O pior caso é o prazo mais uma operação que começou antes de ele vencer: cerca de 12 s, dentro dos 15 s em que o Turbo desiste. A espera pelo cabeçalho de cada resposta é limitada só pelos 4 s por operação, não pelo prazo total. O `/api/fetch` segue como antes: 30 s por operação, sem prazo total nem teto.
 - **Sem corpo:** `POST` sem corpo (`Content-Length` ausente ou `0`). Qualquer corpo, ou `Transfer-Encoding`, dá 400 `esta rota não aceita corpo`. Não há parâmetro.
 
 **Guardas, na ordem** (as 5 primeiras são as de toda a v1):
@@ -320,7 +320,7 @@ Nenhuma recusa das linhas 1 a 8 abre a Amazon nem gasta o freio.
 | `sem_preco` | Título presente e ASIN igual, mas preço ilegível ou ausente (indisponível); ou HTTP 404/410 da Amazon. | Não. |
 | `outro_produto` | A página final é de outro ASIN; ou redirect para fora da Amazon. | Não. |
 | `bloqueado` | Captcha; HTTP 429 ou 503 da Amazon; página sem título ou sem ASIN (página que não dá para reconhecer nunca vira descarte). Abre a pausa de 15 min do freio. | Não. |
-| `falha_rede` | Erro de rede, tempo esgotado, conexão cortada ou outro código HTTP. | Não. |
+| `falha_rede` | Erro de rede, tempo esgotado (4 s numa operação ou 8 s na leitura inteira), página acima de 4 MB, conexão cortada ou outro código HTTP. | Não. |
 
 ```json
 {"versao": 1, "resultado": "confirmado", "preco": 89.9, "preco_antigo": 119.9, "desconto_pct": 25,
@@ -341,7 +341,7 @@ Nenhuma recusa das linhas 1 a 8 abre a Amazon nem gasta o freio.
   - `pausa`: houve um `bloqueado` há menos de 15 min (contados do fim daquela leitura).
   - `intervalo`: menos de 3 s desde o início da leitura anterior.
   - `teto`: 60 leituras na última hora (janela deslizante).
-  - `rodada`: uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) segura a trava `travar_rodada('amazon')`. A rota só confere a trava (pega e solta na hora) e nunca a segura durante a leitura: a rodada tem prioridade e pode começar no meio.
+  - `rodada`: uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) segura a trava `travar_rodada('amazon')`. A rota só confere a trava (pega e solta na hora, em microssegundos) e nunca a segura durante a leitura: a rodada tem prioridade e pode começar no meio. Na rara coincidência de a rodada tentar a trava nesse instante, ela sai com 4 ("outra rodada de amazon está em andamento") e basta repeti-la.
 - Recusa não conta como leitura. Pedido recusado antes do freio (401, 404, 400...) também não.
 
 Exemplo (o dono, no terminal; o arquivo de cabeçalho de "Como usar em 1 minuto"):

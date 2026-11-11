@@ -584,22 +584,70 @@ def conferir_url_amazon(url):
     return url
 
 
+class LimiteDaLeitura(OSError):
+    """Prazo total ou teto de bytes de uma leitura limitada estourado (é OSError: vira `falha_rede`)."""
+
+
 class RedirecionamentoAmazon(urllib.request.HTTPRedirectHandler):
-    """Confere cada redirect antes de segui-lo, não só a URL final."""
+    """Confere cada redirect antes de segui-lo, não só a URL final.
+
+    Pedido com `prazo_final` (leitura limitada, veja buscar_produto_amazon): o prazo passa ao pedido seguinte,
+    redirect depois do prazo levanta LimiteDaLeitura e o salto seguinte espera no máximo o que resta. O urllib
+    abre o salto seguinte com o `req.timeout` do pedido atual, por isso ele é encurtado aqui."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         conferir_url_amazon(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        novo = super().redirect_request(req, fp, code, msg, headers, newurl)
+        prazo_final = getattr(req, 'prazo_final', None)
+        if novo is not None and prazo_final is not None:
+            restante = prazo_final - time.monotonic()
+            if restante <= 0:
+                raise LimiteDaLeitura('prazo total da leitura esgotado')
+            novo.prazo_final = prazo_final
+            if isinstance(req.timeout, (int, float)):
+                req.timeout = min(req.timeout, restante)
+        return novo
 
 
 OPENER_AMAZON = urllib.request.build_opener(RedirecionamentoAmazon)
+BLOCO_LEITURA = 64 * 1024
 
 
-def buscar_produto_amazon(url, timeout=30):
+def _ler_limitado(r, prazo_final, teto_bytes):
+    """Lê o corpo em blocos de até BLOCO_LEITURA com read1 (uma chamada de rede por bloco, então cada bloco espera
+    no máximo o timeout da operação), conferindo o prazo antes de cada bloco e o total de bytes depois de cada um.
+    Levanta LimiteDaLeitura ao estourar um dos dois."""
+    partes, total = [], 0
+    while True:
+        if prazo_final is not None and time.monotonic() >= prazo_final:
+            raise LimiteDaLeitura('prazo total da leitura esgotado')
+        bloco = r.read1(BLOCO_LEITURA)
+        if not bloco:
+            return b''.join(partes)
+        total += len(bloco)
+        if teto_bytes is not None and total > teto_bytes:
+            raise LimiteDaLeitura('página maior que o teto')
+        partes.append(bloco)
+
+
+def buscar_produto_amazon(url, timeout=30, prazo_total=None, teto_bytes=None):
+    """Lê uma página da Amazon; `timeout` vale para cada operação de rede. Sem `prazo_total` nem `teto_bytes` (o
+    /api/fetch), lê a página inteira de uma vez, como sempre. Com eles (a releitura), a leitura inteira, redirects
+    incluídos, tem prazo total, conferido a cada redirect e antes de cada bloco, e teto de bytes: estourado um dos
+    dois, a resposta é fechada e sai LimiteDaLeitura (um OSError)."""
     conferir_url_amazon(url)
     req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Language': 'pt-BR,pt;q=0.9',
                                                'Accept': 'text/html,application/xhtml+xml'})
+    prazo_final = None
+    if prazo_total is not None:
+        prazo_final = req.prazo_final = time.monotonic() + prazo_total
+        timeout = min(timeout, prazo_total)
     with OPENER_AMAZON.open(req, timeout=timeout) as r:
-        final = r.geturl(); h = r.read().decode('utf-8', 'ignore')
+        final = r.geturl()
+        if prazo_total is None and teto_bytes is None:
+            corpo = r.read()
+        else:
+            corpo = _ler_limitado(r, prazo_final, teto_bytes)
+        h = corpo.decode('utf-8', 'ignore')
     return {'url_final': final, 'asin': _grab(r'/dp/([A-Z0-9]{10})', final),
             'captcha': 'captcha' in h.lower() and 'productTitle' not in h, **extrair_produto_amazon(h)}
 
@@ -626,7 +674,12 @@ def extrair_produto_amazon(h):
 # pede, logo antes de enviar, a releitura da página de um produto que já está no banco. A URL é montada aqui a partir
 # do ASIN validado (nunca vem do cliente) e vai sem tag, para não parecer clique de afiliado.
 RE_ASIN = re.compile(r'[A-Z0-9]{10}')
-PRAZO_RELEITURA_S = 10            # timeout de cada operação de rede da releitura (o /api/fetch segue com 30 s)
+# Limites da releitura. O Turbo desiste em 15 s; o pior caso aqui é o prazo total mais uma operação que começou
+# antes de ele vencer: 8 + 4 = 12 s. A página da Amazon tem 1 a 2 MB. O /api/fetch segue sem prazo total nem teto,
+# com 30 s por operação.
+PRAZO_RELEITURA_S = 8                       # prazo total da leitura, redirects incluídos
+PRAZO_OPERACAO_RELEITURA_S = 4              # timeout de cada operação de rede (conexão, cabeçalho, cada bloco)
+TETO_RELEITURA_BYTES = 4 * 1024 * 1024      # acima disso a página é abandonada (falha_rede)
 CAMPOS_DO_PRECO = ('preco', 'preco_antigo', 'desconto')   # os únicos CAMPOS que a releitura grava
 ERRO_SEM_OFERTA = 'oferta da Amazon não encontrada'
 
@@ -635,11 +688,18 @@ def url_releitura_amazon(asin):
     return f'https://www.amazon.com.br/dp/{asin}'
 
 
+def buscar_releitura_amazon(url, timeout):
+    """O buscar_produto_amazon com o prazo total e o teto da releitura (lidos a cada chamada)."""
+    return buscar_produto_amazon(url, timeout=timeout, prazo_total=PRAZO_RELEITURA_S,
+                                 teto_bytes=TETO_RELEITURA_BYTES)
+
+
 def _classificar_releitura(asin, buscar):
     """Lê a página e devolve (resultado, página ou None). Mesma classificação do atualizar_precos.py, com uma
-    diferença: página não reconhecida (sem título ou sem ASIN) é `bloqueado`, nunca motivo de descarte."""
+    diferença: página não reconhecida (sem título ou sem ASIN) é `bloqueado`, nunca motivo de descarte.
+    Prazo total ou teto de bytes estourado (LimiteDaLeitura, um OSError) é `falha_rede`."""
     try:
-        r = buscar(url_releitura_amazon(asin), timeout=PRAZO_RELEITURA_S)
+        r = buscar(url_releitura_amazon(asin), timeout=PRAZO_OPERACAO_RELEITURA_S)
     except URLRecusada:   # redirect para fora da Amazon
         return 'outro_produto', None
     except urllib.error.HTTPError as e:   # antes do URLError, que é a classe mãe
@@ -683,7 +743,7 @@ def _resposta_confirmada(vals, quando):
             'desconto_pct': pct if pct and 0 < pct < 100 else None, 'preco_em': quando}
 
 
-def confirmar_preco_amazon(con, asin, buscar=buscar_produto_amazon, agora=agora):
+def confirmar_preco_amazon(con, asin, buscar=buscar_releitura_amazon, agora=agora):
     """Relê a página do produto da Amazon `asin` e, com preço legível, grava só o preço (CA1.1 e CA1.2).
 
     Devolve o corpo da resposta (sem a versão): {"resultado": "confirmado", "preco", "preco_antigo",
@@ -735,8 +795,9 @@ FREIO_ESPERA_RODADA_S = 60   # o Retry-After quando a rodada da Amazon está no 
 
 def rodada_amazon_livre():
     """True se nenhuma rodada da Amazon segura a trava agora. Pega a trava e a solta na hora: a releitura nunca
-    a segura durante a leitura, então uma rodada que comece no meio entra normalmente (ela tem prioridade).
-    Trava que não abre (symlink, permissão) conta como ocupada: na dúvida, não lê."""
+    a segura durante a leitura, então uma rodada pode começar no meio dela (a rodada tem prioridade). Na rara
+    coincidência de a rodada tentar a trava nesses microssegundos, ela sai com 4 ("outra rodada de amazon está em
+    andamento") e basta repeti-la. Trava que não abre (symlink, permissão) conta como ocupada: na dúvida, não lê."""
     try:
         with travar_rodada('amazon'):
             return True
@@ -1067,7 +1128,8 @@ class Handler(SimpleHTTPRequestHandler):
         """GET autenticado em /api/v1/ vai para api_ofertas.rota. True se a rota era da v1.
 
         O bloquear_v1() já conferiu navegador, token e método. A conexão fica só de leitura
-        (PRAGMA query_only): a v1 nunca grava. ErroApi vira {"error": msg} com o código; erro
+        (PRAGMA query_only): as rotas GET da v1 nunca gravam (a confirmação de preço tem conexão própria,
+        em despachar_confirmar_preco). ErroApi vira {"error": msg} com o código; erro
         inesperado vira 500 com só o tipo no log (a mensagem do sqlite pode trazer dados).
         """
         if not eh_rota_v1(self._caminho):

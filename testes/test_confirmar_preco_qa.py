@@ -168,7 +168,7 @@ class TestPaginaDeVerdade(Base):
         r, opener = self.com_pagina(html())
         self.assertEqual(r, {'resultado': 'confirmado', 'preco': 89.9, 'preco_antigo': 119.9, 'desconto_pct': 25,
                              'preco_em': AGORA_1})
-        self.assertEqual(opener.chamadas, [(f'https://www.amazon.com.br/dp/{ASIN}', 10)])
+        self.assertEqual(opener.chamadas, [(f'https://www.amazon.com.br/dp/{ASIN}', 4)])   # S1: 4 s por operação
         l = linha(S.DB)
         self.assertEqual((l['preco'], l['preco_antigo'], l['desconto'], l['preco_em']),
                          ('R$ 89,90', 'R$ 119,90', '-25%', AGORA_1))

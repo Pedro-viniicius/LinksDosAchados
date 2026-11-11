@@ -15,6 +15,7 @@ projeto, toca o achadinhos.db real ou o servidor em 8765. Só biblioteca padrão
 """
 import http.client
 import io
+import itertools
 import json
 import os
 import secrets
@@ -223,6 +224,7 @@ class OpenerFalso:
     def __init__(self):
         self.modo = 'confirmado'
         self.chamadas = []
+        self.respostas = []
         self.durante = None   # chamado no meio da leitura (para conferir trava e concorrência)
 
     def __call__(self, req, timeout=None):
@@ -240,11 +242,37 @@ class OpenerFalso:
             raise urllib.error.URLError(ConnectionRefusedError(SEGREDO))
         elif self.modo == 'http_503':
             raise urllib.error.HTTPError(url, 503, SEGREDO, {}, io.BytesIO(SEGREDO.encode()))
-        resposta = mock.MagicMock()
-        resposta.__enter__.return_value = resposta
-        resposta.geturl.return_value = url
-        resposta.read.return_value = h.encode()
+        elif self.modo == 'gotejando':   # um byte a cada 20 ms por 3 s (finito só para um mutante não travar)
+            return self.guardar(RespostaFalsa(url, itertools.repeat(b'x', 150), pausa=0.02))
+        elif self.modo == 'grande':   # a página com preço e depois 8 MB em blocos de 64 KB
+            enchimento = itertools.repeat(b' ' * S.BLOCO_LEITURA, 2 * S.TETO_RELEITURA_BYTES // S.BLOCO_LEITURA)
+            return self.guardar(RespostaFalsa(url, itertools.chain([h.encode()], enchimento)))
+        return self.guardar(RespostaFalsa(url, [h.encode()]))
+
+    def guardar(self, resposta):
+        self.respostas.append(resposta)
         return resposta
+
+
+class RespostaFalsa:
+    """O que o OPENER_AMAZON.open devolve: geturl() e read1() por blocos (`pausa` s antes de cada um)."""
+
+    def __init__(self, url, blocos, pausa=0.0):
+        self.url, self.blocos, self.pausa, self.fechada = url, iter(blocos), pausa, False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.fechada = True
+
+    def geturl(self):
+        return self.url
+
+    def read1(self, n=-1):
+        if self.pausa:
+            time.sleep(self.pausa)
+        return next(self.blocos, b'')
 
 
 class TestRotaEmProcesso(unittest.TestCase):
@@ -328,7 +356,34 @@ class TestRotaEmProcesso(unittest.TestCase):
         self.assertEqual((preco, url), ('R$ 89,90', LINK))
         self.assertNotEqual(preco_em, ANTIGO)
         self.assertEqual([c for c in self.opener.chamadas],
-                         [(f'https://www.amazon.com.br/dp/{ASIN}', 10)] * (len(esperados) + 1))
+                         [(f'https://www.amazon.com.br/dp/{ASIN}', 4)] * (len(esperados) + 1))
+
+    def test_s1_pagina_que_goteja_ou_grande_demais_da_falha_rede_e_libera_o_freio(self):
+        """S1/R2: leitor que nunca termina (prazo total, aqui encurtado para 0,3 s) e página acima dos 4 MB: os dois
+        dão falha_rede, fecham a resposta, não gravam nada e não deixam o freio em `ocupado`."""
+        antes = linhas(S.DB)
+        for modo, prazo in (('gotejando', 0.3), ('grande', S.PRAZO_RELEITURA_S)):
+            with self.subTest(modo=modo), mock.patch.object(S, 'PRAZO_RELEITURA_S', prazo):
+                self.opener.modo = modo
+                inicio = time.monotonic()
+                st, _, j, _ = self.pedir()
+                self.assertEqual((st, j), (200, {'versao': 1, 'resultado': 'falha_rede'}))
+                self.assertLess(time.monotonic() - inicio, 3)
+                self.assertTrue(self.opener.respostas[-1].fechada)
+                self.assertEqual(linhas(S.DB), antes)   # preço, url e preco_em como estavam
+                self.relogio.t += S.FREIO_INTERVALO_S   # só o intervalo: `ocupado` daria 429 aqui
+                self.opener.modo = 'confirmado'
+                st, _, j, _ = self.pedir()
+                self.assertEqual((st, j['resultado']), (200, 'confirmado'), j)
+                self.relogio.t += S.FREIO_INTERVALO_S
+                banco = sqlite3.connect(S.DB)   # volta a linha ao estado de antes para o próximo modo
+                try:
+                    banco.execute("UPDATE items SET preco='R$ 100,00', preco_antigo='R$ 150,00', desconto='-33%', "
+                                  "preco_em=?, atualizado_em=? WHERE item_id=?", (ANTIGO, ANTIGO, ASIN))
+                    banco.commit()
+                finally:
+                    banco.close()
+                self.assertEqual(linhas(S.DB), antes)
 
     def test_resposta_nunca_traz_html_nem_mensagem_do_erro(self):
         for modo in ('falha_rede', 'http_503', 'bloqueado'):

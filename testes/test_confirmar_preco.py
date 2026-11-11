@@ -7,19 +7,25 @@ Uso:  python3 testes/test_confirmar_preco.py -v
 ACHADINHOS_DB aponta para um diretório temporário antes do import e qualquer saída acidental para a rede
 bate num proxy morto. A página da Amazon é sempre falsa: o `buscar` é injetado (dict no formato do
 buscar_produto_amazon ou a exceção que ele levantaria) e o OPENER_AMAZON.open reprova se for chamado,
-salvo no teste que confere a URL pedida, onde ele também é falso. Nenhum teste abre a Amazon, o
+salvo nos testes que conferem a URL pedida e os limites da leitura (prazo total e teto de bytes), onde ele
+também é falso. Nenhum teste abre a Amazon, o
 achadinhos.db real ou o servidor em 8765. Só biblioteca padrão.
 """
+import contextlib
 import http.client
 import io
+import itertools
 import os
 import shutil
 import socket
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
+import urllib.request
+import urllib.response
 from unittest import mock
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,6 +84,43 @@ class Buscar:
         if isinstance(self.resultado, BaseException):
             raise self.resultado
         return dict(self.resultado)
+
+
+# Um byte a cada 20 ms por 3 s: com prazo de 0,3 s, para o servidor é a página que nunca termina. É finito só
+# para que um servidor sem o prazo falhe o teste em vez de travá-lo.
+def gotejando():
+    return itertools.repeat(b'x', 150)
+
+
+class RespostaEmBlocos:
+    """Resposta do OPENER_AMAZON.open falsa que só se lê em blocos (read1): devolve os `blocos` (lista ou
+    iterador), esperando `pausa` s antes de cada um, e b'' quando acabam. read() reprova: a releitura nunca lê a
+    página de uma vez. Guarda quantos blocos foram lidos, o tamanho pedido e se a resposta foi fechada."""
+
+    def __init__(self, blocos, pausa=0.0, url=f'https://www.amazon.com.br/dp/{ASIN}'):
+        self.blocos, self.pausa, self.url = iter(blocos), pausa, url
+        self.lidos, self.pedidos, self.fechada = 0, [], False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.fechada = True
+
+    def geturl(self):
+        return self.url
+
+    def read1(self, n=-1):
+        self.pedidos.append(n)
+        if self.pausa:
+            time.sleep(self.pausa)
+        bloco = next(self.blocos, b'')
+        if bloco:
+            self.lidos += 1
+        return bloco
+
+    def read(self, *a):
+        raise AssertionError('a releitura leu a página de uma vez')
 
 
 class Base(unittest.TestCase):
@@ -227,16 +270,17 @@ class TestResultados(Base):
     def test_ca1_1_le_dp_sem_tag(self):
         buscar = Buscar(pagina())
         self.confirmar(buscar)
-        self.assertEqual(buscar.chamadas, [(f'https://www.amazon.com.br/dp/{ASIN}', S.PRAZO_RELEITURA_S)])
-        self.assertEqual(S.PRAZO_RELEITURA_S, 10)
+        self.assertEqual(buscar.chamadas, [(f'https://www.amazon.com.br/dp/{ASIN}', S.PRAZO_OPERACAO_RELEITURA_S)])
+        # S1: 8 s para a leitura inteira + uma operação de 4 s que começou antes do prazo = 12 s < 15 s do Turbo
+        self.assertEqual((S.PRAZO_RELEITURA_S, S.PRAZO_OPERACAO_RELEITURA_S, S.TETO_RELEITURA_BYTES),
+                         (8, 4, 4 * 1024 * 1024))
+        self.assertLess(S.PRAZO_RELEITURA_S + S.PRAZO_OPERACAO_RELEITURA_S, 15)
 
     def test_ca1_1_le_dp_sem_tag_pelo_opener_de_verdade(self):
-        """O padrão do `buscar` é o buscar_produto_amazon: a URL sem tag e o prazo de 10 s chegam ao opener."""
-        resposta = mock.MagicMock()
-        resposta.__enter__.return_value = resposta
-        resposta.geturl.return_value = f'https://www.amazon.com.br/dp/{ASIN}'
-        resposta.read.return_value = ('<span id="productTitle"> Perfume </span><div id="corePrice_feature_div">'
-                                      '<span class="a-offscreen">R$ 89,90</span></div>').encode()
+        """O padrão do `buscar` é o buscar_releitura_amazon: a URL sem tag e os 4 s por operação chegam ao opener,
+        e a página é lida em blocos (read1), nunca de uma vez."""
+        resposta = RespostaEmBlocos([('<span id="productTitle"> Perfume </span><div id="corePrice_feature_div">'
+                                      '<span class="a-offscreen">R$ 89,90</span></div>').encode()])
         with mock.patch.object(S.OPENER_AMAZON, 'open', return_value=resposta) as aberto:
             con = S.conectar()
             try:
@@ -248,9 +292,11 @@ class TestResultados(Base):
         req = aberto.call_args.args[0]
         self.assertEqual(req.full_url, f'https://www.amazon.com.br/dp/{ASIN}')
         self.assertNotIn('tag=', req.full_url)
-        self.assertEqual(aberto.call_args.kwargs.get('timeout'), 10)
+        self.assertEqual(aberto.call_args.kwargs.get('timeout'), 4)
+        self.assertTrue(resposta.fechada)
 
     def test_buscar_produto_amazon_mantem_prazo_de_30_s_por_padrao(self):
+        """O /api/fetch não muda: 30 s por operação, read() de uma vez, sem prazo total nem teto."""
         resposta = mock.MagicMock()
         resposta.__enter__.return_value = resposta
         resposta.geturl.return_value = f'https://www.amazon.com.br/dp/{ASIN}'
@@ -259,6 +305,125 @@ class TestResultados(Base):
             S.buscar_produto_amazon(f'https://www.amazon.com.br/dp/{ASIN}')
             S.buscar_produto_amazon(f'https://www.amazon.com.br/dp/{ASIN}', timeout=7)
         self.assertEqual([c.kwargs.get('timeout') for c in aberto.call_args_list], [30, 7])
+        resposta.read1.assert_not_called()
+        self.assertFalse(any(hasattr(c.args[0], 'prazo_final') for c in aberto.call_args_list))
+
+
+class TestLimitesDaLeitura(Base):
+    """S1/R2: prazo total e teto de bytes da releitura. Página que goteja, que nunca termina ou grande demais vira
+    falha_rede, fecha a resposta e não grava nada. O relógio é o de verdade, com prazos curtos."""
+
+    URL = f'https://www.amazon.com.br/dp/{ASIN}'
+
+    def buscar_limitado(self, resposta, prazo_total=None, teto_bytes=None):
+        with mock.patch.object(S.OPENER_AMAZON, 'open', return_value=resposta):
+            return S.buscar_produto_amazon(self.URL, timeout=4, prazo_total=prazo_total, teto_bytes=teto_bytes)
+
+    def confirmar_pelo_padrao(self, resposta, prazo=None):
+        """confirmar_preco_amazon com o buscar padrão (o da rota), o opener falso e, se pedido, outro prazo total."""
+        patches = [mock.patch.object(S.OPENER_AMAZON, 'open', return_value=resposta)]
+        if prazo is not None:
+            patches.append(mock.patch.object(S, 'PRAZO_RELEITURA_S', prazo))
+        with contextlib.ExitStack() as pilha:
+            for p in patches:
+                pilha.enter_context(p)
+            con = S.conectar()
+            try:
+                return S.confirmar_preco_amazon(con, ASIN, agora=lambda: AGORA)
+            finally:
+                con.close()
+
+    def test_leitor_que_nunca_termina_estoura_o_prazo_total(self):
+        resposta = RespostaEmBlocos(gotejando(), pausa=0.02)
+        inicio = time.monotonic()
+        with self.assertRaises(S.LimiteDaLeitura):
+            self.buscar_limitado(resposta, prazo_total=0.3)
+        gasto = time.monotonic() - inicio
+        self.assertGreaterEqual(gasto, 0.3)
+        self.assertLess(gasto, 1.5)
+        self.assertTrue(resposta.fechada)
+        self.assertGreater(resposta.lidos, 1)   # leu aos poucos e parou pelo relógio, não pelo fim da página
+
+    def test_pagina_acima_do_teto_e_abandonada_logo_depois_do_teto(self):
+        resposta = RespostaEmBlocos(itertools.repeat(b'x' * S.BLOCO_LEITURA, 20))
+        with self.assertRaises(S.LimiteDaLeitura):
+            self.buscar_limitado(resposta, teto_bytes=10 * S.BLOCO_LEITURA)
+        self.assertEqual(resposta.lidos, 11)   # o 11º bloco passa do teto: nenhum bloco a mais
+        self.assertTrue(resposta.fechada)
+
+    def test_pagina_exatamente_no_teto_passa(self):
+        corpo = b'<span id="productTitle">Perfume</span>'
+        self.assertEqual(self.buscar_limitado(RespostaEmBlocos([corpo]), teto_bytes=len(corpo))['titulo'], 'Perfume')
+        with self.assertRaises(S.LimiteDaLeitura):
+            self.buscar_limitado(RespostaEmBlocos([corpo]), teto_bytes=len(corpo) - 1)
+
+    def test_blocos_pedidos_tem_o_tamanho_do_bloco(self):
+        resposta = RespostaEmBlocos([b'a', b'b'])
+        self.buscar_limitado(resposta, prazo_total=5, teto_bytes=100)
+        self.assertEqual(set(resposta.pedidos), {S.BLOCO_LEITURA})
+
+    def test_prazo_total_menor_que_o_timeout_encurta_o_timeout_da_operacao(self):
+        with mock.patch.object(S.OPENER_AMAZON, 'open', return_value=RespostaEmBlocos([])) as aberto:
+            S.buscar_produto_amazon(self.URL, timeout=4, prazo_total=2.5, teto_bytes=100)
+        self.assertEqual(aberto.call_args.kwargs.get('timeout'), 2.5)
+
+    def test_ca1_2_gotejando_pela_rota_da_falha_rede_e_nao_grava(self):
+        antes = self.linha()
+        r = self.confirmar_pelo_padrao(RespostaEmBlocos(gotejando(), pausa=0.02), prazo=0.3)
+        self.assertEqual(r, {'resultado': 'falha_rede'})
+        self.assertEqual(self.linha(), antes)   # preço, url e preco_em como estavam
+
+    def test_ca1_2_pagina_acima_do_teto_pela_rota_da_falha_rede_e_nao_grava(self):
+        """Uma página de verdade com preço legível, mas acima dos 4 MB: abandonada, nada gravado."""
+        pagina_ok = ('<span id="productTitle"> Perfume </span><div id="corePrice_feature_div">'
+                     '<span class="a-offscreen">R$ 89,90</span></div>').encode()
+        enchimento = b' ' * S.BLOCO_LEITURA
+        blocos = [pagina_ok] + [enchimento] * (S.TETO_RELEITURA_BYTES // S.BLOCO_LEITURA)
+        antes = self.linha()
+        resposta = RespostaEmBlocos(blocos)
+        self.assertEqual(self.confirmar_pelo_padrao(resposta), {'resultado': 'falha_rede'})
+        self.assertEqual(self.linha(), antes)
+        self.assertTrue(resposta.fechada)
+        # a mesma página sem o último bloco cabe no teto e confirma
+        self.assertEqual(self.confirmar_pelo_padrao(RespostaEmBlocos(blocos[:-1]))['resultado'], 'confirmado')
+
+    def test_redirects_entram_no_prazo_total(self):
+        """Com o RedirecionamentoAmazon de verdade: cada salto demora 0,1 s; com 0,25 s de prazo, o redirect que
+        chega depois do prazo levanta LimiteDaLeitura, e cada salto abre com no máximo o que resta do prazo."""
+        vistos = []
+
+        class HTTPSQueRedireciona(urllib.request.BaseHandler):
+            def https_open(self, req):
+                vistos.append(req.timeout)
+                time.sleep(0.1)
+                h = http.client.HTTPMessage()
+                h['Location'] = f'https://www.amazon.com.br/salto-{len(vistos)}/dp/{ASIN}'
+                r = urllib.response.addinfourl(io.BytesIO(b''), h, req.full_url, 302)
+                r.msg = 'Found'
+                return r
+
+        op = urllib.request.OpenerDirector()
+        for h in (S.RedirecionamentoAmazon(), urllib.request.HTTPErrorProcessor(),
+                  urllib.request.HTTPDefaultErrorHandler(), HTTPSQueRedireciona()):
+            op.add_handler(h)
+        inicio = time.monotonic()
+        with mock.patch.object(S, 'OPENER_AMAZON', op), self.assertRaises(S.LimiteDaLeitura):
+            S.buscar_produto_amazon(self.URL, timeout=4, prazo_total=0.25, teto_bytes=100)
+        self.assertLess(time.monotonic() - inicio, 1)
+        # saltos em 0,0, 0,1 e 0,2 s (o redirect do 3º chega em 0,3 s, depois do prazo); sob carga, um a menos
+        self.assertIn(len(vistos), (2, 3), vistos)
+        self.assertEqual(vistos[0], 0.25)
+        self.assertTrue(all(0 < b < a for a, b in zip(vistos, vistos[1:])), vistos)
+        self.assertLessEqual(vistos[-1], 0.25 - 0.1 * (len(vistos) - 1) + 0.001)
+
+    def test_redirects_sem_prazo_seguem_como_antes(self):
+        """Pedido sem prazo_final (o /api/fetch): o RedirecionamentoAmazon não mexe no timeout."""
+        req = urllib.request.Request(self.URL)
+        req.timeout = 30
+        novo = S.RedirecionamentoAmazon().redirect_request(req, None, 302, 'Found', {},
+                                                           f'https://www.amazon.com.br/x/dp/{ASIN}')
+        self.assertEqual(req.timeout, 30)
+        self.assertFalse(hasattr(novo, 'prazo_final'))
 
 
 class TestGravacao(Base):
