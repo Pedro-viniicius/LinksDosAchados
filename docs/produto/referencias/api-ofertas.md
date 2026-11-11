@@ -5,7 +5,8 @@
 - Atualizado em 2026-11-04 (plano `docs/produto/planos/abas-nichadas-e-coleta.md`): as abas passam a ser 17 e 3 delas têm público. **Só os nomes de `categoria` e as abas com `generos` mudam; nenhum campo, parâmetro ou erro é novo.** Veja "Abas" e a nota de renomeação.
 - Atualizado em 2026-11-04 (plano `docs/produto/planos/atualizar-precos.md`, etapa 3): cada oferta ganha o campo `preco_em` (quando o preço foi confirmado) e há o parâmetro opcional `preco_max_horas`. A `versao` continua 1. Veja "Idade do preço".
 - **Mudança de comportamento em 2026-11-08 (decisão do dono):** sem `preco_max_horas`, a API passa a trazer só ofertas com preço dentro da validade configurada no Etiqueta (`config.preco_validade_horas`, padrão 24 h), a mesma trava do disparo. Antes, sem o parâmetro, saía também oferta de preço velho. `/api/v1/categorias` não mudou. Nenhum campo, parâmetro ou erro é novo. Veja "Idade do preço".
-- Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
+- **Mudança em 2026-11-11 (plano "Rodar sozinho · Entrega 1" do Achadinho Turbo, `docs/produto/planos/rodar-sozinho-entrega1.md` no repositório dele): a v1 passa a ter uma rota que grava**, `POST /api/v1/amazon/<ASIN>/confirmar-preco`. Ela relê a página de **uma** oferta da Amazon que já está no banco e grava só o preço. As duas rotas `GET` não mudaram e a `versao` continua 1. Veja "`POST /api/v1/amazon/<ASIN>/confirmar-preco`".
+- Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, e uma que relê e grava o preço de uma oferta da Amazon, `POST /api/v1/amazon/<ASIN>/confirmar-preco`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
 
 ## Como usar em 1 minuto
 
@@ -29,7 +30,7 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 - **Leitura única:** o servidor lê o arquivo uma vez, na subida. Para **trocar** o token, troque o arquivo e **reinicie o `servidor.py`**; depois atualize o valor no consumidor.
 - **Para desligar** a API: apague o arquivo e reinicie. A v1 passa a dar 503.
 - **Onde vai o token:** só no cabeçalho `Authorization: Bearer <token>` (o esquema `Bearer` vale sem diferenciar maiúsculas). **`?token=` na URL não autentica.** Mais de um cabeçalho `Authorization` dá 401. A comparação é em tempo constante (`hmac.compare_digest`).
-- **Nunca** cole o token em conversa de chat, issue, commit, print ou log. O servidor também não o grava: o log de acesso da v1 mostra só o método, a rota e `?(omitida)` no lugar da query, e a mensagem de subida traz só o caminho do arquivo.
+- **Nunca** cole o token em conversa de chat, issue, commit, print ou log. O servidor também não o grava: o log de acesso da v1 mostra só o método, a rota e `?(omitida)` no lugar da query, e a mensagem de subida traz só o caminho do arquivo. A rota de confirmação de preço aparece no log sem o ASIN: `POST /api/v1/amazon/(asin)/confirmar-preco`.
 - Se o token vazar, gere outro, troque o arquivo, reinicie e atualize o consumidor.
 
 ## Guardas, na ordem em que valem
@@ -40,11 +41,12 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 | 2 | Cabeçalho `Origin` (mesmo a do próprio Etiqueta) ou `Sec-Fetch-Site` presente, que é o que um navegador manda | 403 `a API v1 não aceita pedidos de navegador` |
 | 3 | Sem token válido carregado (API desligada) | 503 `a API v1 está desligada: veja o motivo no log do servidor` |
 | 4 | Sem `Authorization: Bearer <token>` certo | 401 `token ausente ou inválido: envie Authorization: Bearer <token>`, com `WWW-Authenticate: Bearer` |
-| 5 | Método diferente de GET (inclui HEAD e OPTIONS) | 405 `método não permitido: a API só aceita GET`, com `Allow: GET` |
-| 6 | Rota que não é `ofertas` nem `categorias` | 404 `rota não encontrada` |
+| 5 | Método diferente de GET (inclui HEAD e OPTIONS); na rota de confirmação de preço, método diferente de POST | 405 `método não permitido: a API só aceita GET`, com `Allow: GET`; na rota de confirmação, 405 `método não permitido: esta rota só aceita POST`, com `Allow: POST` |
+| 6 | Rota que não é `ofertas`, `categorias` nem `amazon/<ASIN>/confirmar-preco` (inclui ASIN fora do formato) | 404 `rota não encontrada` |
 | 7 | Parâmetro inválido | 400 (veja "Erros") |
 
-- **Sem CORS:** nenhuma resposta da v1 leva `Access-Control-Allow-*` e `OPTIONS` não é liberado (dá 401 ou 405, como qualquer método que não seja GET). Uma página aberta no navegador não lê a v1, nem com o token.
+- **Sem CORS:** nenhuma resposta da v1 leva `Access-Control-Allow-*` e `OPTIONS` não é liberado (dá 401 ou 405, como qualquer método não aceito). Uma página aberta no navegador não lê a v1, nem com o token.
+- A rota de confirmação de preço tem guardas próprias depois destas (corpo, item e freio): veja a seção dela.
 - O 405 só aparece depois da autenticação: quem não tem o token vê 401 (ou 503), nunca 405.
 - O `fetch` do Node 22 e o `curl` não mandam `Origin` nem `Sec-Fetch-Site`, então passam. Um navegador sempre manda um deles, então é barrado.
 - O servidor só escuta em `127.0.0.1`. Esta API **não** foi pensada para a internet (veja "Limites").
@@ -52,7 +54,7 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 ## Resposta e formato
 
 - `Content-Type: application/json; charset=utf-8`, com acentos em UTF-8. `Cache-Control: no-store`.
-- Toda resposta de sucesso traz `"versao": 1`. Erro é sempre `{"error": "<frase em português>"}`.
+- Toda resposta de sucesso traz `"versao": 1`. Erro é sempre `{"error": "<frase em português>"}`, salvo o 429 do freio da confirmação de preço, que traz `versao`, `resultado`, `motivo` e `tentar_em_s`.
 - Mudança incompatível exige `/api/v2/`. **Campo novo pode entrar na v1:** o consumidor deve ignorar campo que não conhece.
 - **Texto cru:** `titulo`, `busca`, `categoria` e `cupom` saem como foram coletados, sem escape. O consumidor precisa escapar antes de pôr esses campos em HTML (ou em qualquer formato com caracteres especiais).
 - Horários (`criado_em`, `atualizado_em`, `preco_em`) são texto ISO **local do computador, sem fuso**, com precisão de segundo (`2026-11-03T12:24:23`). Trate como texto.
@@ -222,15 +224,18 @@ Exemplo (valores ilustrativos; mostra uma aba sem público e as três com públi
 
 ## Erros
 
-Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32, e com `preco_max_horas` para 33, e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
+Sempre `{"error": "<frase>"}` (a exceção é o 429 do freio, na tabela). A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32, e com `preco_max_horas` para 33, e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
 
 | Código | Quando | Exemplo de frase |
 |---|---|---|
+| 400 | Corpo na rota de confirmação de preço | `esta rota não aceita corpo` |
 | 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero, preco_max_horas)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `genero deve ser feminino, masculino, unissex, sem, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `preco_max_horas deve ser um número inteiro de 1 a 168`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
 | 401 | Token ausente ou errado (`WWW-Authenticate: Bearer`) | `token ausente ou inválido: envie Authorization: Bearer <token>` |
 | 403 | `Host` não local; pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | `host não permitido`; `a API v1 não aceita pedidos de navegador` |
-| 404 | Rota v1 desconhecida (só depois da autenticação) | `rota não encontrada` |
-| 405 | Método diferente de GET, depois da autenticação (`Allow: GET`) | `método não permitido: a API só aceita GET` |
+| 404 | Rota v1 desconhecida (só depois da autenticação); ASIN fora do formato na rota de confirmação | `rota não encontrada` |
+| 404 | Confirmação de preço de um ASIN que não é oferta da Amazon no banco | `oferta da Amazon não encontrada` |
+| 405 | Método diferente de GET, depois da autenticação (`Allow: GET`); na rota de confirmação, diferente de POST (`Allow: POST`) | `método não permitido: a API só aceita GET`; `método não permitido: esta rota só aceita POST` |
+| 429 | Freio da confirmação de preço (`Retry-After`) | não é `{"error"}`: `{"versao": 1, "resultado": "freio", "motivo": ..., "tentar_em_s": N}` |
 | 500 | Falha inesperada | `erro interno na API v1` (o log do servidor traz só o tipo do erro, nunca a mensagem, que pode trazer dados) |
 | 503 | API desligada (sem `api_token.txt` válido) | `a API v1 está desligada: veja o motivo no log do servidor` |
 
@@ -276,11 +281,76 @@ const { ofertas, proximo, total } = await r.json();
 
 ## Limites
 
-- **Sem limite de taxa.** Um consumidor local, com token. Se um dia a API sair do computador do dono (VPS), isso e o HTTPS passam a ser requisito.
+- **Sem limite de taxa nas rotas `GET`.** Um consumidor local, com token. Se um dia a API sair do computador do dono (VPS), isso e o HTTPS passam a ser requisito. A rota de confirmação de preço é a exceção: tem freio próprio, porque cada pedido abre a página da Amazon.
 - **O token não protege mais que hoje contra outro processo no mesmo computador:** `GET /api/items` (a API da interface) continua aberto a quem não manda `Origin`. O que a v1 ganha é barrar o navegador e ter o contrato pronto para o dia em que o consumidor estiver em outra máquina.
 - **Item apagado some sem aviso:** a API só lista o que existe agora. O consumidor relê a lista a cada execução.
 - **Reclassificar abas** (`migrar_categorias.py`, `classificar_lista.py`) regrava `atualizado_em` de muitos itens; eles reaparecem na ordem `atualizacao`. É esperado: a `chave` evita repetir o envio. Foi o que a migração para as 17 abas fez em 2026-11-04 (veja "Abas").
 - Não existe `GET /api/v1/ofertas/<id>` (rota desconhecida dá 404).
+
+## `POST /api/v1/amazon/<ASIN>/confirmar-preco`
+
+Relê agora a página de **uma** oferta da Amazon que já está no banco e, com preço legível, grava o preço. O Achadinho Turbo chama logo antes de enviar a oferta. É a mesma leitura do botão "Atualizar preço" do site (`buscar_produto_amazon`) e a mesma classificação do `atualizar_precos.py`. **É a única rota da v1 que grava.** Código: `confirmar_preco_amazon`, `FreioReleitura` e `Handler.despachar_confirmar_preco` em `servidor.py`.
+
+- **`<ASIN>`:** exatamente 10 caracteres de `A-Z` e `0-9`, conferidos no caminho cru (sem decodificar). Minúsculas, `%xx` ou outro tamanho dão 404 `rota não encontrada`. Outro formato de caminho (`/api/v1/amazon/<ASIN>`, barra a mais) é outra rota da v1: `POST` nela dá 405 com `Allow: GET`.
+- **O que é lido:** `https://www.amazon.com.br/dp/<ASIN>`, **sem tag** (a releitura não pode parecer clique de afiliado). A URL é montada pelo Etiqueta a partir do ASIN; nada vem do cliente. Os redirects passam pela mesma conferência do `/api/fetch` (só hosts da Amazon). Prazo de 10 s por operação de rede.
+- **Sem corpo:** `POST` sem corpo (`Content-Length` ausente ou `0`). Qualquer corpo, ou `Transfer-Encoding`, dá 400 `esta rota não aceita corpo`. Não há parâmetro.
+
+**Guardas, na ordem** (as 5 primeiras são as de toda a v1):
+
+| # | Condição | Resposta |
+|---|---|---|
+| 1 | `Host` não local | 403 `host não permitido` |
+| 2 | Pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | 403 `a API v1 não aceita pedidos de navegador` |
+| 3 | API desligada (sem token) | 503 |
+| 4 | Token ausente ou errado | 401, com `WWW-Authenticate: Bearer` |
+| 5 | Método diferente de POST (inclui GET, HEAD e OPTIONS) | 405 `método não permitido: esta rota só aceita POST`, com `Allow: POST` |
+| 6 | ASIN fora do formato | 404 `rota não encontrada` |
+| 7 | Corpo não vazio | 400 `esta rota não aceita corpo` |
+| 8 | Não há item com `loja='amazon'` e `item_id=<ASIN>` (inclui item do ML ou da Shopee com o mesmo código) | 404 `oferta da Amazon não encontrada` |
+| 9 | Freio | 429 (veja abaixo) |
+| 10 | Leitura da página | 200 com o resultado |
+
+Nenhuma recusa das linhas 1 a 8 abre a Amazon nem gasta o freio.
+
+**Respostas 200** (sempre com `"versao": 1`; decida pelo `resultado`):
+
+| `resultado` | Quando | Grava? |
+|---|---|---|
+| `confirmado` | Página com título, ASIN igual ao pedido e preço legível (`ler_preco`). | Sim, antes de responder. |
+| `sem_preco` | Título presente e ASIN igual, mas preço ilegível ou ausente (indisponível); ou HTTP 404/410 da Amazon. | Não. |
+| `outro_produto` | A página final é de outro ASIN; ou redirect para fora da Amazon. | Não. |
+| `bloqueado` | Captcha; HTTP 429 ou 503 da Amazon; página sem título ou sem ASIN (página que não dá para reconhecer nunca vira descarte). Abre a pausa de 15 min do freio. | Não. |
+| `falha_rede` | Erro de rede, tempo esgotado, conexão cortada ou outro código HTTP. | Não. |
+
+```json
+{"versao": 1, "resultado": "confirmado", "preco": 89.9, "preco_antigo": 119.9, "desconto_pct": 25,
+ "preco_em": "2026-11-11T10:30:00"}
+{"versao": 1, "resultado": "sem_preco"}
+```
+
+- No `confirmado`, `preco` é o número gravado; `preco_antigo` vem `null` quando a página não traz o preço cheio ou quando ele não é maior que `preco`; `desconto_pct` é o desconto da página ou, sem ele, o calculado pelo preço antigo, e vem `null` sem desconto (diferente das ofertas, onde é `0`); `preco_em` é o carimbo novo, no formato de "Resposta e formato".
+- A resposta nunca traz HTML da página nem a mensagem de um erro.
+
+**O que é gravado no `confirmado`:** a leitura de rede acontece fora de transação. Depois, numa transação `BEGIN IMMEDIATE`, o servidor relê a linha, aplica a regra do preço antigo implausível (`sanear_precos`: antigo de 5× o preço ou mais é descartado junto com o desconto) e grava **só** `preco`, `preco_antigo` e `desconto` da página, mais `preco_em` e `atualizado_em` com a hora de agora. Nunca insere item, nunca mexe em `url` (o link de afiliado), título, cupom, foto ou nota. Se o item foi apagado durante a leitura, a resposta é 404 `oferta da Amazon não encontrada` e nada é gravado. Qualquer outro resultado não grava nada: o preço anterior e o `preco_em` ficam como estavam. Como o `atualizado_em` muda, a oferta reaparece depois do cursor na ordem `atualizacao` (deduplique pela `chave`).
+
+**Freio** (em memória; zera quando o servidor reinicia):
+
+- 429 com `Retry-After: N` e `{"versao": 1, "resultado": "freio", "motivo": "<motivo>", "tentar_em_s": N}`, `N` inteiro de 1 ou mais.
+- Motivos, na ordem em que são conferidos:
+  - `ocupado`: uma leitura por vez; outra está em curso.
+  - `pausa`: houve um `bloqueado` há menos de 15 min (contados do fim daquela leitura).
+  - `intervalo`: menos de 3 s desde o início da leitura anterior.
+  - `teto`: 60 leituras na última hora (janela deslizante).
+  - `rodada`: uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) segura a trava `travar_rodada('amazon')`. A rota só confere a trava (pega e solta na hora) e nunca a segura durante a leitura: a rodada tem prioridade e pode começar no meio.
+- Recusa não conta como leitura. Pedido recusado antes do freio (401, 404, 400...) também não.
+
+Exemplo (o dono, no terminal; o arquivo de cabeçalho de "Como usar em 1 minuto"):
+
+```
+curl -s -X POST -H @api_cabecalho.txt "http://localhost:8765/api/v1/amazon/<ASIN>/confirmar-preco"
+```
+
+Node 22: `fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, redirect: 'error' })`, sem corpo; leia o corpo inteiro e trate 429 pelo `tentar_em_s`.
 
 ## Guia de encaixe no Achadinho Turbo
 

@@ -167,7 +167,7 @@ PORTA=8766 node testes/rodar.mjs disparo
 
 ## API para o Achadinho Turbo
 
-O servidor tem uma API só de leitura, `/api/v1/ofertas` e `/api/v1/categorias`, para o Achadinho Turbo (no mesmo computador) buscar ofertas. Toda oferta sai com link de afiliado da própria loja e com preço dentro da validade (veja "Atualizar os preços"). Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+O servidor tem uma API para o Achadinho Turbo (no mesmo computador): `GET /api/v1/ofertas` e `GET /api/v1/categorias`, só de leitura, para buscar ofertas, e, desde 11/11/2026, `POST /api/v1/amazon/<ASIN>/confirmar-preco`, a única rota que grava (veja "Confirmar o preço de uma oferta da Amazon", abaixo). Toda oferta sai com link de afiliado da própria loja e com preço dentro da validade (veja "Atualizar os preços"). Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 **Ligar:** crie o token e reinicie o servidor. O `api_token.txt` fica ao lado do `servidor.py` e está no `.gitignore`.
 
@@ -189,6 +189,16 @@ curl -s -G -H @api_cabecalho.txt --data-urlencode "cat=Perfumes e Perfumaria" -d
 **`api_cabecalho.txt` também é segredo** (tem o token): não versione (confira se está no `.gitignore`) e apague quando não precisar mais. Sem token (ou com ele errado) a resposta é 401; com a API desligada, 503 (o motivo aparece no terminal do servidor).
 
 **Desligar:** apague o `api_token.txt` e reinicie o servidor (a API passa a responder 503).
+
+### Confirmar o preço de uma oferta da Amazon
+
+O Turbo chama `POST /api/v1/amazon/<ASIN>/confirmar-preco` logo antes de enviar uma oferta da Amazon. O servidor relê a página daquele produto (`https://www.amazon.com.br/dp/<ASIN>`, sem tag, prazo de 10 s), como o "Atualizar preço" do site, e responde `confirmado` (com o preço), `sem_preco`, `outro_produto`, `bloqueado` ou `falha_rede`.
+
+- **Só o item que já existe**, só da Amazon: ASIN que não está no banco dá 404, sem abrir a Amazon. Nunca insere item.
+- **Grava só o preço** (`preco`, `preco_antigo`, `desconto`), mais `preco_em` e `atualizado_em`, e só quando o preço é legível. Nunca troca o link de afiliado, o título, o cupom nem a foto. Qualquer outro resultado não grava nada: o preço anterior e a idade dele ficam como estavam.
+- **Freio** (em memória, zera ao reiniciar o servidor): uma leitura por vez, 3 s entre duas, 60 por hora, 15 min sem ler depois de um captcha ou bloqueio, e nenhuma leitura enquanto uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) está no ar. Pedido freado recebe 429 com `Retry-After`.
+- **Testar** com uma oferta que você sabe que está no banco (o arquivo de cabeçalho do "Testar" acima): `curl -s -X POST -H @api_cabecalho.txt "http://localhost:8765/api/v1/amazon/<ASIN>/confirmar-preco"`. Um `confirmado` grava o preço novo no banco.
+- O log do servidor mostra a rota sem o ASIN (`POST /api/v1/amazon/(asin)/confirmar-preco`).
 
 ## Backup
 
@@ -515,7 +525,7 @@ Os nomes dos campos e das ordens da API vêm de fontes de terceiros e ainda prec
 
 Preço velho vai para os grupos como se fosse novo. Por isso cada item guarda `preco_em`, o momento em que o preço foi confirmado pela última vez, e o disparo recusa o item cujo preço passou da validade. Plano: `docs/produto/planos/atualizar-precos.md`; spec da tela: `docs/produto/specs/atualizar-precos.md`.
 
-**Quem grava `preco_em`:** a coleta, a atualização em lote (esta seção), o `importar` da Shopee, o "Atualizar preço" do cartão da Amazon e o POST do site, sempre que a escrita traz um preço legível. Reclassificar, corrigir o público, trocar a `url` e a migração de abas **não** mexem nele.
+**Quem grava `preco_em`:** a coleta, a atualização em lote (esta seção), o `importar` da Shopee, o "Atualizar preço" do cartão da Amazon, a confirmação de preço da API v1 (o Turbo, um item da Amazon por vez) e o POST do site, sempre que a escrita traz um preço legível. Reclassificar, corrigir o público, trocar a `url` e a migração de abas **não** mexem nele.
 
 **Validade:** `config/preco_validade_horas`, um número só para o disparo, os cartões, o filtro do site e a API. Padrão 24 h, de 1 a 168; valor ausente ou inválido vale 24. Ajuste no site, no quadro "Como atualizar os preços" (botão na lista, ou o atalho `#precos`), que grava por `PUT /api/config/preco_validade_horas`.
 
@@ -686,6 +696,7 @@ Item que sumiu da busca, ficou indisponível, caiu do piso ou virou usado **não
 
 - **No site:** o cartão mostra a idade ("Preço de hoje, 14:20", "Preço de 03/11 (há 2 dias)") e o selo "Desatualizado" quando passou da validade. A lista tem uma faixa com a contagem da aba, o filtro de preço (Todos, Desatualizados, Em dia) e a ordem "Preço mais antigo primeiro". O "Atualizar preço" do cartão da Amazon também renova a idade. O site **não busca preços sozinho**: o quadro "Como atualizar os preços" só mostra o comando de cada loja, as contagens e o campo da validade.
 - **No disparo:** a regra não cria mensagem (nem mostra na prévia) para item com `preco_em` nulo, ilegível ou mais velho que a validade. Quando um horário fica sem mensagem só por isso, a regra grava o aviso "Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de N h. Atualize os preços." A prévia com informações traz a contagem `preco_velho`.
+- **Na confirmação de preço da API v1** (`POST /api/v1/amazon/<ASIN>/confirmar-preco`, desde 11/11/2026): cada `confirmado` renova o `preco_em` daquele item da Amazon, como o "Atualizar preço" do site. Veja "Confirmar o preço de uma oferta da Amazon".
 - **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). Desde 08/11/2026, sem o filtro `preco_max_horas` a API aplica a mesma validade do disparo (`config/preco_validade_horas`): oferta com preço vencido, sem data ou com data no futuro não sai, então o Turbo não recebe preço velho. Com o filtro (1 a 168), vale a idade pedida, mesmo maior que a validade. O `/api/v1/categorias` continua contando todas. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 ### Reverter

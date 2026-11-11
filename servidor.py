@@ -22,8 +22,8 @@ precisam do disparo.py e do genero.py ao lado (o disparo.py importa o genero no 
 banco (só aditivo: cria numeros, regras, envios, generos_manuais e a coluna items.preco_em). O genero.py
 (público de cada item, derivado na leitura) também é importado sob demanda aqui.
 """
-import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
-import contextlib, errno, fcntl, hashlib
+import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse, urllib.error
+import contextlib, errno, fcntl, hashlib, http.client, collections, math, threading, time
 from datetime import datetime
 from decimal import Decimal
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -594,11 +594,11 @@ class RedirecionamentoAmazon(urllib.request.HTTPRedirectHandler):
 OPENER_AMAZON = urllib.request.build_opener(RedirecionamentoAmazon)
 
 
-def buscar_produto_amazon(url):
+def buscar_produto_amazon(url, timeout=30):
     conferir_url_amazon(url)
     req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Language': 'pt-BR,pt;q=0.9',
                                                'Accept': 'text/html,application/xhtml+xml'})
-    with OPENER_AMAZON.open(req, timeout=30) as r:
+    with OPENER_AMAZON.open(req, timeout=timeout) as r:
         final = r.geturl(); h = r.read().decode('utf-8', 'ignore')
     return {'url_final': final, 'asin': _grab(r'/dp/([A-Z0-9]{10})', final),
             'captcha': 'captcha' in h.lower() and 'productTitle' not in h, **extrair_produto_amazon(h)}
@@ -619,6 +619,193 @@ def extrair_produto_amazon(h):
         # a tag <img> que tem id="landingImage", com o src antes ou depois do id (a Amazon põe antes)
         'imagem': _grab(r'<img(?=[^>]*\sid="landingImage")[^>]*\ssrc="([^"]*)"', h),
     }
+
+
+# ---------- confirmação do preço de UMA oferta da Amazon (POST /api/v1/amazon/<ASIN>/confirmar-preco) ----------
+# Plano "Rodar sozinho · Entrega 1" do Achadinho Turbo (docs/produto/planos/rodar-sozinho-entrega1.md, lá). O Turbo
+# pede, logo antes de enviar, a releitura da página de um produto que já está no banco. A URL é montada aqui a partir
+# do ASIN validado (nunca vem do cliente) e vai sem tag, para não parecer clique de afiliado.
+RE_ASIN = re.compile(r'[A-Z0-9]{10}')
+PRAZO_RELEITURA_S = 10            # timeout de cada operação de rede da releitura (o /api/fetch segue com 30 s)
+CAMPOS_DO_PRECO = ('preco', 'preco_antigo', 'desconto')   # os únicos CAMPOS que a releitura grava
+ERRO_SEM_OFERTA = 'oferta da Amazon não encontrada'
+
+
+def url_releitura_amazon(asin):
+    return f'https://www.amazon.com.br/dp/{asin}'
+
+
+def _classificar_releitura(asin, buscar):
+    """Lê a página e devolve (resultado, página ou None). Mesma classificação do atualizar_precos.py, com uma
+    diferença: página não reconhecida (sem título ou sem ASIN) é `bloqueado`, nunca motivo de descarte."""
+    try:
+        r = buscar(url_releitura_amazon(asin), timeout=PRAZO_RELEITURA_S)
+    except URLRecusada:   # redirect para fora da Amazon
+        return 'outro_produto', None
+    except urllib.error.HTTPError as e:   # antes do URLError, que é a classe mãe
+        e.close()
+        if e.code in (429, 503):
+            return 'bloqueado', None
+        if e.code in (404, 410):
+            return 'sem_preco', None
+        return 'falha_rede', None
+    except (OSError, http.client.HTTPException):   # URLError, timeout, conexão recusada ou cortada
+        return 'falha_rede', None
+    if r.get('captcha'):
+        return 'bloqueado', None
+    if not r.get('asin'):
+        return 'bloqueado', None
+    if r['asin'] != asin:
+        return 'outro_produto', None
+    if not r.get('titulo'):
+        return 'bloqueado', None
+    if ler_preco(r.get('preco')) is None:
+        return 'sem_preco', None
+    return 'confirmado', r
+
+
+def _numero_do_preco(texto):
+    v = ler_preco(texto)
+    return float(v) if v is not None else None
+
+
+def _resposta_confirmada(vals, quando):
+    """Corpo do `confirmado` a partir do que foi gravado (já saneado): preço, antigo só se maior e desconto em %."""
+    preco = _numero_do_preco(vals['preco'])
+    antigo = _numero_do_preco(vals['preco_antigo'])
+    if antigo is not None and antigo <= preco:
+        antigo = None
+    digitos = re.sub(r'\D', '', str(vals['desconto'] or ''), flags=re.A)[:3]
+    pct = int(digitos) if digitos else None
+    if not pct and antigo:
+        pct = round((1 - preco / antigo) * 100)
+    return {'resultado': 'confirmado', 'preco': preco, 'preco_antigo': antigo,
+            'desconto_pct': pct if pct and 0 < pct < 100 else None, 'preco_em': quando}
+
+
+def confirmar_preco_amazon(con, asin, buscar=buscar_produto_amazon, agora=agora):
+    """Relê a página do produto da Amazon `asin` e, com preço legível, grava só o preço (CA1.1 e CA1.2).
+
+    Devolve o corpo da resposta (sem a versão): {"resultado": "confirmado", "preco", "preco_antigo",
+    "desconto_pct", "preco_em"} ou {"resultado": "sem_preco" | "outro_produto" | "bloqueado" | "falha_rede"}.
+    ASIN fora de RE_ASIN levanta ValueError; item da Amazon inexistente (antes da leitura ou apagado durante ela)
+    levanta ErroCliente 404. Nos dois casos nada é lido nem gravado.
+
+    A leitura de rede acontece fora de transação. Depois, em BEGIN IMMEDIATE, relê os CAMPOS da linha, aplica o
+    sanear_precos sobre eles com o preço, o antigo e o desconto da página e grava só esses três mais preco_em e
+    atualizado_em. Nunca insere, nunca mexe em url, título, cupom ou foto. Falha não grava nada (o preço velho
+    e o preco_em ficam como estavam).
+    """
+    if not isinstance(asin, str) or not RE_ASIN.fullmatch(asin):
+        raise ValueError('ASIN inválido')
+    sql_linha = f"SELECT id, {', '.join(CAMPOS)} FROM items WHERE loja='amazon' AND item_id=?"
+    if con.in_transaction:
+        con.commit()
+    if con.execute(sql_linha, (asin,)).fetchone() is None:
+        raise ErroCliente(404, ERRO_SEM_OFERTA)
+    resultado, pagina = _classificar_releitura(asin, buscar)
+    if resultado != 'confirmado':
+        return {'resultado': resultado}
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        atual = con.execute(sql_linha, (asin,)).fetchone()
+        if atual is None:   # apagado entre a leitura e a gravação
+            raise ErroCliente(404, ERRO_SEM_OFERTA)
+        vals = sanear_precos({**{c: atual[c] for c in CAMPOS},
+                              **{c: pagina.get(c) or '' for c in CAMPOS_DO_PRECO}})
+        quando = agora()
+        con.execute('UPDATE items SET preco=?, preco_antigo=?, desconto=?, preco_em=?, atualizado_em=? WHERE id=?',
+                    [vals[c] for c in CAMPOS_DO_PRECO] + [quando, quando, atual['id']])
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    return _resposta_confirmada(vals, quando)
+
+
+# Freio da releitura (P5 do plano): uma leitura por vez, FREIO_INTERVALO_S entre o início de duas, no máximo
+# FREIO_TETO_POR_HORA numa janela deslizante de uma hora, FREIO_PAUSA_BLOQUEIO_S sem ler depois de um `bloqueado`
+# e nenhuma leitura enquanto uma rodada da Amazon (coleta ou atualizar_precos.py) segura a trava.
+FREIO_INTERVALO_S = 3
+FREIO_TETO_POR_HORA = 60
+FREIO_JANELA_S = 3600
+FREIO_PAUSA_BLOQUEIO_S = 15 * 60
+FREIO_ESPERA_RODADA_S = 60   # o Retry-After quando a rodada da Amazon está no ar (ela dura muito mais)
+
+
+def rodada_amazon_livre():
+    """True se nenhuma rodada da Amazon segura a trava agora. Pega a trava e a solta na hora: a releitura nunca
+    a segura durante a leitura, então uma rodada que comece no meio entra normalmente (ela tem prioridade).
+    Trava que não abre (symlink, permissão) conta como ocupada: na dúvida, não lê."""
+    try:
+        with travar_rodada('amazon'):
+            return True
+    except RodadaEmAndamento:
+        return False
+
+
+class FreioReleitura:
+    """Freio da rota de confirmação de preço, em memória (zera quando o servidor reinicia).
+
+    `reservar()` devolve None e marca a leitura como em curso, ou (motivo, segundos) quando recusa: motivo
+    'ocupado', 'pausa', 'intervalo', 'teto' ou 'rodada', e segundos inteiros >= 1 para o Retry-After. Recusa não
+    conta como leitura. `liberar(resultado)` encerra a leitura reservada; `bloqueado` abre a pausa, contada a
+    partir do fim da leitura. `relogio` (monotônico) e `rodada_livre` são injetáveis nos testes.
+    """
+
+    def __init__(self, relogio=time.monotonic, rodada_livre=rodada_amazon_livre):
+        self._relogio, self._rodada_livre = relogio, rodada_livre
+        self._lock = threading.Lock()
+        self._ocupado = False
+        self._inicios = collections.deque()
+        self._pausa_ate = None
+
+    @staticmethod
+    def _segundos(s):
+        return max(1, math.ceil(s))
+
+    def reservar(self):
+        with self._lock:
+            t = self._relogio()
+            if self._ocupado:
+                return 'ocupado', FREIO_INTERVALO_S
+            if self._pausa_ate is not None and t < self._pausa_ate:
+                return 'pausa', self._segundos(self._pausa_ate - t)
+            while self._inicios and self._inicios[0] <= t - FREIO_JANELA_S:
+                self._inicios.popleft()
+            if self._inicios and t - self._inicios[-1] < FREIO_INTERVALO_S:
+                return 'intervalo', self._segundos(self._inicios[-1] + FREIO_INTERVALO_S - t)
+            if len(self._inicios) >= FREIO_TETO_POR_HORA:
+                return 'teto', self._segundos(self._inicios[0] + FREIO_JANELA_S - t)
+            if not self._rodada_livre():
+                return 'rodada', FREIO_ESPERA_RODADA_S
+            self._ocupado = True
+            self._inicios.append(t)
+            return None
+
+    def liberar(self, resultado=None):
+        with self._lock:
+            self._ocupado = False
+            if resultado == 'bloqueado':
+                self._pausa_ate = self._relogio() + FREIO_PAUSA_BLOQUEIO_S
+
+
+FREIO_RELEITURA = FreioReleitura()
+# Caminho da rota abaixo do prefixo da v1. O grupo é o ASIN cru; só vale se casar RE_ASIN (senão, 404).
+RE_ROTA_CONFIRMAR = re.compile(r'amazon/([^/]*)/confirmar-preco')
+ROTA_CONFIRMAR_LOG = 'amazon/(asin)/confirmar-preco'
+
+
+def asin_da_rota_confirmar(caminho):
+    """Para o caminho cru: None se não é a rota de confirmação; '' se é, mas o ASIN está fora do formato;
+    senão, o ASIN."""
+    p = prefixo_v1()
+    if not caminho.startswith(p):
+        return None
+    m = RE_ROTA_CONFIRMAR.fullmatch(caminho[len(p):])
+    if not m:
+        return None
+    return m.group(1) if RE_ASIN.fullmatch(m.group(1)) else ''
 
 
 # ---------- API v1 de ofertas: token, guarda e log ----------
@@ -678,16 +865,22 @@ def eh_rota_v1(caminho):
 def linha_v1_para_log(linha):
     """Linha da requisição da v1 sem nada que o cliente possa ter mandado de segredo.
 
-    Fica o método (se for um conhecido), a rota (se for ofertas ou categorias; senão "(outra rota)"),
-    "?(omitida)" no lugar da query e a versão HTTP (se bem formada). Um ?token= mandado por engano,
-    um token no caminho ou numa linha malformada nunca chegam ao log.
+    Fica o método (se for um conhecido), a rota (se for ofertas ou categorias; a de confirmação de preço sem o
+    ASIN, "amazon/(asin)/confirmar-preco"; senão "(outra rota)"), "?(omitida)" no lugar da query e a versão
+    HTTP (se bem formada). Um ?token= mandado por engano, um token no caminho ou numa linha malformada nunca
+    chegam ao log.
     """
     prefixo = prefixo_v1()
     partes = linha.split()
     metodo = partes[0] if partes and partes[0] in METODOS_HTTP else '?'
     alvo = next((p for p in partes if prefixo[:-1] in p), '')
     caminho, tem_query, _ = alvo.partition('?')
-    rota = caminho if caminho in [prefixo + suf for suf in SUFIXOS_V1_LOG] else prefixo + '(outra rota)'
+    if caminho in [prefixo + suf for suf in SUFIXOS_V1_LOG]:
+        rota = caminho
+    elif asin_da_rota_confirmar(caminho) is not None:
+        rota = prefixo + ROTA_CONFIRMAR_LOG
+    else:
+        rota = prefixo + '(outra rota)'
     versao = partes[-1] if partes and re.fullmatch(r'HTTP/[0-9]\.[0-9]', partes[-1]) else ''
     return ' '.join(p for p in (metodo, rota + ('?(omitida)' if tem_query else ''), versao) if p)
 
@@ -773,8 +966,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         Ordem: navegador (Origin, mesmo a local, ou Sec-Fetch-Site) dá 403; API desligada (sem
         token) dá 503; sem "Authorization: Bearer <token>" certo dá 401 com WWW-Authenticate; método
-        diferente de GET dá 405, só depois da autenticação. O token só vale no cabeçalho (?token= não
-        autentica) e é comparado em tempo constante. A v1 nunca leva CORS.
+        diferente de GET dá 405 (Allow: GET), só depois da autenticação. A exceção é a rota de confirmação
+        de preço (asin_da_rota_confirmar), que só aceita POST (405 com Allow: POST). O token só vale no
+        cabeçalho (?token= não autentica) e é comparado em tempo constante. A v1 nunca leva CORS.
         """
         if self.headers.get('Origin') is not None or self.headers.get('Sec-Fetch-Site') is not None:
             self.json({'error': 'a API v1 não aceita pedidos de navegador'}, 403); return True
@@ -785,6 +979,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.json({'error': 'token ausente ou inválido: envie Authorization: Bearer <token>'}, 401,
                       cabecalhos=[('WWW-Authenticate', 'Bearer')])
             return True
+        if asin_da_rota_confirmar(self._caminho) is not None:
+            if self.command != 'POST':
+                self.json({'error': 'método não permitido: esta rota só aceita POST'}, 405,
+                          cabecalhos=[('Allow', 'POST')])
+                return True
+            return False
         if self.command != 'GET':
             self.json({'error': 'método não permitido: a API só aceita GET'}, 405,
                       cabecalhos=[('Allow', 'GET')])
@@ -892,6 +1092,54 @@ class Handler(SimpleHTTPRequestHandler):
                 con.close()
         return True
 
+    def despachar_confirmar_preco(self):
+        """POST autenticado em /api/v1/amazon/<ASIN>/confirmar-preco. True se a rota era essa.
+
+        O bloquear_v1() já conferiu navegador, token e método. Depois: ASIN fora do formato 404 → corpo não
+        vazio 400 → item da Amazon inexistente 404 → freio 429 com Retry-After → leitura (200). É a única rota
+        da v1 com conexão que grava (as outras ficam em query_only). Erro inesperado vira 500 com só o tipo no
+        log, e a linha do log nunca traz o ASIN nem o token (linha_v1_para_log). A resposta nunca traz HTML nem
+        a mensagem de uma exceção.
+        """
+        asin = asin_da_rota_confirmar(self._caminho)
+        if asin is None:
+            return False
+        if not asin:
+            self.json({'error': 'rota não encontrada'}, 404); return True
+        # sem ler o corpo: a conexão é HTTP/1.0 e fecha depois da resposta
+        tamanhos = self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') is not None or any(v.strip() != '0' for v in tamanhos):
+            self.json({'error': 'esta rota não aceita corpo'}, 400); return True
+        import api_ofertas
+        con = None
+        reservado = resultado = None
+        try:
+            con = conectar()
+            if con.execute("SELECT 1 FROM items WHERE loja='amazon' AND item_id=?", (asin,)).fetchone() is None:
+                raise ErroCliente(404, ERRO_SEM_OFERTA)
+            freio = FREIO_RELEITURA.reservar()
+            if freio is not None:
+                motivo, segundos = freio
+                self.json({'versao': api_ofertas.VERSAO, 'resultado': 'freio', 'motivo': motivo,
+                           'tentar_em_s': segundos}, 429, cabecalhos=[('Retry-After', str(segundos))])
+                return True
+            reservado = True
+            resposta = confirmar_preco_amazon(con, asin)
+            resultado = resposta['resultado']
+        except ErroCliente as e:
+            self.json({'error': e.msg}, e.codigo)
+        except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
+            self.log_message('"%s" confirmar preço falhou: %s', self.requestline, type(e).__name__)
+            self.json({'error': 'erro interno na API v1'}, 500)
+        else:
+            self.json({'versao': api_ofertas.VERSAO, **resposta})
+        finally:
+            if reservado:
+                FREIO_RELEITURA.liberar(resultado)
+            if con is not None:
+                con.close()
+        return True
+
     def do_OPTIONS(self):
         if self.bloquear():
             return
@@ -954,7 +1202,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'error': 'rota não encontrada'}, 404)
 
     def do_POST(self):
-        if self.bloquear() or self.despachar_disparo():
+        if self.bloquear() or self.despachar_confirmar_preco() or self.despachar_disparo():
             return
         if self._caminho == '/api/items':
             try:
