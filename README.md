@@ -192,7 +192,7 @@ curl -s -G -H @api_cabecalho.txt --data-urlencode "cat=Perfumes e Perfumaria" -d
 
 ### Confirmar o preço de uma oferta da Amazon
 
-O Turbo chama `POST /api/v1/amazon/<ASIN>/confirmar-preco` logo antes de enviar uma oferta da Amazon. O servidor relê a página daquele produto (`https://www.amazon.com.br/dp/<ASIN>`, sem tag; a leitura inteira, redirects incluídos, tem 8 s, cada operação de rede espera no máximo 4 s e página acima de 4 MB é abandonada, então a resposta sai em até uns 12 s, antes dos 15 s em que o Turbo desiste), como o "Atualizar preço" do site, e responde `confirmado` (com o preço), `sem_preco`, `outro_produto`, `bloqueado` ou `falha_rede`.
+O Turbo chama `POST /api/v1/amazon/<ASIN>/confirmar-preco` logo antes de enviar uma oferta da Amazon. O servidor relê a página daquele produto (`https://www.amazon.com.br/dp/<ASIN>`, sem tag; a leitura inteira, redirects incluídos, tem 8 s, cada operação de rede espera no máximo 4 s e página acima de 4 MB é abandonada, então a resposta normalmente sai em até uns 12 s, antes dos 15 s em que o Turbo desiste; o cabeçalho, o corpo de um redirect e a linha de tamanho de uma resposta em pedaços só têm o limite de 4 s por operação), como o "Atualizar preço" do site, e responde `confirmado` (com o preço), `sem_preco`, `outro_produto`, `bloqueado` ou `falha_rede`.
 
 - **Só o item que já existe**, só da Amazon: ASIN que não está no banco dá 404, sem abrir a Amazon. Nunca insere item.
 - **Grava só o preço** (`preco`, `preco_antigo`, `desconto`), mais `preco_em` e `atualizado_em`, e só quando o preço é legível. Nunca troca o link de afiliado, o título, o cupom nem a foto. Qualquer outro resultado não grava nada: o preço anterior e a idade dele ficam como estavam.

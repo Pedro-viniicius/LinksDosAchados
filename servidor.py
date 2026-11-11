@@ -615,13 +615,21 @@ BLOCO_LEITURA = 64 * 1024
 def _ler_limitado(r, prazo_final, teto_bytes):
     """Lê o corpo em blocos de até BLOCO_LEITURA com read1 (uma chamada de rede por bloco, então cada bloco espera
     no máximo o timeout da operação), conferindo o prazo antes de cada bloco e o total de bytes depois de cada um.
-    Levanta LimiteDaLeitura ao estourar um dos dois."""
+    Levanta LimiteDaLeitura ao estourar um dos dois.
+
+    Conexão que fecha antes do Content-Length levanta IncompleteRead, como o read() faria: o read1 só devolve b''
+    e deixa o que falta em `r.length`. Sem isso, uma página cortada antes do preço viraria `sem_preco` (descarte)
+    e uma cortada antes do título, `bloqueado` (pausa), em vez de `falha_rede`. Na resposta em pedaços (chunked),
+    o próprio read1 já levanta IncompleteRead."""
     partes, total = [], 0
     while True:
         if prazo_final is not None and time.monotonic() >= prazo_final:
             raise LimiteDaLeitura('prazo total da leitura esgotado')
         bloco = r.read1(BLOCO_LEITURA)
         if not bloco:
+            faltam = getattr(r, 'length', None)
+            if faltam:
+                raise http.client.IncompleteRead(b''.join(partes), faltam)
             return b''.join(partes)
         total += len(bloco)
         if teto_bytes is not None and total > teto_bytes:
@@ -674,9 +682,11 @@ def extrair_produto_amazon(h):
 # pede, logo antes de enviar, a releitura da página de um produto que já está no banco. A URL é montada aqui a partir
 # do ASIN validado (nunca vem do cliente) e vai sem tag, para não parecer clique de afiliado.
 RE_ASIN = re.compile(r'[A-Z0-9]{10}')
-# Limites da releitura. O Turbo desiste em 15 s; o pior caso aqui é o prazo total mais uma operação que começou
-# antes de ele vencer: 8 + 4 = 12 s. A página da Amazon tem 1 a 2 MB. O /api/fetch segue sem prazo total nem teto,
-# com 30 s por operação.
+# Limites da releitura. O Turbo desiste em 15 s; normalmente a resposta sai em até uns 12 s: o prazo total mais uma
+# operação que começou antes de ele vencer (8 + 4). Ficam de fora do prazo total, limitados só pelos 4 s de cada
+# operação: a espera pelo cabeçalho de cada resposta, o descarte do corpo de um redirect (o urllib faz fp.read()) e
+# a linha de tamanho de uma resposta em pedaços (chunked). A página da Amazon tem 1 a 2 MB. O /api/fetch segue sem
+# prazo total nem teto, com 30 s por operação.
 PRAZO_RELEITURA_S = 8                       # prazo total da leitura, redirects incluídos
 PRAZO_OPERACAO_RELEITURA_S = 4              # timeout de cada operação de rede (conexão, cabeçalho, cada bloco)
 TETO_RELEITURA_BYTES = 4 * 1024 * 1024      # acima disso a página é abandonada (falha_rede)

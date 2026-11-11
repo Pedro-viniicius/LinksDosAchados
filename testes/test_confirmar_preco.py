@@ -92,6 +92,34 @@ def gotejando():
     return itertools.repeat(b'x', 150)
 
 
+def resposta_bruta(corpo, content_length=None):
+    """Bytes de uma resposta HTTP 200 com Content-Length (por padrão, o tamanho do corpo; maior = conexão cortada)."""
+    n = len(corpo) if content_length is None else content_length
+    return b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\n\r\n' % n + corpo
+
+
+def resposta_bruta_em_pedacos(pedacos, fim=True):
+    """Bytes de uma resposta HTTP 200 em pedaços (chunked); `fim=False` corta antes do pedaço final (0)."""
+    corpo = b''.join(b'%x\r\n%s\r\n' % (len(p), p) for p in pedacos) + (b'0\r\n\r\n' if fim else b'')
+    return b'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n' + corpo
+
+
+class _SocketDeBytes:
+    def __init__(self, dados):
+        self.dados = dados
+
+    def makefile(self, *a, **kw):
+        return io.BufferedReader(io.BytesIO(self.dados))
+
+
+def resposta_http(bruto, url=f'https://www.amazon.com.br/dp/{ASIN}'):
+    """http.client.HTTPResponse de verdade sobre `bruto` (sem rede), com a url que o urllib poria."""
+    r = http.client.HTTPResponse(_SocketDeBytes(bruto), method='GET')
+    r.begin()
+    r.url = url   # o urllib.request.AbstractHTTPHandler.do_open faz o mesmo
+    return r
+
+
 class RespostaEmBlocos:
     """Resposta do OPENER_AMAZON.open falsa que só se lê em blocos (read1): devolve os `blocos` (lista ou
     iterador), esperando `pausa` s antes de cada um, e b'' quando acabam. read() reprova: a releitura nunca lê a
@@ -386,6 +414,54 @@ class TestLimitesDaLeitura(Base):
         self.assertTrue(resposta.fechada)
         # a mesma página sem o último bloco cabe no teto e confirma
         self.assertEqual(self.confirmar_pelo_padrao(RespostaEmBlocos(blocos[:-1]))['resultado'], 'confirmado')
+
+    # ---- R4: página cortada (a conexão fecha antes do fim), com o http.client.HTTPResponse de verdade
+    TITULO = b'<span id="productTitle"> Perfume </span>'
+    PRECO = b'<div id="corePrice_feature_div"><span class="a-offscreen">R$ 89,90</span></div>'
+
+    def test_r4_pagina_completa_pelo_http_client_de_verdade_confirma(self):
+        """Controle: o HTTPResponse real, com Content-Length certo ou em pedaços, confirma (o corte é que falha)."""
+        corpo = self.TITULO + self.PRECO
+        for nome, bruto in (('Content-Length', resposta_bruta(corpo)),
+                            ('chunked', resposta_bruta_em_pedacos([self.TITULO, self.PRECO]))):
+            with self.subTest(nome):
+                resposta = resposta_http(bruto)
+                self.assertEqual(self.confirmar_pelo_padrao(resposta)['resultado'], 'confirmado')
+                self.assertTrue(resposta.isclosed())
+                self.inserir_de_novo()
+
+    def test_r4_conexao_que_fecha_antes_do_content_length_da_falha_rede_e_nao_grava(self):
+        """Antes da correção, cortada depois do título virava `sem_preco` (descarte) e antes dele, `bloqueado`."""
+        casos = {'depois do título, antes do preço': self.TITULO,
+                 'antes do título': b'<html><head><title>Amazon</title>'}
+        for nome, recebido in casos.items():
+            with self.subTest(nome):
+                antes = self.linha()
+                bruto = resposta_bruta(recebido, content_length=100_000)
+                with self.assertRaises(http.client.IncompleteRead):   # o mesmo erro do read() de antes
+                    self.buscar_limitado(resposta_http(bruto), prazo_total=5, teto_bytes=S.TETO_RELEITURA_BYTES)
+                self.assertEqual(self.confirmar_pelo_padrao(resposta_http(bruto)), {'resultado': 'falha_rede'})
+                self.assertEqual(self.linha(), antes)   # preço, url e preco_em como estavam
+
+    def test_r4_resposta_em_pedacos_cortada_da_falha_rede_e_nao_grava(self):
+        um_pedaco = resposta_bruta_em_pedacos([self.TITULO], fim=False)   # o título e nada depois
+        cortes = {'no meio de um pedaço': resposta_bruta_em_pedacos([self.TITULO + self.PRECO], fim=False)[:-30],
+                  'sem o pedaço final': um_pedaco,
+                  'no meio da linha de tamanho': um_pedaco + b'%x' % len(self.PRECO) + b'\r'}
+        for nome, bruto in cortes.items():
+            with self.subTest(nome):
+                antes = self.linha()
+                self.assertEqual(self.confirmar_pelo_padrao(resposta_http(bruto)), {'resultado': 'falha_rede'})
+                self.assertEqual(self.linha(), antes)
+
+    def inserir_de_novo(self):
+        con = sqlite3.connect(S.DB)
+        try:
+            con.execute('DELETE FROM items')
+            con.commit()
+        finally:
+            con.close()
+        self.inserir()
 
     def test_redirects_entram_no_prazo_total(self):
         """Com o RedirecionamentoAmazon de verdade: cada salto demora 0,1 s; com 0,25 s de prazo, o redirect que
