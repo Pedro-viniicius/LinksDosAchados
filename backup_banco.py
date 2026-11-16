@@ -136,14 +136,23 @@ def reservar_nome(dfd, motivo):
                          0o600, dir_fd=dfd)
         except FileExistsError:
             continue
+        # Conferir e criar não é atômico: o outro backup do mesmo nome pode ter publicado (link do nome
+        # final e só depois apaga o .parcial dele) entre a conferência e o O_EXCL. Como o O_EXCL só passa
+        # depois desse unlink, quem segura o .parcial já enxerga o nome final do outro: reconfere e,
+        # se estiver ocupado, devolve o .parcial (só o arquivo, que é nosso) e tenta o próximo nome.
         try:
             try:
                 os.fchmod(fd, 0o600)
             finally:
                 os.close(fd)
+            ocupado = any(existe(nome + s, dfd) for s in ('', *SUFIXOS_SQLITE))
+            if ocupado:
+                apagar_se_comum(nome + PARCIAL, dfd)
         except BaseException:
             limpar_parcial(nome, dfd)
             raise
+        if ocupado:
+            continue
         return nome
     raise Falha(f'mais de {MAX_COLISOES} backups com o mesmo motivo no mesmo segundo')
 
@@ -195,8 +204,13 @@ def apagar_se_comum(nome, dfd):
 
 
 def limpar_parcial(nome, dfd):
-    """Apaga o .parcial de `nome` e o -wal/-shm/-journal dele. Nunca lança."""
-    for s in ('', *SUFIXOS_SQLITE):
+    """Apaga o .parcial de `nome` e o -wal/-shm/-journal dele. Nunca lança.
+
+    O .parcial é a reserva do nome: sai por último, para que os sidecars só sejam apagados enquanto o
+    nome ainda é nosso (depois dele, outro backup pode reservar o mesmo nome e ter sidecars próprios).
+    Só se chama enquanto a reserva está de pé (veja `fazer_backup`).
+    """
+    for s in (*SUFIXOS_SQLITE, ''):
         try:
             apagar_se_comum(nome + PARCIAL + s, dfd)
         except OSError:
@@ -220,8 +234,9 @@ def publicar(nome, dfd):
         os.link(parcial, nome, src_dir_fd=dfd, dst_dir_fd=dfd, follow_symlinks=False)
     except FileExistsError:
         raise Falha('o nome final apareceu durante a cópia; nada foi sobrescrito') from None
-    os.unlink(parcial, dir_fd=dfd)
     os.fsync(dfd)
+    # Último passo: soltar o .parcial é soltar a reserva do nome (e o nome final já existe).
+    os.unlink(parcial, dir_fd=dfd)
 
 
 def fazer_backup(motivo):
@@ -241,14 +256,19 @@ def fazer_backup(motivo):
             nome = reservar_nome(dfd, motivo)
         except OSError as e:
             raise Falha(f'{type(e).__name__} ao reservar o nome do backup') from None
+        publicado = False
         try:
             copiar(db, os.path.join(pasta, nome + PARCIAL))
             n = conferir(os.path.join(pasta, nome + PARCIAL))
             publicar(nome, dfd)
+            publicado = True
         except (OSError, sqlite3.Error) as e:
             raise Falha(f'{type(e).__name__} ao gravar o backup') from None
         finally:
-            limpar_parcial(nome, dfd)
+            # Depois do publicar o .parcial já saiu e o nome pode estar reservado por outro backup:
+            # limpar pelo nome apagaria o .parcial e os sidecars dele.
+            if not publicado:
+                limpar_parcial(nome, dfd)
         return os.path.join(pasta, nome), n
     finally:
         os.close(dfd)

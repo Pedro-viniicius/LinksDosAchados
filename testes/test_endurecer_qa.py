@@ -383,6 +383,42 @@ class Backup(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-400:])   # não levanta FileNotFoundError
         self.assertEqual(len(self.autos()), 14, self.autos())   # e não para no primeiro arquivo sumido
 
+    def test_dois_backups_do_mesmo_segundo_nao_colidem_quando_o_outro_publica_entre_as_conferencias(self):
+        """Corrida de nome: o reservar_nome confere `nome` e só depois `nome.parcial`. Se o outro backup (mesmo motivo,
+        mesmo segundo) publica no meio (link do nome final e apaga o .parcial), o segundo vê tudo livre, cria o
+        .parcial, copia e leva EEXIST no link: sai com 1 e o dono perde o backup. Aqui o "outro processo" é
+        simulado de forma determinística, logo depois da primeira conferência do nome final."""
+        runner = textwrap.dedent('''
+            import datetime, os, sys
+            sys.path.insert(0, %r)
+            import backup_banco as B
+            B.agora = lambda: datetime.datetime(2026, 11, 9, 12, 0, 0)
+            final = 'auto-ml-20261109-120000.db'
+            original = B.existe
+            feito = []
+            def existe_com_outro_publicando(nome, dfd):
+                achou = original(nome, dfd)
+                if nome == final and not achou and not feito:
+                    feito.append(1)
+                    # o outro backup: cria o .parcial, linka o nome final e apaga o .parcial
+                    fd = os.open(final + '.parcial', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dfd)
+                    os.write(fd, b'BACKUP-DO-OUTRO')
+                    os.close(fd)
+                    os.link(final + '.parcial', final, src_dir_fd=dfd, dst_dir_fd=dfd)
+                    os.unlink(final + '.parcial', dir_fd=dfd)
+                return achou
+            B.existe = existe_com_outro_publicando
+            sys.exit(B.main(['--motivo', 'ml']))
+        ''') % RAIZ
+        p = subprocess.run([sys.executable, '-c', runner], cwd=self.dir, env=self.env(),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertEqual(self.autos(), ['auto-ml-20261109-120000-1.db', 'auto-ml-20261109-120000.db'])
+        with open(os.path.join(self.backups, 'auto-ml-20261109-120000.db'), 'rb') as f:
+            self.assertEqual(f.read(), b'BACKUP-DO-OUTRO')   # nunca sobrescreve o do outro
+        self.assertEqual(integridade(os.path.join(self.backups, 'auto-ml-20261109-120000-1.db')), ('ok', 5))
+        self.assertEqual([n for n in os.listdir(self.backups) if n not in self.autos()], [])   # sem .parcial
+
     def test_rotacao_em_corrida_real_termina_com_exatamente_14(self):
         os.makedirs(self.backups, mode=0o700)
         for dia in range(1, 15):

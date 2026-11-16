@@ -221,6 +221,60 @@ class NomeDatado(Base):
             self.assertEqual(f.read(), b'do dono')
         self.assertEqual(self.backups(), [os.path.basename(final)], 'sem .parcial')
 
+    def test_nome_que_fica_ocupado_depois_do_parcial_criado_e_devolvido_e_pula_para_o_proximo(self):
+        """Q3: o nome final (ou um -journal dele) aparece entre a conferência e o O_EXCL do .parcial.
+        A reconferência devolve só o .parcial (não deixa sobra) e o backup sai no próximo nome, sem
+        mexer no que o outro deixou."""
+        semear(self.db)
+        os.mkdir(self.pasta, 0o700)
+        fixo = datetime(2026, 11, 9, 14, 30, 0)
+        base = 'auto-ml-20261109-143000'
+        for sufixo in ('.db', '.db-journal'):
+            with self.subTest(sufixo=sufixo):
+                original = B.existe
+                feito = []
+
+                def existe_e_o_outro_aparece(nome, dfd, original=original, feito=feito, sufixo=sufixo):
+                    achou = original(nome, dfd)
+                    if nome == base + '.db' + '.parcial' + '-journal' and not feito:   # fim da 1ª conferência
+                        feito.append(1)
+                        criar(os.path.join(self.pasta, base + sufixo), b'do outro')
+                    return achou
+
+                with mock.patch.object(B, 'agora', return_value=fixo), \
+                        mock.patch.object(B, 'existe', side_effect=existe_e_o_outro_aparece):
+                    caminho = self.assert_ok(*self.rodar_aqui('--motivo', 'ml', '--manter', '50'))
+                self.assertEqual(os.path.basename(caminho), f'{base}-1.db')
+                with open(os.path.join(self.pasta, base + sufixo), 'rb') as f:
+                    self.assertEqual(f.read(), b'do outro')
+                self.assertEqual([n for n in self.backups() if n.endswith('.parcial')], [])
+                shutil.rmtree(self.pasta)
+                os.mkdir(self.pasta, 0o700)
+
+    def test_depois_de_publicar_nao_limpa_o_parcial_pelo_nome(self):
+        """Q3: depois do link e do unlink o nome do .parcial pode ser de outro backup; o finally do
+        fazer_backup não pode apagar nada por ele (nem o .parcial, nem -wal/-shm/-journal)."""
+        semear(self.db)
+        with mock.patch.object(B, 'limpar_parcial', wraps=B.limpar_parcial) as limpar:
+            self.assert_ok(*self.rodar_aqui('--motivo', 'ml'))
+        limpar.assert_not_called()
+
+    def test_limpar_parcial_solta_a_reserva_por_ultimo(self):
+        """Q3: o .parcial é a reserva do nome; os sidecars saem antes, enquanto o nome ainda é nosso."""
+        os.mkdir(self.pasta, 0o700)
+        dfd = B.abrir_pasta(self.pasta)
+        self.addCleanup(os.close, dfd)
+        nome = 'auto-ml-20261109-143000.db'
+        for suf in ('', '-wal', '-shm', '-journal'):
+            criar(os.path.join(self.pasta, nome + B.PARCIAL + suf), b'x')
+        ordem = []
+        apagar = B.apagar_se_comum
+        with mock.patch.object(B, 'apagar_se_comum', side_effect=lambda n, d: (ordem.append(n), apagar(n, d))[1]):
+            B.limpar_parcial(nome, dfd)
+        self.assertEqual(ordem[-1], nome + B.PARCIAL)
+        self.assertEqual(sorted(ordem), sorted(nome + B.PARCIAL + s for s in ('', '-wal', '-shm', '-journal')))
+        self.assertEqual(self.backups(), [])
+
 
 class Permissoes(Base):
     def test_backup_0600_e_pasta_0700_mesmo_com_umask_zero(self):
