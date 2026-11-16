@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<!-- Fixture sintética de uma página de busca do Mercado Livre SEM resultado (testes/coletar_ml.test.mjs).
+     Imita o formato de 15/11/2026: o literal _n.ctx.s["nr"].q("0:{\"optimizedResponse\":...}\n") não tem nenhum polycard e
+     traz "rescue" com "type":"zrp" (zero results page), "results":[] e a mensagem "Não encontramos resultados para a sua busca".
+     Nenhum dado real. -->
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Busca sem resultado | MercadoLivre</title></head>
+<body><main id="root-app"><p>Não encontramos resultados para a sua busca</p></main>
+<script>window._n=window._n||{};_n.ctx=_n.ctx||{};_n.ctx.s=_n.ctx.s||{};</script>
+<script>_n.ctx.s["config"].q("{\"siteId\":\"MLB\",\"texto\":\"Rock\'n\'Roll \x3Cb>\"}");</script>
+<script nonce="abc">_n.ctx.s["nr"].q("0:{\"optimizedResponse\":{\"query\":\"termo sem produtos\",\"rescue\":{\"message\":{\"label\":{\"version\":\"1\",\"text\":\"Não encontramos resultados para a sua busca\"}},\"labels\":[{\"id\":\"tip\",\"text\":\"Revise a ortografia da palavra\"}],\"actions\":[],\"type\":\"zrp\"},\"filters\":[],\"view_mode\":\"GRID\",\"results\":[],\"alternative_items_info\":[]}}\n");</script>
+</body></html>

@@ -718,12 +718,12 @@ describe('coletar(): ordem da listagem (CA6)', () => {
 
   for (const [nome, ordem] of [['desconhecida', 'vendidos'], ['mais vendidos', 'mais_vendidos'], ['maiúscula', 'Caros'],
     ['de protótipo', 'constructor'], ['__proto__', '__proto__'], ['número', 7], ['nula', null], ['vazia', ''],
-    ['objeto', { caros: true }]]) {
+    ['objeto', { caros: true }], ['ofertadodia (removida em 15/11/2026)', 'ofertadodia']]) {
     test(`ordem ${nome} é recusada antes de qualquer fetch ou escrita`, async () => {
       const ff = fetchFalso();
       const { ML, localStorage } = carregar({ fetch: ff.f });
       const estado = await ML.coletar({ termos: ['Smart TV'], ordem });
-      assert.match(estado.erro, /ordem deve ser uma destas: relevancia, caros\. Nada foi feito\./);
+      assert.match(estado.erro, /ordem deve ser uma destas: relevancia, caros, relampago\. Nada foi feito\./);
       assert.equal(ff.chamadas.length, 0);
       assert.equal(localStorage.escritas, 0);
       assert.equal(estado.rodando, false);
@@ -758,6 +758,27 @@ describe('coletar(): ordem da listagem (CA6)', () => {
       assert.equal(i.loja, 'ml');
     }
   });
+
+  for (const [ordem, sufixo] of [['relampago', '_NoIndex_True_promotion*type_lightning']]) {
+    test(`ordem '${ordem}' busca a listagem com o filtro de oferta e guarda o progresso à parte`, async () => {
+      const ff = fetchFalso();
+      const antigo = memoria({ [CHAVE]: JSON.stringify(['Body splash']) });
+      const { ML } = carregar({ fetch: ff.f, localStorage: antigo });
+      const estado = await ML.coletar({ termos: ['Body splash'], ordem });
+      assert.equal(estado.erro, null);
+      assert.equal(estado.ordem, ordem);
+      assert.deepEqual(ff.doML().map((c) => c.url), ['/body-splash' + sufixo]);
+      assert.equal(ff.doML()[0].init.credentials, 'include');
+      const corpo = JSON.parse(ff.doServidor()[0].init.body);
+      assert.ok(corpo.items.length > 0);
+      for (const i of corpo.items) {
+        assert.equal(i.cat, 'Perfumes e Perfumaria');
+        assert.equal(i.busca, 'Body splash');
+        assert.equal(i.loja, 'ml');
+      }
+      assert.deepEqual(antigo.lista(CHAVE), ['Body splash', ordem + '|Body splash']);
+    });
+  }
 
   test('o progresso antigo (termo puro) vale para a relevância e não pula a ordem "caros"', async () => {
     const ff = fetchFalso();
@@ -1121,7 +1142,7 @@ describe('afiliar(): funções puras (CA14, CA16)', () => {
     assert.deepEqual(m.inelegiveis, [
       { id: IDS.tv2, mlb: 'MLB4100000002', motivo: 'ITEM_NOT_ELIGIBLE: O produto não participa do programa de afiliados',
         codigo: 'ITEM_NOT_ELIGIBLE' },
-      { id: IDS.tv3, mlb: 'MLB4100000003', motivo: "link não é meli.la: confira 'Links curtos'", naoMeliLa: true },
+      { id: IDS.tv3, mlb: 'MLB4100000003', motivo: "link não é meli.la: confira 'Link curto'", naoMeliLa: true },
       { id: IDS.p2, mlb: 'MLB4200000002', motivo: 'INTERNAL_SERVER_ERROR: Tente de novo mais tarde', codigo: 'INTERNAL_SERVER_ERROR' },
     ]);
     assert.deepEqual(m.semResposta.map((s) => s.id), [IDS.p3]);
@@ -1267,7 +1288,7 @@ describe('afiliar(): fluxo com servidor falso (CA14, CA16, CA17)', () => {
     assert.equal(sf.patches().length, 2);
     conferirPatches(sf.patches());
     assert.deepEqual(js(estado.semResposta).sort((a, b) => a.id - b.id).map((s) => [s.id, s.motivo]),
-      [[IDS.tv3, "link não é meli.la: confira 'Links curtos'"], [IDS.p3, undefined]]);
+      [[IDS.tv3, "link não é meli.la: confira 'Link curto'"], [IDS.p3, undefined]]);
     assert.deepEqual(js(estado.naoMeliLa).map((e) => e.id), [IDS.tv3]);
     assert.deepEqual(js(estado.inelegiveis).map((e) => e.id), [IDS.tv2, IDS.p2]);
     // a repescagem só com quem falhou (TV3 e P3) não para a execução
@@ -1280,12 +1301,12 @@ describe('afiliar(): fluxo com servidor falso (CA14, CA16, CA17)', () => {
     assert.ok(mensagens.some((m) => /1 respostas sem meli\.la/.test(m.texto)));
   });
 
-  test('lote sem nenhum meli.la ("Links curtos" desligado) para sem gravar nem guardar nada (R8)', async () => {
+  test('lote sem nenhum meli.la ("Link curto" desligado) para sem gravar nem guardar nada (R8)', async () => {
     const sf = servidorFalso();
     const gf = gerarFalso(TODO_LONGO);
     const { ML, localStorage, mensagens } = carregar({ origem: WWW, fetch: sf.f });
     const estado = await ML.afiliar({ gerar: gf.g, pausa: [0, 0] });
-    assert.match(estado.erro, /link que não é meli\.la para 6 item\(ns\) \(MLB4100000001, MLB4100000002, MLB4100000003\).*Links curtos.*Nada deste lote foi gravado/);
+    assert.match(estado.erro, /link que não é meli\.la para 6 item\(ns\) \(MLB4100000001, MLB4100000002, MLB4100000003\).*Link curto.*Nada deste lote foi gravado/);
     assert.equal(sf.patches().length, 0);
     assert.equal(gf.pedidos.length, 1);
     assert.equal(localStorage.escritas, 0);
@@ -1474,10 +1495,11 @@ describe('afiliar(): fluxo com servidor falso (CA14, CA16, CA17)', () => {
 
 /**
  * Página falsa do linkbuilder: rótulo "Links curtos", textarea, botão "Gerar" que dispara o createLink.
+ * texto: o texto do rótulo; 'Link curto' é o da página de 11/2026 (botão de rádio ao lado de "Link completo").
  * rotulo: 'liga' (controle desmarcado que o clique liga), 'ligado', 'nao-liga' (clique não muda), 'sem-controle', 'ausente'.
  * corpo: o corpo do pedido do createLink (texto); padrão sem etiqueta.
  */
-function linkbuilderFalso({ via = 'fetch', resp = SEM_LONGO, semCaixa = false, rotulo: modo = 'liga', corpo = '{}' } = {}) {
+function linkbuilderFalso({ via = 'fetch', resp = SEM_LONGO, semCaixa = false, rotulo: modo = 'liga', corpo = '{}', texto = 'Links curtos' } = {}) {
   class Elemento {
     constructor(texto) { this.textContent = texto; this.cliques = 0; this.disabled = false; this.eventos = []; }
     click() { this.cliques++; if (this.aoClicar) this.aoClicar(); }
@@ -1489,8 +1511,11 @@ function linkbuilderFalso({ via = 'fetch', resp = SEM_LONGO, semCaixa = false, r
     get() { return this.v; }, set(v) { valores.push(v); this.v = v; }, configurable: true,
   });
   class Event { constructor(type, init) { this.type = type; this.bubbles = Boolean(init && init.bubbles); } }
-  const rotulo = new Elemento('Links curtos');
+  const rotulo = new Elemento(texto);
   if (modo !== 'sem-controle') rotulo.control = { checked: modo === 'ligado' };
+  // o outro rádio da página nova: vem antes na lista e nunca pode ser o escolhido nem clicado
+  const completo = new Elemento('Link completo');
+  completo.control = { checked: false };
   if (modo === 'liga') rotulo.aoClicar = () => { rotulo.control.checked = !rotulo.control.checked; };
   const caixa = new HTMLTextAreaElement('');
   const outro = new Elemento('Copiar');
@@ -1518,14 +1543,14 @@ function linkbuilderFalso({ via = 'fetch', resp = SEM_LONGO, semCaixa = false, r
   };
   const document = {
     querySelectorAll(sel) {
-      if (sel === 'label') return modo === 'ausente' ? [] : [rotulo];
+      if (sel === 'label') return modo === 'ausente' ? [] : [completo, rotulo];
       if (sel === 'textarea') return semCaixa ? [] : [caixa];
       if (sel === 'button') return [outro, botao];
       return [];
     },
   };
   const montar = (c) => { ctx = c; Object.assign(c, { document, HTMLTextAreaElement, Event, XMLHttpRequest }); };
-  return { montar, pagina, rotulo, caixa, botao, valores, capturas, XMLHttpRequest, abrirOriginal, enviarOriginal };
+  return { montar, pagina, rotulo, completo, caixa, botao, valores, capturas, XMLHttpRequest, abrirOriginal, enviarOriginal };
 }
 
 /** Carrega na aba do linkbuilder com a página falsa montada. */
@@ -1580,15 +1605,15 @@ describe('afiliar(): operação da página e gancho do createLink (CA16, R2, S2)
     assert.equal(mensagens.filter((m) => m.tipo === 'warn' && /não consegui ler a etiqueta/.test(m.texto)).length, 1);
   });
 
-  test('sem o rótulo "Links curtos" para com mensagem clara (R2)', async () => {
+  test('sem o rótulo "Link curto" para com mensagem clara (R2)', async () => {
     const lb = linkbuilderFalso({ rotulo: 'ausente' });
     const { ML } = carregarLinkbuilder(lb);
     const estado = await ML.afiliar({ enviar: false, itens: [PRODUTO(4100000001)] });
-    assert.match(estado.erro, /não achei a opção "Links curtos"/);
+    assert.match(estado.erro, /não achei a opção "Link curto"/);
     assert.equal(lb.botao.cliques, 0);
   });
 
-  test('"Links curtos" sem controle detectável: não clica, avisa e o link longo para o lote (R2)', async () => {
+  test('"Link curto" sem controle detectável: não clica, avisa e o link longo para o lote (R2)', async () => {
     const lb = linkbuilderFalso({ rotulo: 'sem-controle', resp: TODO_LONGO });
     const { ML, mensagens } = carregarLinkbuilder(lb);
     const estado = await ML.afiliar({ enviar: false, itens: ITENS_ML.map((i) => i.url), pausa: [0, 0] });
@@ -1601,8 +1626,28 @@ describe('afiliar(): operação da página e gancho do createLink (CA16, R2, S2)
     const lb = linkbuilderFalso({ rotulo: 'nao-liga' });
     const { ML } = carregarLinkbuilder(lb);
     const estado = await ML.afiliar({ enviar: false, itens: [PRODUTO(4100000001)] });
-    assert.match(estado.erro, /não consegui ligar "Links curtos"/);
+    assert.match(estado.erro, /não consegui ligar "Link curto"/);
     assert.equal(lb.botao.cliques, 0);
+  });
+
+  test('rótulo novo "Link curto" (rádio) já marcado: é reconhecido e ninguém é clicado', async () => {
+    const lb = linkbuilderFalso({ texto: 'Link curto', rotulo: 'ligado' });
+    const { ML } = carregarLinkbuilder(lb);
+    const estado = await ML.afiliar({ enviar: false, itens: ITENS_ML.map((i) => i.url), pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.ok(estado.trocados.length > 0);
+    assert.equal(lb.rotulo.cliques, 0);
+    assert.equal(lb.completo.cliques, 0, '"Link completo" nunca é clicado');
+  });
+
+  test('rótulo novo "Link curto" desmarcado: um clique liga e "Link completo" fica intocado', async () => {
+    const lb = linkbuilderFalso({ texto: 'Link curto', rotulo: 'liga' });
+    const { ML } = carregarLinkbuilder(lb);
+    const estado = await ML.afiliar({ enviar: false, itens: ITENS_ML.map((i) => i.url), pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.equal(lb.rotulo.cliques, 1);
+    assert.equal(lb.rotulo.control.checked, true);
+    assert.equal(lb.completo.cliques, 0, '"Link completo" nunca é clicado');
   });
 
   test('sem a caixa de texto do linkbuilder para com mensagem clara', async () => {
@@ -2110,5 +2155,405 @@ describe('atualizar(): integração com o servidor.py (CA3, CA5)', () => {
     const posts = chamadas.filter((c) => !c.url.startsWith('/'));
     assert.deepEqual(posts.map((c) => JSON.parse(c.init.body).items.map((i) => i.item_id)),
       [[], ['MLB4100000001', 'MLB4100000099']]);
+  });
+});
+
+// ================================================================== ordem 'ofertadodia' removida e busca sem resultado (15/11/2026)
+// O ML tirou "Oferta do dia" da listagem (a URL responde 200 com zero resultados) e a página sem resultado traz o literal
+// .q("0:{\"optimizedResponse\":...}") sem polycard e com "rescue" de "type":"zrp". Isso não é captcha: o termo vai para
+// estado.semResultado e a rodada segue. Sem o marcador (ou com o marcador fora do literal) continua o erro "sem polycard".
+const SEM_RESULTADO = fs.readFileSync(path.join(RAIZ, 'testes', 'fixtures', 'ml-busca-sem-resultado.html'), 'utf8');
+const CHAVE_COLETA = '__coletaML:http://localhost:8765';
+const RESCUE_ZRP = { message: { label: { version: '1', text: 'Não encontramos resultados para a sua busca' } }, labels: [], actions: [], type: 'zrp' };
+
+/** Página com um literal .q("0:{optimizedResponse...}") montado a partir de `resposta` (escapes de JS como o ML). */
+function paginaOptimized(resposta) {
+  const literal = JSON.stringify('0:' + JSON.stringify({ optimizedResponse: resposta }) + '\n')
+    .replace(/'/g, "\\'").replace(/</g, '\\x3C');
+  return `<html><body><script>_n.ctx.s["nr"].q(${literal});</script></body></html>`;
+}
+
+/** Páginas por termo: termos de `semResultado` vêm sem resultado; os outros, a fixture normal (coleta) ou cards (atualizar). */
+function paginasSemResultado(semResultado, normal) {
+  return (url) => (semResultado.some((t) => url.startsWith('/' + t)) ? SEM_RESULTADO : normal(url));
+}
+
+describe("ordem 'ofertadodia' removida (CA1)", () => {
+  test('coletar() recusa ofertadodia antes de qualquer pedido, listando só relevancia, caros, relampago', async () => {
+    const ff = fetchFalso();
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Body splash'], ordem: 'ofertadodia' });
+    assert.equal(estado.erro, 'ordem deve ser uma destas: relevancia, caros, relampago. Nada foi feito.');
+    assert.equal(ff.chamadas.length, 0);
+    assert.equal(localStorage.escritas, 0);
+    assert.equal(estado.rodando, false);
+  });
+
+  test('atualizar() recusa ofertadodia antes de qualquer pedido, listando só relevancia, caros, relampago', async () => {
+    const ff = fetchFalso();
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Body splash'], ordem: 'ofertadodia', agora: HOJE });
+    assert.equal(estado.erro, 'ordem deve ser uma destas: relevancia, caros, relampago. Nada foi feito.');
+    assert.equal(ff.chamadas.length, 0);
+    assert.equal(localStorage.escritas, 0);
+    assert.equal(estado.rodando, false);
+  });
+
+  test("relampago continua aceito no atualizar() com o sufixo type_lightning", async () => {
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Body splash'], ordem: 'relampago', agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/body-splash_NoIndex_True_promotion*type_lightning']);
+  });
+});
+
+describe('coletar(): busca sem resultado (CA2)', () => {
+  test('termo sem resultado não para a coleta: vai para semResultado, não grava progresso nem envia, e o seguinte é coletado', async () => {
+    const ff = fetchFalso({ pagina: paginasSemResultado(['smart-tv'], paginaPorSlug) });
+    const { ML, localStorage, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.deepEqual(js(estado.feitos), ['Body splash']);
+    assert.deepEqual(js(estado.semPiso), []);
+    assert.deepEqual(localStorage.lista(CHAVE_COLETA), ['Body splash'], 'o termo sem resultado não entra no progresso');
+    assert.deepEqual(ff.doML().map((c) => c.url), ['/smart-tv', '/body-splash']);
+    const posts = ff.doServidor();
+    assert.equal(posts.length, 1, 'nada é enviado para o termo sem resultado');
+    assert.ok(JSON.parse(posts[0].init.body).items.every((i) => i.busca === 'Body splash'));
+    const texto = mensagens.map((m) => m.texto).join('\n');
+    assert.match(texto, /"Smart TV"[^\n]*não trouxe resultado/);
+    assert.doesNotMatch(texto, /sem polycard/);
+    assert.equal(estado.rodando, false);
+  });
+
+  test('semResultado começa como lista vazia numa coleta normal', async () => {
+    const ff = fetchFalso();
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), []);
+  });
+
+  test('o termo sem resultado é buscado de novo na rodada seguinte (não ficou marcado como feito)', async () => {
+    let semResultado = true;
+    const ff = fetchFalso({ pagina: (url) => (semResultado && url === '/smart-tv' ? SEM_RESULTADO : FIXTURE) });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const primeira = await ML.coletar({ termos: ['Smart TV'] });
+    assert.equal(primeira.erro, null);
+    assert.deepEqual(js(primeira.semResultado), ['Smart TV']);
+    assert.equal(localStorage.lista(CHAVE_COLETA), null);
+    semResultado = false;
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.deepEqual(js(estado.semResultado), []);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+    assert.equal(ff.doML().length, 2);
+  });
+
+  test('todos os termos sem resultado: coleta termina sem erro e sem nenhum envio', async () => {
+    const ff = fetchFalso({ pagina: () => SEM_RESULTADO });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'Body splash']);
+    assert.equal(ff.doServidor().length, 0);
+    assert.equal(localStorage.escritas, 0);
+  });
+
+  test("em outra ordem (relampago) o log cita a ordem e o progresso das outras ordens fica intacto", async () => {
+    const ff = fetchFalso({ pagina: paginasSemResultado(['smart-tv'], paginaPorSlug) });
+    const antigo = memoria({ [CHAVE_COLETA]: JSON.stringify(['Smart TV']) });
+    const { ML, mensagens } = carregar({ fetch: ff.f, localStorage: antigo });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], ordem: 'relampago', pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.deepEqual(antigo.lista(CHAVE_COLETA), ['Smart TV', 'relampago|Body splash']);
+    const linha = mensagens.map((m) => m.texto).find((t) => t.includes('"Smart TV"') && /não trouxe resultado/.test(t));
+    assert.ok(linha, 'sem log claro de busca sem resultado');
+    assert.match(linha, /relampago/);
+  });
+
+  test('com enviar:false o termo sem resultado também vai para semResultado e a coleta segue', async () => {
+    const ff = fetchFalso({ pagina: paginasSemResultado(['smart-tv'], paginaPorSlug) });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], enviar: false, pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.ok(estado.itens.length > 0);
+    assert.ok(estado.itens.every((i) => i.busca === 'Body splash'));
+  });
+
+  const avisosGerais = (mensagens) => mensagens.filter((m) => m.tipo === 'warn' && /^\[ColetaML\] nenhum termo trouxe resultado/.test(m.texto));
+
+  test('R2: todos os termos buscados sem resultado (2 ou mais) dão um aviso com a ordem; o estado não muda', async () => {
+    const ff = fetchFalso({ pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], ordem: 'relampago', pausa: [0, 0] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'Body splash']);
+    const avisos = avisosGerais(mensagens);
+    assert.equal(avisos.length, 1);
+    assert.equal(avisos[0].texto, '[ColetaML] nenhum termo trouxe resultado: o filtro/ordem relampago pode ter saído do ML ou a busca mudou');
+  });
+
+  test('R2: um termo só sem resultado não avisa', async () => {
+    const ff = fetchFalso({ pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'], pausa: [0, 0] });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: algum termo com cards não avisa', async () => {
+    const ff = fetchFalso({ pagina: paginasSemResultado(['smart-tv'], paginaPorSlug) });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: 2 termos sem resultado e 1 com cards não avisa', async () => {
+    const ff = fetchFalso({ pagina: paginasSemResultado(['smart-tv', 'iphone-17'], paginaPorSlug) });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0] });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'iPhone 17']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: termos pulados pelo progresso não contam como buscados (1 pulado + 1 sem resultado não avisa; 1 pulado + 2 avisa)', async () => {
+    const antigo = memoria({ [CHAVE_COLETA]: JSON.stringify(['Body splash']) });
+    const um = carregar({ fetch: fetchFalso({ pagina: () => SEM_RESULTADO }).f, localStorage: antigo });
+    await um.ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+    assert.equal(avisosGerais(um.mensagens).length, 0);
+    const dois = carregar({ fetch: fetchFalso({ pagina: () => SEM_RESULTADO }).f, localStorage: antigo });
+    await dois.ML.coletar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0] });
+    assert.equal(avisosGerais(dois.mensagens).length, 1);
+  });
+
+  test('R2: coleta parada não avisa', async () => {
+    const ff = fetchFalso({ pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const corrida = ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [60000, 60000] });
+    await new Promise((r) => setTimeout(r, 20));
+    ML.parar();
+    const estado = await corrida;
+    assert.equal(estado.parado, true);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  // R5: para de dentro da leitura do 2º termo (determinístico); com 2 termos sem resultado e todos buscados,
+  // só o ramo do parar() impede o aviso, então chamar o aviso também nesse ramo faria este teste falhar.
+  test('R5: coleta parada com 2 termos buscados, todos sem resultado, não avisa (o 3º nem é aberto)', async () => {
+    let ML;
+    let aberturas = 0;
+    const ff = fetchFalso({ pagina: () => { if (++aberturas === 2) ML.parar(); return SEM_RESULTADO; } });
+    const c = carregar({ fetch: ff.f });
+    ML = c.ML;
+    const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0] });
+    assert.equal(estado.parado, true);
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'Body splash']);
+    assert.equal(ff.doML().length, 2);
+    assert.equal(avisosGerais(c.mensagens).length, 0);
+  });
+});
+
+describe('atualizar(): busca sem resultado (CA3)', () => {
+  const cards = (n) => paginaAtu([cardAtu(n)]);
+
+  test('termo sem resultado não para a rodada: vai para semResultado, sem progresso do dia e sem lote; o seguinte é atualizado', async () => {
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor, pagina: paginasSemResultado(['smart-tv'], () => cards(4100000001)) });
+    const { ML, localStorage, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.deepEqual(js(estado.feitos), ['Body splash']);
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Body splash']);
+    // pedidos = o lote vazio da conferência do so_existentes (sempre o primeiro) + o lote do termo seguinte
+    assert.equal(sa.pedidos.length, 2, 'nenhum lote (nem vazio) para o termo sem resultado');
+    assert.equal(sa.lotes().length, 1);
+    assert.ok(sa.lotes().every((p) => p.items.every((i) => i.busca === 'Body splash')));
+    const texto = mensagens.map((m) => m.texto).join('\n');
+    assert.match(texto, /"Smart TV"[^\n]*não trouxe resultado/);
+    assert.doesNotMatch(texto, /sem polycard/);
+    assert.equal(estado.rodando, false);
+  });
+
+  test('semResultado começa vazio numa atualização normal', async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), []);
+  });
+
+  test('o termo sem resultado é lido de novo ainda no mesmo dia', async () => {
+    let vazio = true;
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor, pagina: (url) => (vazio ? SEM_RESULTADO : cards(4100000001)) });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const primeira = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.equal(primeira.erro, null);
+    assert.deepEqual(js(primeira.semResultado), ['Smart TV']);
+    assert.equal(localStorage.lista(CHAVE_ATUALIZAR), null);
+    vazio = false;
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.deepEqual(js(estado.pulados), []);
+    assert.deepEqual(js(estado.feitos), ['Smart TV']);
+  });
+
+  test("em ordem relampago o log cita a ordem", async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor, pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], ordem: 'relampago', agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    const linha = mensagens.map((m) => m.texto).find((t) => t.includes('"Smart TV"') && /não trouxe resultado/.test(t));
+    assert.ok(linha, 'sem log claro de busca sem resultado');
+    assert.match(linha, /relampago/);
+  });
+
+  const avisosGerais = (mensagens) => mensagens.filter((m) => m.tipo === 'warn' && /^\[ColetaML\] nenhum termo trouxe resultado/.test(m.texto));
+
+  test('R2: todos os termos buscados sem resultado (2 ou mais) dão um aviso com a ordem; o estado não muda', async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor, pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], ordem: 'relampago', pausa: [0, 0], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'Body splash']);
+    const avisos = avisosGerais(mensagens);
+    assert.equal(avisos.length, 1);
+    assert.equal(avisos[0].texto, '[ColetaML] nenhum termo trouxe resultado: o filtro/ordem relampago pode ter saído do ML ou a busca mudou');
+  });
+
+  test('R2: um termo só sem resultado não avisa', async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor, pagina: () => SEM_RESULTADO });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], pausa: [0, 0], agora: HOJE });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: algum termo com cards não avisa', async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor, pagina: paginasSemResultado(['smart-tv'], () => cards(4100000001)) });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: 2 termos sem resultado e 1 com cards não avisa', async () => {
+    const ff = fetchFalso({ servidor: servidorAtu().servidor, pagina: paginasSemResultado(['smart-tv', 'iphone-17'], () => cards(4100000001)) });
+    const { ML, mensagens } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0], agora: HOJE });
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'iPhone 17']);
+    assert.equal(avisosGerais(mensagens).length, 0);
+  });
+
+  test('R2: termos pulados pelo progresso do dia não contam como buscados (1 pulado + 1 sem resultado não avisa; 1 pulado + 2 avisa)', async () => {
+    const antigo = memoria({ [CHAVE_ATUALIZAR]: JSON.stringify(['2026-11-04|relevancia|Body splash']) });
+    const um = carregar({ fetch: fetchFalso({ servidor: servidorAtu().servidor, pagina: () => SEM_RESULTADO }).f, localStorage: antigo });
+    await um.ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+    assert.equal(avisosGerais(um.mensagens).length, 0);
+    const dois = carregar({ fetch: fetchFalso({ servidor: servidorAtu().servidor, pagina: () => SEM_RESULTADO }).f, localStorage: antigo });
+    await dois.ML.atualizar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0], agora: HOJE });
+    assert.equal(avisosGerais(dois.mensagens).length, 1);
+  });
+
+  test('R5: atualização parada com 2 termos buscados, todos sem resultado, não avisa (o 3º nem é aberto)', async () => {
+    let ML;
+    let aberturas = 0;
+    const sa = servidorAtu();
+    const ff = fetchFalso({ servidor: sa.servidor, pagina: () => { if (++aberturas === 2) ML.parar(); return SEM_RESULTADO; } });
+    const c = carregar({ fetch: ff.f });
+    ML = c.ML;
+    const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash', 'iPhone 17'], pausa: [0, 0], agora: HOJE });
+    assert.equal(estado.parado, true);
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado), ['Smart TV', 'Body splash']);
+    assert.equal(ff.doML().length, 2);
+    assert.equal(avisosGerais(c.mensagens).length, 0);
+  });
+});
+
+describe('busca sem polycard e sem marcador continua sendo erro (CA4, CA5)', () => {
+  const SEM_POLYCARD = {
+    'literal sem polycard e sem rescue': paginaOptimized({ query: 'x', results: [] }),
+    'literal sem polycard com rescue de outro tipo': paginaOptimized({ rescue: { ...RESCUE_ZRP, type: 'outro' }, results: [] }),
+    'literal sem polycard com rescue de outro tipo e "type":"zrp" em outro campo': paginaOptimized({ rescue: { ...RESCUE_ZRP, type: 'outro' }, results: [], info: { type: 'zrp' } }),
+    'literal sem polycard com "type":"zrp" mas sem rescue': paginaOptimized({ results: [], info: { type: 'zrp' } }),
+    'html sem literal nenhum': '<html><body>nada aqui</body></html>',
+    'captcha no corpo': '<html><body><form action="/captcha">Confirme que você é humano</form></body></html>',
+  };
+  // CA5: o marcador solto fora de qualquer .q("...") não vale
+  const FORA_DO_LITERAL = {
+    'marcador em texto solto do HTML': '<html><body><p>"rescue":{"type":"zrp"}</p></body></html>',
+    'marcador em outro script que não é .q(...)': '<html><script>var x = {"rescue":{"type":"zrp"},"results":[]};</script></html>',
+    'marcador em comentário HTML': '<html><!-- "rescue":{"type":"zrp"} --><body>x</body></html>',
+    'marcador em string JS escapada fora do .q': '<html><script>window.estado = "{\\"rescue\\":{\\"type\\":\\"zrp\\"}}";</script></html>',
+    'marcador depois de um .q("...") sem fim': '<html><script>a.q("quebrado</script><p>"type":"zrp"</p></html>',
+    'marcador fora, literal .q vazio de marcador': `<html><p>"type":"zrp"</p>${paginaOptimized({ results: [] })}</html>`,
+  };
+
+  for (const [nome, html] of Object.entries({ ...SEM_POLYCARD, ...FORA_DO_LITERAL })) {
+    test(`coletar(): ${nome} para com "sem polycard" e não vira semResultado`, async () => {
+      const ff = fetchFalso({ pagina: () => html });
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.coletar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0] });
+      assert.match(estado.erro, /veio sem polycard/);
+      assert.deepEqual(js(estado.semResultado ?? []), []);
+      assert.equal(ff.doServidor().length, 0);
+      assert.equal(ff.doML().length, 1, 'a coleta parou no primeiro termo');
+      assert.equal(localStorage.escritas, 0);
+    });
+
+    test(`atualizar(): ${nome} para com "sem polycard" e não vira semResultado`, async () => {
+      const sa = servidorAtu();
+      const ff = fetchFalso({ pagina: () => html, servidor: sa.servidor });
+      const { ML, localStorage } = carregar({ fetch: ff.f });
+      const estado = await ML.atualizar({ termos: ['Smart TV', 'Body splash'], pausa: [0, 0], agora: HOJE });
+      assert.match(estado.erro, /veio sem polycard.*A atualização parou/);
+      assert.deepEqual(js(estado.semResultado ?? []), []);
+      assert.equal(sa.lotes().length, 0);
+      assert.equal(ff.doML().length, 1);
+      assert.equal(localStorage.lista(CHAVE_ATUALIZAR), null);
+    });
+  }
+
+  test('página com polycards E "type":"zrp" no mesmo literal é lida como página com produtos (coletar)', async () => {
+    const pagina = paginaOptimized({ rescue: RESCUE_ZRP, results: [cardAtu(4100000001), cardAtu(4100000002)] });
+    const ff = fetchFalso({ pagina: () => pagina });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado ?? []), []);
+    assert.deepEqual(js(estado.itens.map((i) => i.item_id).sort()), ['MLB4100000001', 'MLB4100000002']);
+    assert.equal(ff.doServidor().length, 1);
+    assert.deepEqual(localStorage.lista(CHAVE_COLETA), ['Smart TV']);
+  });
+
+  test('página com polycards E "type":"zrp" no mesmo literal é lida como página com produtos (atualizar)', async () => {
+    const pagina = paginaOptimized({ rescue: RESCUE_ZRP, results: [cardAtu(4100000001)] });
+    const sa = servidorAtu();
+    const ff = fetchFalso({ pagina: () => pagina, servidor: sa.servidor });
+    const { ML, localStorage } = carregar({ fetch: ff.f });
+    const estado = await ML.atualizar({ termos: ['Smart TV'], agora: HOJE });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado ?? []), []);
+    assert.deepEqual(sa.lotes().map((p) => p.items.map((i) => i.item_id)), [['MLB4100000001']]);
+    assert.deepEqual(localStorage.lista(CHAVE_ATUALIZAR), ['2026-11-04|relevancia|Smart TV']);
+  });
+
+  test('polycards em um literal e zrp em outro: página com produtos, não sem resultado', async () => {
+    const pagina = paginaOptimized({ rescue: RESCUE_ZRP, results: [] }) + paginaAtu([cardAtu(4100000001)]);
+    const ff = fetchFalso({ pagina: () => pagina });
+    const { ML } = carregar({ fetch: ff.f });
+    const estado = await ML.coletar({ termos: ['Smart TV'] });
+    assert.equal(estado.erro, null);
+    assert.deepEqual(js(estado.semResultado ?? []), []);
+    assert.deepEqual(js(estado.itens.map((i) => i.item_id)), ['MLB4100000001']);
   });
 });

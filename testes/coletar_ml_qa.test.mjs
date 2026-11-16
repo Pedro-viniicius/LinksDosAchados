@@ -961,7 +961,7 @@ describe('QA CA16: afiliar() com servidor e linkbuilder falsos', () => {
     const { ML, mensagens } = carregar({ origem: WWW, fetch: sf.f, localStorage: arm });
     const r = await ML.afiliar({ gerar, pausa: [0, 0] });
     assert.match(r.erro, /não é meli\.la/);
-    assert.match(r.erro, /Links curtos/);
+    assert.match(r.erro, /Link curto/);
     assert.equal(r.naoMeliLa.length, 3);
     assert.equal(sf.patches().length, 0);
     assert.equal(arm.escritas, 0);
@@ -1600,7 +1600,7 @@ describe('QA rodada 2: rótulo "Links curtos" na página', () => {
 
   test('sem o rótulo: erro claro, nada gerado, nada gravado e o gancho sai', async () => {
     const { lb, ctx, r, sf } = await rodar('ausente');
-    assert.match(r.erro, /não achei a opção "Links curtos"/);
+    assert.match(r.erro, /não achei a opção "Link curto"/);
     assert.equal(lb.botao.cliques, 0);
     assert.equal(sf.patches().length, 0);
     assert.equal(ctx.fetch, lb.fetch);
@@ -1612,7 +1612,7 @@ describe('QA rodada 2: rótulo "Links curtos" na página', () => {
     assert.equal(lb.rotulo.cliques, 0);
     assert.ok(lb.botao.cliques >= 2);
     assert.equal(sf.patches().length, 2);
-    assert.equal(mensagens.filter((m) => /não consegui ver se "Links curtos" está ligado/.test(m.texto)).length, 1);
+    assert.equal(mensagens.filter((m) => /não consegui ver se "Link curto" está ligado/.test(m.texto)).length, 1);
   });
 
   test('desligado: clica uma vez, confere que ligou e segue', async () => {
@@ -1623,7 +1623,7 @@ describe('QA rodada 2: rótulo "Links curtos" na página', () => {
 
   test('o clique não liga: para antes de gerar com "não consegui ligar"', async () => {
     const { lb, r, sf } = await rodar('trava');
-    assert.match(r.erro, /não consegui ligar "Links curtos"/);
+    assert.match(r.erro, /não consegui ligar "Link curto"/);
     assert.equal(lb.botao.cliques, 0);
     assert.equal(sf.patches().length, 0);
   });
