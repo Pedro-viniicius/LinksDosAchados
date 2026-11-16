@@ -11,11 +11,14 @@ Só biblioteca padrão.
 """
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_servidor as TS  # noqa: E402  (ambiente, ServidorTeste, ml, RAIZ)
@@ -463,6 +466,123 @@ class TestGeneroServidor(TS.ServidorTeste):
     def test_primeira_linha_do_stdout_nao_mudou(self):
         self.assertEqual(self.primeira_linha,
                          f'Site em http://localhost:{self.porta}/  (banco: {self.db})\n')
+
+
+class ConexaoQueApagaNoCommit(sqlite3.Connection):
+    """Conexão cujo commit() grava de verdade e, logo depois, um "outro cliente" apaga o item.
+
+    Reproduz de forma determinística a janela entre o commit do PUT de gênero e a releitura do item:
+    o DELETE do mesmo item (mesmos passos do do_DELETE do servidor.py: item e correção no mesmo commit)
+    entra por outra conexão exatamente nesse ponto. Dispara uma vez só e só no commit que gravou a correção.
+    """
+    apagar_id = None
+    apagou = False
+
+    def commit(self):
+        super().commit()
+        if type(self).apagar_id is not None and not type(self).apagou:
+            type(self).apagou = True
+            outra = sqlite3.connect(self.alvo_db, timeout=30)
+            try:
+                outra.execute('DELETE FROM items WHERE id=?', (type(self).apagar_id,))
+                outra.execute('DELETE FROM generos_manuais WHERE item_pk=?', (type(self).apagar_id,))
+                outra.commit()
+            finally:
+                outra.close()
+
+
+class PutGeneroDeleteNaJanela(unittest.TestCase):
+    """PUT /api/items/<id>/genero com um DELETE do mesmo item entre o commit e a releitura (em processo, sem thread).
+
+    Chama o Handler.corrigir_genero do servidor.py direto, com o banco num diretório temporário
+    (S.DB trocado por mock) e sem socket: nenhum teste torce por sorte de agendamento.
+    """
+
+    def setUp(self):
+        self.pasta = tempfile.mkdtemp(prefix='teste-genero-janela-')
+        self.addCleanup(shutil.rmtree, self.pasta, True)
+        self.db = os.path.join(self.pasta, 'achadinhos.db')
+        os.environ['ACHADINHOS_DB'] = self.db
+        os.environ['ACHADINHOS_API_TOKEN_ARQUIVO'] = os.path.join(self.pasta, 'sem-token.txt')
+        sys.path.insert(0, TS.RAIZ)
+        import servidor as S
+        self.S = S
+        p = mock.patch.object(S, 'DB', self.db)
+        p.start()
+        self.addCleanup(p.stop)
+        self.assertEqual(os.path.dirname(os.path.realpath(S.DB)), os.path.realpath(self.pasta),
+                         'o teste não pode tocar o banco real')
+        S.criar_banco()
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO items (loja,item_id,cat,busca,url,titulo,tem_dados,criado_em,atualizado_em) "
+                    "VALUES ('amazon','JANELA0001',?,'','https://www.amazon.com.br/dp/JANELA0001?tag=desejodemen01-20',"
+                    "'Perfume La Vie Est Belle Feminino EDP',1,?,?)", (PERF, VELHO, VELHO))
+        con.commit()
+        self.iid = con.execute("SELECT id FROM items WHERE item_id='JANELA0001'").fetchone()[0]
+        con.close()
+        ConexaoQueApagaNoCommit.apagar_id = None
+        ConexaoQueApagaNoCommit.apagou = False
+        ConexaoQueApagaNoCommit.alvo_db = self.db
+        self.addCleanup(setattr, ConexaoQueApagaNoCommit, 'apagar_id', None)
+
+    def conectar_falsa(self):
+        con = sqlite3.connect(self.db, timeout=30, factory=ConexaoQueApagaNoCommit)
+        con.row_factory = sqlite3.Row
+        con.execute('PRAGMA journal_mode=WAL')
+        con.alvo_db = self.db
+        return con
+
+    def put(self, valor):
+        """Roda o corrigir_genero num Handler sem socket. Devolve (status, corpo, linhas_de_log)."""
+        S = self.S
+        h = object.__new__(S.Handler)
+        saida, logs = [], []
+        h.corpo = lambda: {'genero': valor}
+        h.json = lambda obj, code=200, cabecalhos=(): saida.append((code, obj))
+        h.log_message = lambda fmt, *a: logs.append(fmt % a)
+        h.requestline = f'PUT /api/items/{self.iid}/genero HTTP/1.1'
+        with mock.patch.object(S, 'conectar', self.conectar_falsa):
+            h.corrigir_genero(self.iid)
+        self.assertEqual(len(saida), 1, 'o handler tem de responder uma vez só')
+        return saida[0][0], saida[0][1], logs
+
+    def manual(self):
+        con = sqlite3.connect(self.db)
+        try:
+            return con.execute('SELECT genero FROM generos_manuais WHERE item_pk=?', (self.iid,)).fetchone()
+        finally:
+            con.close()
+
+    def test_ca3_put_sem_corrida_devolve_o_item_com_genero(self):
+        st, dados, logs = self.put('masculino')
+        self.assertEqual((st, logs), (200, []))
+        self.assertEqual(set(dados), CHAVES_ITEM)
+        self.assertEqual((dados['id'], dados['genero'], dados['genero_origem'], dados['genero_auto']),
+                         (self.iid, 'masculino', 'manual', 'feminino'))
+        self.assertEqual(self.manual(), ('masculino',))
+
+    def test_ca1_delete_entre_commit_e_releitura_nao_vira_500_nem_loga_falha(self):
+        ConexaoQueApagaNoCommit.apagar_id = self.iid
+        st, dados, logs = self.put('masculino')
+        self.assertTrue(ConexaoQueApagaNoCommit.apagou, 'o DELETE não foi injetado: o teste não provou nada')
+        self.assertEqual([l for l in logs if 'falhou' in l], [], 'o handler logou falha por causa do DELETE')
+        self.assertIn(st, (200, 404), f'resposta {st}: {dados}')
+        if st == 200:   # o item foi lido dentro da transação: tem o que o PUT gravou
+            self.assertEqual((dados['id'], dados['genero'], dados['genero_origem']), (self.iid, 'masculino', 'manual'))
+        else:
+            self.assertEqual(dados, {'error': 'item não encontrado'})
+
+    def test_ca2_delete_na_janela_nao_deixa_correcao_orfa(self):
+        ConexaoQueApagaNoCommit.apagar_id = self.iid
+        self.put('masculino')
+        self.assertTrue(ConexaoQueApagaNoCommit.apagou)
+        con = sqlite3.connect(self.db)
+        try:
+            self.assertIsNone(con.execute('SELECT 1 FROM items WHERE id=?', (self.iid,)).fetchone())
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM generos_manuais WHERE item_pk=?',
+                                         (self.iid,)).fetchone()[0], 0)
+        finally:
+            con.close()
 
 
 if __name__ == '__main__':

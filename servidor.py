@@ -1384,9 +1384,10 @@ class Handler(SimpleHTTPRequestHandler):
             # null sem correção para apagar não muda nada: o item não reaparece no cursor da API v1
             if con.total_changes != mudancas:
                 con.execute('UPDATE items SET atualizado_em=? WHERE id=?', (quando, iid))
-            con.commit()
+            # o item é lido ainda dentro da transação: um DELETE depois do commit não deixa a releitura vazia
             r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()
             item = linha_para_item(r, genero.manuais(con))
+            con.commit()
         except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
             if con.in_transaction:
                 con.rollback()
