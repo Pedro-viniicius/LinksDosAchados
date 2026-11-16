@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Arquivo do QA: `testes/test_endurecer_qa.py` (35 testes, ~20 s; `python3 testes/test_endurecer_qa.py -v` ou `Classe.metodo`). Importa `test_operacao` (Base com python3 falso) e `test_servidor` (porta_livre/ambiente). Classes: PortaoDeCommit (repo git temporário + cópia do verificar.py e do hook), Backup, Trava (dono em processo separado, corrida de 8 processos), OperacaoAbasReais (buscas.json real, 17 abas), VersaoDoServidorNoAr (verificar.py --servidor por subprocesso contra cópia dos 4 .py).
+Arquivo do QA: `testes/test_endurecer_qa.py` (36 testes, ~20 s; `python3 testes/test_endurecer_qa.py -v` ou `Classe.metodo`). Importa `test_operacao` (Base com python3 falso) e `test_servidor` (porta_livre/ambiente). Classes: PortaoDeCommit (repo git temporário + cópia do verificar.py e do hook), Backup, Trava (dono em processo separado, corrida de 8 processos), OperacaoAbasReais (buscas.json real, 17 abas), VersaoDoServidorNoAr (verificar.py --servidor por subprocesso contra cópia dos 4 .py).
 
 Achados da rodada 1 (09/11/2026), com teste vermelho que os reproduz (Q1, Q2 e o .parcial foram corrigidos na rodada 2 e os testes estão verdes; rodada 2 APROVADA):
 - Q1 (baixa): `nome_proibido` só casa o nome exato; `api_token.txt.bak`, `api_token.txt~`, `.old`, `api_cabecalho.txt.bak`, `_chat.txt.bak`, `ml_catalogo.json.bak` passam pelo portão (e o token de 64 hex sozinho na linha não bate em nenhum padrão). Teste: `PortaoDeCommit.test_variantes_de_backup_do_arquivo_do_token_tambem_bloqueiam`.
@@ -23,3 +23,5 @@ Armadilhas:
 - Backups vão para a pasta do BANCO (ACHADINHOS_DB), não para o cwd: em teste de corrida com várias pastas, aponte ACHADINHOS_DB por pasta e confira que os arquivos novos aparecem (senão passa em falso).
 - Mutantes da rodada 2 mortos: mtime ignorado, nunca apagar .parcial, sem -wal do velho, sem tolerância a FileNotFoundError, sem api_token*/_chat.txt* em NOMES_PROIBIDOS. Cópia para mutante: *.py + testes/*.py + .githooks (sem .githooks o PortaoDeCommit dá ERROR de import).
 - `verificar.py --rapido` rodou 49/50 (só garimpo/test_qa_entrega1, sem unittest.main(), outra frente) com --hora padrão e 3.
+
+- Q3 (15/11/2026, rodada 1 do bug de colisão de nome): `reservar_nome` confere `nome` e só depois `nome.parcial` (O_EXCL); se o outro backup publica no meio (link do nome + unlink do .parcial), o segundo sai com 1 ("o nome final apareceu durante a cópia"). Causa do flaky de `test_rotacao_em_corrida_real_nao_imprime_aviso...`. Teste determinístico: `Backup.test_dois_backups_do_mesmo_segundo_nao_colidem_quando_o_outro_publica_entre_as_conferencias` (embrulha `B.existe` num runner com relógio fixo). Correção candidata validada em cópia: criar o .parcial primeiro e reconferir nome e sidecars depois (apagando o próprio .parcial e seguindo para `-n`).

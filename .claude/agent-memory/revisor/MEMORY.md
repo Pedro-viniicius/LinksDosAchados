@@ -1,13 +1,13 @@
 - [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio (exec no subshell para o PID), Chrome headless, testes; `--noproxy` com aspas
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global, regra da spec sem medir, cor da referência sem conferir
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
-- [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível persistente por config, toggle às cegas; formatos reais via GET
+- [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível por config, toggle às cegas, pré-filtro que esvazia teste negativo (zrp), teste abaixo do limiar (aviso zrp); formatos via GET
 - [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo; some todas as fases; backup antes dos comandos; na r2, grep em toda consequência nova
 - [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
 - [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado, números do contrato; Q1 (validade padrão): mutantes e fixture "ruim" sem preco_em
 - [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
-- [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
+- [Público (gênero)](padroes-genero.md) — gatilhos no banco copiado, código antigo sobre v2, folga x categorias, mutantes; Q1 do PUT (ler antes do commit)
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
 - [Preço sempre atualizado](padroes-atualizar-precos.md) — lote x PATCH; v1 x undici; item não marcado = trava; formato da API Shopee: confira medições do garimpo
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
@@ -16,4 +16,4 @@
 - [Landing pages de grupo](revisao-landing-pages.md) — fora do repo: checks de cada site, 4 cópias do contar.php entre worktrees, origem nova sem teste
 - [Comportamento padrão do front](padroes-front-comportamento.md) — mudar o padrão quebra páginas fora da linha de base; rode todas; mutante por replace na 8767; anote achados da r1
 - [Foto grande (Q1)](padroes-foto-grande.md) — guarda de query sem teste (mutante), fuzz de paridade Python x front, números do banco
-- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — rodar verificar/dados reais; mutante do operacao/ no scratchpad; mensagem de laço (saída 4 na 2ª aba)
+- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — rodar verificar/dados reais; mutante do operacao/; laço (saída 4); estresse de corrida do backup (banco minúsculo)
