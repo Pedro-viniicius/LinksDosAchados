@@ -352,9 +352,23 @@ curl -s -X POST -H @api_cabecalho.txt "http://localhost:8765/api/v1/amazon/<ASIN
 
 Node 22: `fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, redirect: 'error' })`, sem corpo; leia o corpo inteiro e trate 429 pelo `tentar_em_s`.
 
+## Para quem mexe no código
+
+Movido do `CLAUDE.md` em 17/11/2026 (plano `docs/produto/planos/endurecer-entrega2.md`, etapa 5). **Regra de negócio** (`api_ofertas.py` e a parte da v1 no `servidor.py`).
+
+- `api_ofertas.py`: API v1 de leitura para o Achadinho Turbo (app Node do dono em `~/Documentos/saas/achadinho_turbo`, porta 3737; outro projeto, não editar daqui).
+- `GET /api/v1/ofertas` (filtros `cat`, `loja`, `q`, `desconto_min`, `genero`, `limite`, `ordem`; cada oferta traz `genero` e `preco_em` (texto ou `null`); `imagem` vem na versão grande (`disparo.foto_grande`); sem `preco_max_horas` vale `config.preco_validade_horas` (`disparo.validade_horas`, lida a cada pedido, padrão 24; preço vencido, nulo, malformado ou no futuro não sai; banco sem a coluna dá lista vazia), com ele vale o pedido (1 a 168), mesmo maior que a validade; `/categorias` conta tudo; testes em `testes/test_api_ofertas_validade_qa.py`; `/categorias` traz `generos`; cursor `(atualizado_em, id)` com folga de 60 s) e `GET /api/v1/categorias`.
+- Só sai oferta com link de afiliado da própria loja (`disparo.link_da_loja_ok`), sem candidata a link no título/cupom e com foto só do CDN da loja.
+- No `servidor.py`: token Bearer lido uma vez na subida de `api_token.txt` (ou `ACHADINHOS_API_TOKEN_ARQUIVO`; sem arquivo válido, 503), guardas Host 403 → `Origin`/`Sec-Fetch-Site` 403 → 503 → 401 → 405, conexão `query_only`, log sem query nem token.
+- `POST /api/v1/amazon/<ASIN>/confirmar-preco`, toda no `servidor.py` (o `api_ofertas.py` continua só de leitura): `confirmar_preco_amazon(con, asin, buscar, agora)` relê `https://www.amazon.com.br/dp/<ASIN>` sem tag (`buscar_releitura_amazon`: prazo total de 8 s com os redirects, 4 s por operação de rede e teto de 4 MB por página; estouro é `falha_rede`; o `/api/fetch` segue 30 s por operação, sem prazo total nem teto), classifica `confirmado`/`sem_preco`/`outro_produto`/`bloqueado`/`falha_rede` (página sem título ou sem ASIN é `bloqueado`, nunca descarte) e, só no `confirmado`, grava em `BEGIN IMMEDIATE` depois da rede, relendo a linha, só `preco`, `preco_antigo`, `desconto` (com `sanear_precos`), `preco_em` e `atualizado_em`; nunca insere nem mexe em `url`.
+- Guardas da rota: as da v1 (405 com `Allow: POST`; o POST nas outras rotas segue 405 `Allow: GET`) → ASIN fora de `[A-Z0-9]{10}` 404 → corpo não vazio 400 → item `loja='amazon'` inexistente 404 → `FreioReleitura` 429 com `Retry-After` (`ocupado`, `pausa` de 15 min depois de `bloqueado`, `intervalo` de 3 s, `teto` de 60/h deslizante, `rodada` quando `travar_rodada('amazon')` está ocupada: pega e solta na hora, nunca segura durante a leitura; em memória, zera ao reiniciar) → leitura.
+- Log com `amazon/(asin)/confirmar-preco` no lugar do ASIN.
+- Testes `test_confirmar_preco` e `test_confirmar_preco_servidor`.
+- Histórico: a validade do preço sem `preco_max_horas` foi decisão do dono em 08/11/2026; a rota de confirmação existe desde 11/11/2026 (plano `docs/produto/planos/rodar-sozinho-entrega1.md` do Turbo, etapas A1 a A3).
+
 ## Guia de encaixe no Achadinho Turbo
 
-Sugestão, sem código, para a sessão que cuida do Turbo. **Este repositório não edita o Turbo.** As linhas citadas são de `/home/ufla/Documentos/achadinhoturbo` em 2026-11-03 e podem mudar (outra sessão edita esses arquivos).
+Sugestão, sem código, para a sessão que cuida do Turbo. **Este repositório não edita o Turbo.** As linhas citadas são de `~/Documentos/saas/achadinho_turbo` em 2026-11-03 e podem mudar (outra sessão edita esses arquivos).
 
 **Nome:** no Turbo, "etiqueta" quer dizer a etiqueta de afiliado do Mercado Livre. Chame a fonte nova de **`catalogo`** ("Catálogo do Etiqueta"), para não colidir.
 

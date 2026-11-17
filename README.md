@@ -101,6 +101,26 @@ O portão é opcional e vem desligado: o dono o liga uma vez, com `git config co
 - **Testes:** se houver `.py`, `.mjs`, `.html`, `.json` ou `.sh` staged, roda o `verificar.py --rapido`. Teste novo que ainda não é rastreado (de outra frente de trabalho) não bloqueia o commit. Os testes rodam sobre a **árvore de trabalho** (os arquivos como estão no disco), não sobre o que está staged: uma mudança fora do commit pode fazer o portão passar ou falhar.
 - **Falso positivo:** acrescente ao fim da linha o marcador `# verificar: permitir`; a linha liberada aparece no resumo, para você revisar. `git commit --no-verify` pula o portão: ele protege de acidente, não de má-fé.
 
+**Hook de prompt (segredo colado na conversa).** O portão acima vigia o que vai para o git; o hook `.claude/hooks/segredo_no_prompt.py` vigia o que você digita para o Claude Code: se o prompt traz um segredo, ele é **bloqueado antes de chegar ao Claude**, com uma mensagem que diz só o tipo achado, nunca o trecho. Pega os mesmos padrões do portão (`secret=`, `Bearer`, `APP_USR-`, `TG-`, AppID) e mais um **bloco solto**: uma palavra de 32 a 64 letras e dígitos, com ao menos uma letra e um dígito, que não seja só hexadecimal (hash de commit passa), solta numa frase, como o Secret copiado do painel. Conta como solta sozinha na linha, entre espaços, entre aspas (retas, crase ou curvas), parênteses, colchetes, chaves, `<...>` ou `**...**`, logo depois de `:` (`Chave:X`) ou seguida de pontuação de frase (`.`, `,`, `;`, `:`, `!`, `?`). Presa a outra coisa não conta: `<palavra>.png`, `https://x.com/<palavra>`, `x=<palavra>`. Fica de fora (limite conhecido) um Secret com `-` ou `_`, todo hexadecimal, ou com menos de 32 ou mais de 64 caracteres; com a palavra-chave (`secret=...`), é pego do mesmo jeito. Passam sem problema: hash de commit, ASIN, id do ML, link `s.shopee.com.br`, URL longa, id de arquivo do Telegram e o `read -rs S; ...="$S"` dos comandos. Falso positivo: ponha `# verificar: permitir` na linha. Se o hook não conseguir carregar o `verificar.py`, o bloco solto continua bloqueando; fora isso, se o próprio hook quebrar, o prompt segue sem a conferência (falha aberta).
+
+- **Só vale depois de registrado** em `.claude/settings.json` (o bloco está em `docs/produto/referencias/operacao.md`); sem esse registro o script existe, mas nada o chama.
+- **Não tira o segredo do disco.** O hook impede o envio ao Claude, mas o texto digitado pode ficar no histórico e no transcript locais do Claude Code (`~/.claude/`). Segredo real colado continua pedindo troca da chave no painel.
+- **Teste manual:** gere um falso na hora, só com letras e dígitos, cole-o sozinho num prompt e confira que vem o bloqueio sem o texto; um prompt normal tem de passar:
+
+  ```
+  python3 -c "import secrets,string;a=string.ascii_letters+string.digits;print(''.join(secrets.choice(a) for _ in range(40)))"
+  ```
+
+  Não use `secrets.token_urlsafe`: ele quase sempre tem `-` ou `_` e o hook (de propósito) o deixa passar.
+
+- **Prova com o formato do Secret real, sem mostrá-lo:** cole o Secret no `read` (não aparece na tela) e veja só a saída do hook:
+
+  ```
+  read -rs S; printf '%s' "$S" | python3 -I -c 'import json,sys;sys.stdout.write(json.dumps({"prompt":sys.stdin.read()}))' | python3 -I .claude/hooks/segredo_no_prompt.py >/dev/null 2>&1; echo "saída $?"; unset S
+  ```
+
+  `saída 2`: o Secret real, colado sozinho, está coberto. `saída 0`: o formato dele escapa da regra (por exemplo, tem `-` ou `_`); só cole com a palavra-chave junto (`secret=...`) e avise o lead, sem mostrar o valor.
+
 ## Testes
 
 Para rodar **um arquivo só** (o `verificar.py` roda todos). Use sempre proxies mortos, para nenhum teste sair para a rede:
@@ -240,9 +260,11 @@ Quem roda as atualizações de preço é o dono, no terminal dele. Os scripts de
 
 | Script | O que faz |
 |---|---|
-| `operacao/atualizar-ml.sh [aba ...]` | `atualizar_precos.py ml` **aba por aba** (sem aba, todas as do `buscas.json`, na ordem do arquivo), cada uma com `--vincular 300 --max-chamadas 1500`. Pede a Chave secreta da app "Etiqueta": **Enter vazio usa o token atual** (que dura umas 6 h). Se o token vencer no meio, pede a chave e repete a mesma aba |
+| `operacao/atualizar-ml.sh [aba ...]` | `atualizar_precos.py ml` **aba por aba** (sem aba, todas as do `buscas.json`, na ordem do arquivo), cada uma com `--vincular 300 --max-chamadas 1500`. Pede a Chave secreta da app "Etiqueta": **Enter vazio usa o token atual** (que dura umas 6 h). Se o token vencer no meio, pede a chave e repete a mesma aba. Com `--sem-chave` (1º argumento) nunca pede a chave: é o modo da rodada automática (veja "Rodadas automáticas") |
 | `operacao/atualizar-shopee.sh [aba]` | padrão "Perfumes e Perfumaria": `coletar_shopee.py conferir --por-item` (1 chamada), um teste pequeno de 10 itens e a aba inteira. Pede o AppID e o Secret |
 | `operacao/atualizar-amazon.sh [--produtos N]` | `atualizar_precos.py amazon` pela busca (uns 40 min), sem credencial; `--produtos N` (0 a 500) abre também a página dos não vistos |
+| `operacao/automatico.sh backup\|amazon\|ml` | o que os timers chamam; pode rodar à mão para testar (veja "Rodadas automáticas") |
+| `operacao/instalar-timers.sh [--remover] [tarefa ...]` | instala ou remove os timers do systemd `--user` |
 
 **Chaves:** só entram por `read -rs` (não aparecem na tela nem no log), ficam numa variável do shell sem `export` e só vão para o ambiente do comando que as usa; nunca para argumento, arquivo ou log. Não rode `set`, `declare -p`, `env` nem `printenv` com a chave na memória do shell (os scripts a apagam ao terminar).
 
@@ -265,9 +287,53 @@ No fim, cada script imprime um resumo (uma linha por aba no ML) e, se parou no m
 - **Só apague o `.lock` com todas as rodadas dessa loja paradas** (`pgrep -af 'atualizar_precos|coletar_'`), e quase nunca precisa: apagá-lo com uma rodada no ar deixa uma segunda rodada passar e gravar junto com a primeira. Se o 4 aparece sem nenhuma rodada no ar, procure o processo (`pgrep`) antes de mexer no arquivo.
 - A trava cobre uma máquina e um banco. Outra máquina, ou uma cópia do banco em outra pasta, não é vista por ela.
 
-**Logs:** cada script grava `logs/<nome>-AAAAMMDD-HHMMSS.log` (`atualizar-ml`, `atualizar-shopee` ou `atualizar-amazon`), com tudo o que aparece na tela e em 0600. A pasta `logs/` está no `.gitignore`. Os do `verificar.py` ficam em `logs/verificar-<data>/`. Os logs não trazem a chave (o `read -s` não a mostra), mas apague os antigos à mão quando não precisar mais deles.
+**Logs:** cada script grava `logs/<nome>-AAAAMMDD-HHMMSS.log` (`atualizar-ml`, `atualizar-shopee`, `atualizar-amazon` ou, no backup automático, `automatico-backup`), com tudo o que aparece na tela e em 0600. A pasta `logs/` está no `.gitignore`. Os do `verificar.py` ficam em `logs/verificar-<data>/`. Os logs não trazem a chave (o `read -s` não a mostra), mas apague os antigos à mão quando não precisar mais deles.
 
 **Backups das rodadas:** `backups/auto-ml-*`, `auto-shopee-*` e `auto-amazon-*` (regras, rotação e como voltar em "Backup"). Se o backup falhar, o script para com 1 antes de atualizar qualquer coisa.
+
+### Rodadas automáticas
+
+Três tarefas que **não usam credencial** rodam sozinhas, por timers do `systemd --user`: o backup diário do banco, a atualização da Amazon e a do Mercado Livre (esta só enquanto o acesso ao ML valer). **A Shopee não entra e não tem como entrar:** ela precisa do AppID e do Secret digitados por você no terminal (`operacao/atualizar-shopee.sh`), e a rodada automática nunca tem segredo. Pedir `shopee` aos dois scripts abaixo sai com 2.
+
+| Tarefa | Horário | O que roda |
+|---|---|---|
+| `backup` | 03:30 | `python3 backup_banco.py --motivo diario` (gera `backups/auto-diario-*`) |
+| `amazon` | 06:00 | `operacao/atualizar-amazon.sh` |
+| `ml` | 06:45 | `operacao/atualizar-ml.sh --sem-chave` |
+
+Cada horário tem até 10 min de atraso aleatório. Com `Persistent=true`, se o computador estava desligado na hora, a tarefa roda assim que você entra na sessão; se a rede ainda não subiu nesse momento, a rodada para com aviso e a próxima retoma (o `After=network-online.target` das unidades não vale para unidades `--user`). **Sem linger** (`loginctl enable-linger` não foi ligado), os timers só rodam com você logado, e o aviso de área de trabalho só chega a quem está na sessão. Para mudar um horário, edite o `HORARIO` no topo de `operacao/instalar-timers.sh` e rode o instalador de novo.
+
+**Antes de instalar, faça o commit do código.** Cada rodada automática confere com o git se algum `.py` da raiz do projeto, o `buscas.json` ou a pasta `operacao/` têm mudança sem commit, inclusive arquivo novo ainda não rastreado (um módulo novo, por exemplo) ou apagado; se tiverem (ou se o git não responder), **todas as rodadas** (inclusive o backup) saem com 1 sem rodar nada e avisam. É a guarda contra rodar código pela metade de uma edição. Ficam de fora o `testes/`, o `index.html` e o que não é `.py`. Para ver se está limpo (tem de sair vazio): `git --glob-pathspecs status --short --untracked-files=normal -- '*.py' buscas.json operacao/`.
+
+**Instalar, ver e remover** (como o seu usuário, sem `sudo`):
+
+```
+operacao/instalar-timers.sh                  # os três; ou só alguns: operacao/instalar-timers.sh backup amazon
+systemctl --user list-timers 'etiqueta-*'    # próximo horário de cada um
+systemctl --user start etiqueta-backup.service   # roda o backup agora, para testar
+operacao/instalar-timers.sh --remover        # desliga e apaga os três (ou só alguns, pelo nome)
+```
+
+O instalador grava `etiqueta-<tarefa>.service` e `.timer` em `~/.config/systemd/user/` (ou `$XDG_CONFIG_HOME/systemd/user/`), todos com a 1ª linha "Gerado por operacao/instalar-timers.sh". Rodar de novo regrava os arquivos dele; um arquivo de mesmo nome que você tenha feito à mão (sem essa linha) **não é sobrescrito nem apagado**: o instalador para com 1 antes de gravar qualquer coisa. As unidades não levam variável de ambiente nenhuma. Os outros timers da máquina (por exemplo os do Achadinho Turbo) não são tocados.
+
+**Onde olhar o que aconteceu:**
+
+- **Log:** `logs/automatico-backup-AAAAMMDD-HHMMSS.log` (backup), `logs/atualizar-amazon-*.log` e `logs/atualizar-ml-*.log`, em 0600, como nas rodadas manuais.
+- **Journal:** `journalctl --user -u etiqueta-backup -n 50` (troque `backup` por `amazon` ou `ml`). Traz a mesma saída dos logs.
+- **Backup novo:** `ls -l backups/auto-diario-*` (0600). Os `auto-*` de todos os motivos dividem as mesmas 14 vagas da rotação: com backup diário e rodadas de preço, 14 cobrem uns 5 a 7 dias. Os backups sem `auto-` no nome nunca são apagados.
+
+**O que cada aviso quer dizer.** Quando uma rodada para, sai um aviso na área de trabalho (`notify-send`) com o título "Etiqueta: <tarefa> parou (saída N)" e um texto sempre igual, nunca a saída de um comando. Se o `notify-send` não existir ou não houver sessão gráfica, nada acontece além do log.
+
+| Saída | Texto do aviso | Significa |
+|---|---|---|
+| 2, no `ml` | acesso vencido: rode operacao/atualizar-ml.sh no terminal | O token do ML vale umas 6 h e só se renova com a Chave secreta. Aqui é um **lembrete**: a rodada parou antes do backup, sem gastar chamada. Rode `operacao/atualizar-ml.sh` no terminal. Se o lembrete diário incomodar: `operacao/instalar-timers.sh --remover ml` |
+| 2, outra tarefa | segredo no ambiente: nada rodou (ou erro: veja o log) | Alguma `ACHADINHOS_ML_SECRET`, `ACHADINHOS_SHOPEE_SECRET` ou `ACHADINHOS_SHOPEE_APP_ID` estava no ambiente do timer. A rodada automática se recusa a rodar assim; tire a variável (`systemctl --user unset-environment <nome>`) |
+| 1 | código com mudança sem commit: nada rodou | A guarda acima. Faça o commit (ou descarte a mudança) e espere o próximo horário |
+| 3 | bloqueio ou limite da loja: a próxima rodada retoma | Captcha, 503 ou 429. O progresso fica salvo |
+| 4 | outra rodada da mesma loja estava no ar | A trava por loja (veja acima): uma rodada sua, manual, ocupava a loja. Nada foi gravado pela automática nesta loja; no `ml`, nada a partir da aba que parou (as abas anteriores já tinham gravado) |
+| outra | erro: veja o log | Abra o log ou o journal |
+
+A saída 2 do `ml` pode ser as duas coisas: o texto do aviso é que distingue "segredo no ambiente" (variável de segredo no timer, nada rodou) de "acesso vencido" (o lembrete de rodar com a chave).
 
 ## Reorganizar abas
 

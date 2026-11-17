@@ -1388,7 +1388,7 @@ class TestConferirPorItem(unittest.TestCase):
                 self.assertEqual(e.exception.code, 2)
 
 
-# ---------- README e CLAUDE.md batem com o código (CA5) ----------
+# ---------- README bate com o código (CA5); a documentação lida aqui é só o README ----------
 class TestDocumentacao(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1397,8 +1397,6 @@ class TestDocumentacao(unittest.TestCase):
         i = readme.index('\n### Shopee\n', readme.index('## Atualizar os preços'))
         cls.secao = readme[i:readme.index('\n### O que acontece', i)]
         cls.reverter = readme[readme.index('\n### Reverter'):readme.index('\n## Plugin do Chrome')]
-        with open(os.path.join(RAIZ, 'CLAUDE.md'), encoding='utf-8') as f:
-            cls.claude = f.read()
         with open(os.path.join(RAIZ, 'atualizar_precos.py'), encoding='utf-8') as f:
             cls.atualizar = f.read()
         with open(os.path.join(RAIZ, 'coletar_shopee.py'), encoding='utf-8') as f:
@@ -1463,14 +1461,10 @@ class TestDocumentacao(unittest.TestCase):
             self.assertIn(palavra, resumo)
 
     def test_readme_nao_diz_mais_que_falta_credencial_e_cita_o_portao(self):
-        for texto in (self.secao, self.claude):
-            self.assertNotIn('ainda não tem a credencial', texto)
+        self.assertNotIn('ainda não tem a credencial', self.secao)
         self.assertIn('conferir --por-item', self.secao)
-        self.assertIn('conferir --por-item', self.claude)
-        self.assertIn('shopee --cat ABA [--max-chamadas N]', self.claude)
-        self.assertIn('shopee|<dia>|item|<shopId>.<itemId>', self.claude)
-        self.assertIn('fonte_shopee_item', self.claude)
-        self.assertNotIn('fonte_shopee_api', self.claude + self.secao + self.atualizar)
+        self.assertEqual(A.FONTES['shopee'].__name__, 'fonte_shopee_item')
+        self.assertNotIn('fonte_shopee_api', self.secao + self.atualizar)
 
     def test_readme_cita_o_backup_e_o_arquivo_que_a_reversao_usa(self):
         self.assertIn('backups/auto-', self.secao)
@@ -1605,11 +1599,8 @@ class TestDocumentacao(unittest.TestCase):
         self.assertIn('`tentado|<iid>`', topo)
         self.assertRegex(self.secao, rf'{A.DIVERGENTES_PARA_PARAR} respostas[^.]*que só trouxeram outros produtos')
         self.assertRegex(self.secao, rf'{A.SEM_PRODUTO_PARA_PARAR} respostas[^.]*sem o produto pedido')
-        self.assertIn(f'{A.SEM_PRODUTO_PARA_PARAR} sem o produto pedido', self.claude)
         self.assertIn('shopee|<AAAA-MM-DD>|tentado|<shopId>.<itemId>', self.secao)
-        self.assertIn('shopee|<dia>|tentado|<shopId>.<itemId>', self.claude)
-        for texto in (self.secao, self.claude):
-            self.assertNotIn(SECRET, texto)
+        self.assertNotIn(SECRET, self.secao)
 
     def test_docstring_do_atualizar_descreve_o_teto_e_o_padrao_reais(self):
         topo = self.atualizar[:self.atualizar.index('"""', self.atualizar.index('"""') + 3)]
