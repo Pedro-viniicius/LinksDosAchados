@@ -13,6 +13,7 @@ Três camadas, como no test_api_ofertas_servidor.py:
 O token é gerado aqui e nunca é impresso (asserções com mensagem fixa). Nenhum teste cria o api_token.txt do
 projeto, toca o achadinhos.db real ou o servidor em 8765. Só biblioteca padrão.
 """
+import contextlib
 import http.client
 import io
 import itertools
@@ -493,6 +494,67 @@ class TestRotaEmProcesso(unittest.TestCase):
         self.relogio.t += 3
         st, _, j, _ = self.pedir()   # não ficou "ocupado"
         self.assertEqual(st, 200, j)
+
+    @contextlib.contextmanager
+    def espiar_ordem(self, modo, falha_ao_liberar=False):
+        """Faz um pedido no `modo` dado e entrega a lista de eventos ('liberar', resultado) e ('resposta', código),
+        na ordem em que o servidor os fez. Modos: um do OpenerFalso, 'apagado' (o item some no meio da leitura)
+        ou 'erro' (confirmar_preco_amazon levanta). Com `falha_ao_liberar`, o `liberar` levanta um erro com o
+        SEGREDO na mensagem."""
+        ordem = []
+        liberar_original, json_original = S.FREIO_RELEITURA.liberar, S.Handler.json
+
+        def liberar(resultado=None):
+            ordem.append(('liberar', resultado))
+            if falha_ao_liberar:
+                raise RuntimeError(SEGREDO)
+            return liberar_original(resultado)
+
+        def responder(handler, obj, code=200, cabecalhos=()):
+            ordem.append(('resposta', code))
+            return json_original(handler, obj, code, cabecalhos)
+
+        def apagar_o_item():
+            con = sqlite3.connect(S.DB)
+            try:
+                con.execute('DELETE FROM items WHERE item_id=?', (ASIN,))
+                con.commit()
+            finally:
+                con.close()
+        self.opener.modo = 'confirmado' if modo in ('apagado', 'erro') else modo
+        self.opener.durante = apagar_o_item if modo == 'apagado' else None
+        with contextlib.ExitStack() as pilha:
+            pilha.enter_context(mock.patch.object(S.FREIO_RELEITURA, 'liberar', liberar))
+            pilha.enter_context(mock.patch.object(S.Handler, 'json', responder))
+            if modo == 'erro':
+                pilha.enter_context(mock.patch.object(S, 'confirmar_preco_amazon', side_effect=RuntimeError(SEGREDO)))
+            yield ordem
+
+    def test_q1_ca3_libera_o_freio_uma_vez_antes_de_responder_em_todos_os_ramos(self):
+        """Q1/CA3: 200, 404 (item apagado durante a leitura) e 500 liberam o freio uma vez só, antes da resposta."""
+        casos = (('bloqueado', 200, 'bloqueado'), ('confirmado', 200, 'confirmado'), ('apagado', 404, None),
+                 ('erro', 500, None))
+        for modo, codigo, resultado in casos:
+            with self.subTest(modo=modo):
+                self.setUp()   # banco, relógio, opener e freio novos (o 'apagado' tira o item; 'bloqueado' pausa)
+                with self.espiar_ordem(modo) as ordem:
+                    st, _, j, log = self.pedir()
+                self.assertEqual(st, codigo, j)
+                self.assertEqual(ordem, [('liberar', resultado), ('resposta', codigo)])
+                self.assertNotIn(SEGREDO, log)
+
+    def test_q1_ca3_erro_ao_liberar_nao_impede_a_resposta_e_nao_libera_de_novo(self):
+        for modo, codigo in (('confirmado', 200), ('apagado', 404), ('erro', 500)):
+            with self.subTest(modo=modo):
+                self.setUp()
+                with self.espiar_ordem(modo, falha_ao_liberar=True) as ordem:
+                    st, _, j, log = self.pedir()
+                self.assertEqual(st, codigo, j)
+                self.assertEqual([e[0] for e in ordem], ['liberar', 'resposta'])   # o finally não tenta de novo
+                self.assertIn('"POST /api/v1/amazon/(asin)/confirmar-preco HTTP/1.1" freio da releitura não liberou: '
+                              'RuntimeError', log)
+                self.assertNotIn(SEGREDO, log)
+                self.assertNotIn(ASIN, log)
 
     def test_conexao_da_rota_grava_e_a_das_outras_continua_so_de_leitura(self):
         st, _, j, _ = self.pedir()

@@ -1171,7 +1171,8 @@ class Handler(SimpleHTTPRequestHandler):
         vazio 400 → item da Amazon inexistente 404 → freio 429 com Retry-After → leitura (200). É a única rota
         da v1 com conexão que grava (as outras ficam em query_only). Erro inesperado vira 500 com só o tipo no
         log, e a linha do log nunca traz o ASIN nem o token (linha_v1_para_log). A resposta nunca traz HTML nem
-        a mensagem de uma exceção.
+        a mensagem de uma exceção. O freio é liberado antes de a resposta sair, em todos os ramos: a pausa depois
+        de `bloqueado` nasce no fim da leitura e o pedido seguinte já vê o freio livre (ou em pausa).
         """
         asin = asin_da_rota_confirmar(self._caminho)
         if asin is None:
@@ -1184,7 +1185,20 @@ class Handler(SimpleHTTPRequestHandler):
             self.json({'error': 'esta rota não aceita corpo'}, 400); return True
         import api_ofertas
         con = None
-        reservado = resultado = None
+        reservado = False
+        resultado = None
+
+        def soltar_freio():
+            """Libera a reserva uma vez só. Um erro ao liberar vai para o log (só o tipo) e não impede a resposta."""
+            nonlocal reservado
+            if not reservado:
+                return
+            reservado = False
+            try:
+                FREIO_RELEITURA.liberar(resultado)
+            except Exception as e:   # noqa: BLE001
+                self.log_message('"%s" freio da releitura não liberou: %s', self.requestline, type(e).__name__)
+
         try:
             con = conectar()
             if con.execute("SELECT 1 FROM items WHERE loja='amazon' AND item_id=?", (asin,)).fetchone() is None:
@@ -1198,16 +1212,18 @@ class Handler(SimpleHTTPRequestHandler):
             reservado = True
             resposta = confirmar_preco_amazon(con, asin)
             resultado = resposta['resultado']
+            soltar_freio()
         except ErroCliente as e:
+            soltar_freio()   # 404 do item apagado durante a leitura
             self.json({'error': e.msg}, e.codigo)
         except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
+            soltar_freio()
             self.log_message('"%s" confirmar preço falhou: %s', self.requestline, type(e).__name__)
             self.json({'error': 'erro interno na API v1'}, 500)
         else:
             self.json({'versao': api_ofertas.VERSAO, **resposta})
         finally:
-            if reservado:
-                FREIO_RELEITURA.liberar(resultado)
+            soltar_freio()   # garantia: só age se nada acima liberou (BaseException no meio da leitura)
             if con is not None:
                 con.close()
         return True

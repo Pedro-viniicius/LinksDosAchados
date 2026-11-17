@@ -731,6 +731,52 @@ class TestRotaQA(unittest.TestCase):
         self.assertEqual(int(hd['Retry-After']), 840)
         self.assertEqual(len(self.chamadas), 1)
 
+    def segurar_liberar(self):
+        """Faz o `liberar` do freio esperar o cliente (até 1,5 s) e avisa quando terminou.
+
+        Torna determinístico o escalonamento ruim: se o servidor responde ANTES de liberar o freio, o cliente
+        recebe a resposta, mexe no relógio e repete o pedido enquanto o `liberar` ainda espera. Se o servidor libera
+        ANTES de responder, o `liberar` espera o prazo, termina e só então a resposta sai.
+        """
+        cliente_recebeu, liberado = threading.Event(), threading.Event()
+        original = S.FREIO_RELEITURA.liberar
+
+        def liberar(resultado=None):
+            cliente_recebeu.wait(1.5)
+            try:
+                return original(resultado)
+            finally:
+                liberado.set()
+        p = mock.patch.object(S.FREIO_RELEITURA, 'liberar', liberar)
+        p.start()
+        self.addCleanup(p.stop)
+        return cliente_recebeu, liberado
+
+    def test_pausa_conta_do_instante_do_bloqueio_mesmo_se_o_cliente_demora_a_ler(self):
+        # Q1: a pausa era gravada depois de a resposta sair; o relógio que o cliente mexe logo depois entrava na conta
+        cliente_recebeu, liberado = self.segurar_liberar()
+        self.corpo_pagina = '<html>captcha</html>'
+        self.assertEqual(self.pedir()[2]['resultado'], 'bloqueado')
+        self.relogio.t += 60
+        cliente_recebeu.set()
+        self.assertTrue(liberado.wait(5))
+        st, hd, j = self.pedir(f'/api/v1/amazon/{ASIN_2}/confirmar-preco')
+        self.assertEqual((st, j['motivo']), (429, 'pausa'))
+        self.assertEqual(int(hd['Retry-After']), 840)   # 900 - 60: a pausa nasceu no bloqueio
+        self.assertEqual(len(self.chamadas), 1)
+
+    def test_pedido_logo_depois_do_bloqueado_recebe_pausa_e_nao_ocupado(self):
+        # Q1: com a resposta já na mão, o freio ainda dizia 'ocupado' (Retry-After 3 s) em vez de 'pausa' (15 min)
+        cliente_recebeu, liberado = self.segurar_liberar()
+        self.corpo_pagina = '<html>captcha</html>'
+        self.assertEqual(self.pedir()[2]['resultado'], 'bloqueado')
+        st, hd, j = self.pedir(f'/api/v1/amazon/{ASIN_2}/confirmar-preco')   # sem esperar nada
+        cliente_recebeu.set()
+        self.assertTrue(liberado.wait(5))
+        self.assertEqual((st, j['motivo']), (429, 'pausa'), j)
+        self.assertEqual(int(hd['Retry-After']), S.FREIO_PAUSA_BLOQUEIO_S)
+        self.assertEqual(len(self.chamadas), 1)
+
     def test_item_apagado_durante_a_leitura_da_404_e_libera_o_freio(self):
         def apaga():
             con = sqlite3.connect(S.DB)

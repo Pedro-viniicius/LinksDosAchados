@@ -337,7 +337,7 @@ Nenhuma recusa das linhas 1 a 8 abre a Amazon nem gasta o freio.
 
 - 429 com `Retry-After: N` e `{"versao": 1, "resultado": "freio", "motivo": "<motivo>", "tentar_em_s": N}`, `N` inteiro de 1 ou mais.
 - Motivos, na ordem em que são conferidos:
-  - `ocupado`: uma leitura por vez; outra está em curso.
+  - `ocupado`: uma leitura por vez; outra está em curso. O freio é liberado antes de a resposta sair: quem recebe uma resposta e pede de novo já não vê `ocupado` por causa dela.
   - `pausa`: houve um `bloqueado` há menos de 15 min (contados do fim daquela leitura).
   - `intervalo`: menos de 3 s desde o início da leitura anterior.
   - `teto`: 60 leituras na última hora (janela deslizante).
