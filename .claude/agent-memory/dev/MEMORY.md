@@ -36,3 +36,4 @@
 - [Versão do código no ar (/api/versao)](versao-servidor-testes.md) — rota nova quebra lista fechada do test_servidor; servidor numa cópia dos 4 .py; api_ofertas em todo /api/
 - [Docs lidas por testes](docs-lidas-por-testes.md) — teste não lê o CLAUDE.md (17/11); literais do README; bloco de backup executado; conferir corte por shingles
 - [Hook de prompt (segredo_no_prompt.py)](hook-prompt-testes.md) — __pycache__ do import; audit hook prova "não grava"; MARCADOR com #; token_urlsafe x bloco solto; rodada 1: bordas de frase, importlib, fallback S3
+- [Freio do confirmar-preco (Q1)](confirmar-preco-freio-testes.md) — soltar_freio antes de responder; espiar liberar+Handler.json; tail é uutils (-n 3)
