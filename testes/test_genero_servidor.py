@@ -502,9 +502,13 @@ class PutGeneroDeleteNaJanela(unittest.TestCase):
         self.pasta = tempfile.mkdtemp(prefix='teste-genero-janela-')
         self.addCleanup(shutil.rmtree, self.pasta, True)
         self.db = os.path.join(self.pasta, 'achadinhos.db')
-        os.environ['ACHADINHOS_DB'] = self.db
-        os.environ['ACHADINHOS_API_TOKEN_ARQUIVO'] = os.path.join(self.pasta, 'sem-token.txt')
-        sys.path.insert(0, TS.RAIZ)
+        ambiente = mock.patch.dict(os.environ, {
+            'ACHADINHOS_DB': self.db,
+            'ACHADINHOS_API_TOKEN_ARQUIVO': os.path.join(self.pasta, 'sem-token.txt')})
+        ambiente.start()
+        self.addCleanup(ambiente.stop)   # o próximo teste não herda o banco desta pasta, já apagada
+        if TS.RAIZ not in sys.path:
+            sys.path.insert(0, TS.RAIZ)
         import servidor as S
         self.S = S
         p = mock.patch.object(S, 'DB', self.db)

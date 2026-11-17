@@ -226,11 +226,12 @@ class NomeDatado(Base):
         A reconferência devolve só o .parcial (não deixa sobra) e o backup sai no próximo nome, sem
         mexer no que o outro deixou."""
         semear(self.db)
-        os.mkdir(self.pasta, 0o700)
         fixo = datetime(2026, 11, 9, 14, 30, 0)
         base = 'auto-ml-20261109-143000'
         for sufixo in ('.db', '.db-journal'):
             with self.subTest(sufixo=sufixo):
+                shutil.rmtree(self.pasta, ignore_errors=True)   # no começo: um subteste que falhou não suja o próximo
+                os.mkdir(self.pasta, 0o700)
                 original = B.existe
                 feito = []
 
@@ -248,8 +249,6 @@ class NomeDatado(Base):
                 with open(os.path.join(self.pasta, base + sufixo), 'rb') as f:
                     self.assertEqual(f.read(), b'do outro')
                 self.assertEqual([n for n in self.backups() if n.endswith('.parcial')], [])
-                shutil.rmtree(self.pasta)
-                os.mkdir(self.pasta, 0o700)
 
     def test_depois_de_publicar_nao_limpa_o_parcial_pelo_nome(self):
         """Q3: depois do link e do unlink o nome do .parcial pode ser de outro backup; o finally do
