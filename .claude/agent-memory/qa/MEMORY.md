@@ -15,3 +15,4 @@
 - [Foto grande (miniatura -> foto cheia)](testes-foto-grande.md) — tabela compartilhada Python/front, testes antigos do ML alterados, validação por referência
 - [Shopee por item (atualizar_precos shopee, G1)](testes-shopee-por-item.md) — test_shopee_por_item_qa.py (108 testes), rodadas 1 e 2, relógio coerente, mutantes, riscos baixos, cuidado com rsync levando segredos
 - [Entrega 1 de endurecer engenharia (verificar, trava, backup, operacao)](testes-endurecer-engenharia.md) — test_endurecer_qa.py, Q1/Q2 baixos abertos, aviso sobre kill por porta
+- [Entrega 2 (hook de prompt, timers, corte do CLAUDE.md)](testes-entrega2-hook-timers.md) — test_entrega2_qa.py, Q1/Q2 baixos abertos, CA13 sem perda, mutantes, armadilhas nohup/pkill

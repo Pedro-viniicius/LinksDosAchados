@@ -16,4 +16,4 @@
 - [Landing pages de grupo](revisao-landing-pages.md) — fora do repo: checks de cada site, 4 cópias do contar.php entre worktrees, origem nova sem teste
 - [Comportamento padrão do front](padroes-front-comportamento.md) — mudar o padrão quebra páginas fora da linha de base; rode todas; mutante por replace na 8767; anote achados da r1
 - [Foto grande (Q1)](padroes-foto-grande.md) — guarda de query sem teste (mutante), fuzz de paridade Python x front, números do banco
-- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — rodar verificar/dados reais; mutante do operacao/; laço (saída 4); estresse de corrida do backup (banco minúsculo)
+- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — e1: verificar/mutantes/corrida do backup; e2: guarda segue imports, hook (token_urlsafe, pontuação, marcador com #), unidades com systemctl falso; r2: __pycache__ alheio deixa o verificar vermelho; hook do designer: passe o ls-files inteiro

@@ -111,6 +111,15 @@ Mapa de superfície (conferido em 2026-11-03, depois do plano blindar-servidor; 
 - `operacao/*.sh`: Secret só por `read -rs` em variável não exportada, `VAR="$S" python3` na função; log por `tee` em `logs/` 0600. `set +x` é o 1º comando do `comum.sh` e os 3 scripts fazem `source` dele antes de tudo (S1 corrigido; `RastreioLigado` prova com `bash -x` e `SHELLOPTS=xtrace`).
 - Para provar sem rede: copie `operacao/` para o scratchpad com `python3` falso no PATH e marcador falso no stdin; conte o marcador no log (só a contagem).
 
+**Endurecer Entrega 2 (plano endurecer-entrega2; rodada 1 CORRIGIR ANTES DO RELEASE por S1 MÉDIA; rodada 2 em 2026-11-17: SEM BLOQUEIOS, S6 BAIXA com o dono)**
+- Hook `UserPromptSubmit` `.claude/hooks/segredo_no_prompt.py`: lê só `prompt`; carrega `<raiz>/verificar.py` por `spec_from_file_location` (sem sys.path) e usa `varrer_linhas`; "bloco solto" `RE_BLOCO` 32-64 `[A-Za-z0-9]`, letra+dígito, não só hex; borda esquerda espaço/aspas retas e curvas/`([{<*:`, direita pontuação de frase e então espaço/fim. Não pega: `x=<tok>`, URL, `<tok>.png`, token com `-`/`_` (limite documentado; `token_urlsafe` passa). Exit 2 + JSON `suppressOriginalPrompt` + stderr fixo. Sem verificar: bloco solto sozinho (bloqueia) ou exit 1 fixo. Medido na rodada 2: 2 MB adverso <= 0,26 s.
+- Registro proposto (etapa 7): exec form `"command":"/usr/bin/python3","args":["-I","${CLAUDE_PROJECT_DIR}/.claude/hooks/segredo_no_prompt.py"],"timeout":10`; `args` existe na doc do Claude Code (exec, sem shell). Conferir `disableAllHooks` no settings.local.json e no ~/.claude/settings.json.
+- Prova do formato real (README:119, etapa 8a, ação do dono): `read -rs S; printf ... | python3 -I .claude/hooks/segredo_no_prompt.py >/dev/null 2>&1; echo "saída $?"; unset S` (2 = coberto).
+- Timers: `operacao/automatico.sh backup|amazon|ml` (set +x, umask 077, stdin /dev/null, guarda 1 = `[[ -v ]]` nos 3 nomes de segredo, guarda 2 = `git --glob-pathspecs status --porcelain --untracked-files=normal -- '*.py' buscas.json operacao/`, saída não vazia ou erro = 1; pega .py novo na raiz, apagado, staged; GIT_LITERAL/NOGLOB_PATHSPECS dão 128). Residual: pasta-pacote não rastreada na raiz (ex. `bs4/`) não casa `*.py`. `instalar-timers.sh` gera `etiqueta-<t>.{service,timer}` 0644 em `~/.config/systemd/user`; sem `Environment=`.
+- `atualizar-ml.sh --sem-chave`: `exec </dev/null`, `unset ACHADINHOS_ML_SECRET`, `ml_api.py conferir` antes do backup.
+- CLAUDE.md cortado; desde a rodada 2 voltaram nele: telefones/backups 0600/0700 (LGPD), `proteger_processo` e sem redirect (Segredos), `.claude/hooks/` e `.claude/settings.json` proibidos ao `designer`.
+- Hook do `designer` (`.claude/agents/designer.md:15`): denylist curta (S6 BAIXA, decisão do dono pendente); Bash do designer contorna.
+
 **Invariantes**
 - Todo link gravado é de afiliado (Amazon `tag=desejodemen01-20`, ML `meli.la`).
 - Servidor só em 127.0.0.1; toda resposta leva `X-Frame-Options: SAMEORIGIN` e `frame-ancestors 'self'` (o teste embute o index.html); sem outra CSP.

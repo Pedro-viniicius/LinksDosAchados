@@ -1,18 +1,21 @@
 ---
 name: decisao-endurecer-engenharia
-description: Plano endurecer-engenharia-e-operacao (09/11/2026): verificar.py, trava por loja com saída 4, backup_banco.py auto-*, operacao/, .githooks, /api/versao; Entrega 2 = timers systemd, hook de prompt, corte do CLAUDE.md
+description: Plano endurecer (09/11) + Entrega 2 (17/11, endurecer-entrega2.md): trava saída 4, backup auto-*, timers systemd via operacao/automatico.sh, hook UserPromptSubmit exit 2+JSON, corte do CLAUDE.md
 metadata:
   type: project
 ---
 
-Plano em docs/produto/planos/endurecer-engenharia-e-operacao.md (sem brief; pedido do lead). Corte em 2 entregas.
+Entrega 1 em docs/produto/planos/endurecer-engenharia-e-operacao.md (pronta, branch endurecer-engenharia). Entrega 2 em docs/produto/planos/endurecer-entrega2.md (17/11, esperando P4–P9 do dono).
 
-- Trava por loja (`<DB>.rodada-<loja>.lock`, em servidor.py), saída **4**, não 2. **Why:** o 2 já significa "token do ML venceu, rode com o Secret" no laço aba por aba; ML e Amazon rodam juntos de propósito.
-- Backup `backup_banco.py`: só rotaciona `auto-*` (14 mais novos), 0600/0700, `journal_mode=DELETE` na cópia. **Why:** as sobras -wal/-shm em backups/ vêm de abrir cópia que herdou WAL; o banco tem `numeros` (dado pessoal).
-- Versão do servidor = sha256 dos .py carregados (não só git). **Why:** a árvore fica dias suja; o git hash mentiria.
-- Automação durável: timer systemd --user já é padrão da máquina (achadinhoturbo-backup.timer, Linger=no). Shopee nunca é automática sem reabrir "segredo nunca em arquivo".
-- Armadilhas achadas: test_shopee_por_item_qa.py:1469/1475 e test_servidor.py leem o texto do CLAUDE.md/README (mudar doc quebra teste); skill rodar_localmente apontava para ~/Documentos/mensagensParaEnviar (inexistente); oráculo `_RE_PARECE_LINK` sem `\b` acusa `l.eb2gam1`.
-- Lentos na linha de base: test_api_ofertas_qa (200 s), test_genero_qa (109 s); resto ~2 min.
-- Não existe docs/produto/decisoes.md (conferido em 09/11).
+- Trava por loja, saída **4**, não 2. **Why:** o 2 já significa "token do ML venceu, rode com o Secret".
+- Backup `backup_banco.py`: só rotaciona `auto-*` (14, contados juntos). Backups antigos em WAL: ler com `immutable=1`, `mode=ro` recria -wal/-shm.
+- Versão do servidor = sha256 dos .py (árvore fica dias suja).
+- Entrega 2, decisões propostas:
+  - Hook de prompt: **exit 2 + JSON** (`suppressOriginalPrompt`), porque exit 0 com JSON inválido deixa passar. Doc oficial: bloqueio NÃO tira o texto do disco (history.jsonl/transcript). Padrões reaproveitam `verificar.PADROES_SEGREDO` + regra de "bloco solto" (Secret colado sem palavra-chave). Teste com segredo falso montado em runtime (o `_NAO_FALSO` ignora FALSO).
+  - Timers: `operacao/automatico.sh backup|amazon|ml` + `instalar-timers.sh` (padrão "Gerado por" da máquina). Shopee recusada. **Why ML quase inútil no timer:** access token 6 h e renovação exige client_secret (ml_api.py:682) — virou P8 (timer como lembrete).
+  - `atualizar-ml.sh --sem-chave` explícito: detectar `-t 0` quebraria test_operacao (chave via pipe).
+  - Só `test_shopee_por_item_qa.py` lê o CLAUDE.md; `test_servidor.py:309` só usa o caminho; CLAUDE.md dizia que test_ml_api_qa lê (errado).
+- Fatos da máquina (17/11): Linger=no; relatorio-coletor.timer (outro repo) já lê a Meta; DBUS no ambiente do systemd --user; python3 do sistema tem bs4.
+- Hook do designer (agents/designer.md) cobre menos arquivos que a lista de regra de negócio do CLAUDE.md.
 
-**How to apply:** em planos novos, use `verificar.py` como verificação e a saída 4/trava se tocar CLI que grava; confira se a Entrega 1 já foi feita antes de citar esses arquivos. Relacionado: [[decisao-atualizar-precos]], [[decisao-garimpo-feminino]], [[decisao-teste-front]].
+**How to apply:** planos novos usam `verificar.py`; confira se a Entrega 2 foi aprovada/feita antes de citar automatico.sh, hook ou referências novas. Relacionado: [[decisao-atualizar-precos]], [[decisao-api-oficial-ml]], [[decisao-teste-front]].

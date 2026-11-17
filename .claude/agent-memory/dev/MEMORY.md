@@ -32,6 +32,7 @@
 - [Backup datado do banco](backup-banco-testes.md) — corrupção que só o integrity_check pega; sinal sentinela; os.link sem sobrescrever; mutantes redundantes; .parcial velho pelo mtime
 - [Trava por loja (saída 4)](trava-rodada-testes.md) — .lock ao lado do banco quebra listdir()==[]; ordem provada com falsos; argumentos que param antes da rede
 - [verificar.py (etapas 5 e 8)](verificar-testes.md) — TZ Etc/GMT±N; teste sem unittest.main; front na cópia; portão: GIT_* do hook, repo temporário, APP_USR falsos; rodada 2: LENTOS só com dados reais, falsos de teste nos padrões
-- [Scripts de operacao/ e seus testes](operacao-scripts-testes.md) — tee -i + trap INT p/ Ctrl+C; python3/sleep falsos; buscas.json é aba→termos; estático do segredo; set +x e teste com bash -x
+- [Scripts de operacao/ e seus testes](operacao-scripts-testes.md) — tee -i + trap INT p/ Ctrl+C; python3/sleep falsos; buscas.json é aba→termos; estático do segredo; set +x e teste com bash -x; --sem-chave: espião de read por BASH_ENV; timers: bin_sem, saidas-<prog>, verify com XDG_RUNTIME_DIR; guarda git: --glob-pathspecs x GIT_LITERAL_PATHSPECS
 - [Versão do código no ar (/api/versao)](versao-servidor-testes.md) — rota nova quebra lista fechada do test_servidor; servidor numa cópia dos 4 .py; api_ofertas em todo /api/
-- [Docs lidas por testes](docs-lidas-por-testes.md) — literais do README/CLAUDE.md exigidos por testes; bloco de backup do README é executado
+- [Docs lidas por testes](docs-lidas-por-testes.md) — teste não lê o CLAUDE.md (17/11); literais do README; bloco de backup executado; conferir corte por shingles
+- [Hook de prompt (segredo_no_prompt.py)](hook-prompt-testes.md) — __pycache__ do import; audit hook prova "não grava"; MARCADOR com #; token_urlsafe x bloco solto; rodada 1: bordas de frase, importlib, fallback S3
