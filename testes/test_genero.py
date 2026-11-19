@@ -5,7 +5,8 @@ Uso:  python3 testes/test_genero.py -v
 
 Os títulos são reais, tirados do banco em 2026-11-03 (leitura `mode=ro`), com a busca em que cada um
 apareceu. Nenhum teste toca o achadinhos.db, o servidor, a rede ou o WhatsApp: o banco dos testes de
-`manuais` e `definir_manual` é um sqlite temporário. Só biblioteca padrão.
+`manuais` e `definir_manual` é um sqlite temporário. A exceção é TestBaseReal, que lê o banco real em `mode=ro`
+e só roda com ACHADINHOS_TESTE_DADOS_REAIS=1. Só biblioteca padrão.
 """
 import atexit
 import json
@@ -36,6 +37,11 @@ ESQUEMA_MANUAIS = '''CREATE TABLE IF NOT EXISTS generos_manuais (item_pk INTEGER
   atualizado_em TEXT NOT NULL)'''
 
 F, M, U, S = 'feminino', 'masculino', 'unissex', 'sem'
+
+# A classe que lê o achadinhos.db real só roda por pedido (verificar.py --dados-reais): o resultado dela depende
+# dos dados do dia, e a suíte padrão não abre o banco real (plano endurecer-engenharia-e-operacao, CA3).
+DADOS_REAIS = unittest.skipUnless(os.environ.get('ACHADINHOS_TESTE_DADOS_REAIS') == '1',
+                                  'dados reais: rode verificar.py --dados-reais')
 
 # (cat, busca, titulo, genero, origem)
 CASOS = [
@@ -417,8 +423,10 @@ class TestDoItem(unittest.TestCase):
         self.assertEqual(G.do_item(5, PERF, '', 'Perfume Masculino', G.manuais(con)), (M, 'titulo'))
 
 
+@DADOS_REAIS
 class TestBaseReal(unittest.TestCase):
-    """CA1: a distribuição na base de 2026-11-03. Só roda se o achadinhos.db existir; abre em `mode=ro`."""
+    """CA1: a distribuição na base de 2026-11-03. Só roda com ACHADINHOS_TESTE_DADOS_REAIS=1 (verificar.py
+    --dados-reais) e se o achadinhos.db existir; abre em `mode=ro`."""
 
     @classmethod
     def setUpClass(cls):

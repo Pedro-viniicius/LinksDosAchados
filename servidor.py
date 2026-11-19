@@ -11,6 +11,9 @@ liga o transporte de teste.
 API v1 de ofertas (api_ofertas.py, docs/produto/planos/api-achadinho-turbo.md): só liga com o token
 Bearer de api_token.txt, ao lado deste arquivo (ACHADINHOS_API_TOKEN_ARQUIVO troca o caminho). Sem o
 arquivo, toda rota /api/v1/ responde 503. Para trocar o token, troque o arquivo e reinicie.
+Versão do código (CA12 de docs/produto/planos/endurecer-engenharia-e-operacao.md): a subida registra no
+log o hash de ARQUIVOS_VERSAO e o último commit; GET /api/versao diz se o código em disco mudou desde
+então (`python3 verificar.py --servidor` usa isso para avisar que é preciso reiniciar).
 
 O disparo é importado dentro das funções que o usam (criar_banco, rotas e __main__): quem importa
 este módulo só pelo conectar/DB (migrar_categorias.py, classificar_lista.py) continua funcionando
@@ -19,7 +22,8 @@ precisam do disparo.py e do genero.py ao lado (o disparo.py importa o genero no 
 banco (só aditivo: cria numeros, regras, envios, generos_manuais e a coluna items.preco_em). O genero.py
 (público de cada item, derivado na leitura) também é importado sob demanda aqui.
 """
-import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse
+import json, re, sqlite3, html, os, sys, stat, hmac, logging, urllib.request, urllib.parse, urllib.error
+import contextlib, errno, fcntl, hashlib, http.client, collections, math, threading, time
 from datetime import datetime
 from decimal import Decimal
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -80,6 +84,73 @@ def conectar():
     return con
 
 
+class RodadaEmAndamento(Exception):
+    """A trava da rodada desta loja não pôde ser pega (os CLIs saem com 4).
+
+    `motivo` é None quando outra rodada da mesma loja segura a trava; senão, um texto fixo (nada de caminho
+    nem de mensagem do sistema). `nome` é só o nome do arquivo da trava, sem a pasta.
+    """
+
+    def __init__(self, loja, nome, motivo=None):
+        self.loja, self.nome, self.motivo = loja, nome, motivo
+        if motivo is None:
+            texto = f'outra rodada de {loja} está em andamento ({nome}); espere ela terminar.'
+        else:
+            texto = f'não consegui pegar a trava da rodada de {loja} ({nome}): {motivo}.'
+        super().__init__(texto)
+
+
+@contextlib.contextmanager
+def travar_rodada(loja):
+    """flock exclusivo e sem espera em <DB>.rodada-<loja>.lock enquanto durar o bloco (plano
+    docs/produto/planos/endurecer-engenharia-e-operacao.md, etapa 3, CA4).
+
+    Uma rodada por loja contra o mesmo banco: a coleta e a atualização de preços da mesma loja se excluem; lojas
+    diferentes rodam juntas. Os CLIs pegam a trava antes de ler credencial, tokens, banco ou progresso, e saem
+    com 4 quando ela levanta RodadaEmAndamento. O arquivo tem de ser comum e do próprio usuário (symlink é
+    recusado pelo O_NOFOLLOW) e fica em 0600. A trava some com o processo (kill -9 não deixa trava velha); o
+    arquivo nunca é apagado por aqui: apagá-lo à mão no meio de uma rodada deixa a seguinte entrar.
+    Cópia do `travar` de tools/garimpo_feminino/banco.py, sem importá-lo.
+    """
+    if loja not in LOJAS:
+        raise ValueError('loja desconhecida')
+    caminho = DB + '.rodada-' + loja + '.lock'   # DB lido agora: os testes trocam o servidor.DB
+    nome = os.path.basename(caminho)
+    try:
+        # O_NONBLOCK: um FIFO no lugar da trava não prende o open (e o S_ISREG o recusa logo depois)
+        fd = os.open(caminho, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+    except OSError:
+        raise RodadaEmAndamento(loja, nome,
+                                'não deu para abrir o arquivo da trava (symlink, pasta ou permissão)') from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RodadaEmAndamento(loja, nome, 'o arquivo da trava não é um arquivo comum do seu usuário')
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise RodadaEmAndamento(loja, nome) from None
+            raise RodadaEmAndamento(loja, nome, 'o sistema recusou a trava') from None
+        try:
+            # entre o open e o flock o arquivo pode ter sido trocado (apagado à mão e recriado por outra rodada):
+            # a trava só vale se o caminho ainda leva ao mesmo arquivo que está travado
+            atual = os.stat(caminho, follow_symlinks=False)
+        except OSError:
+            atual = None
+        if atual is None or (atual.st_dev, atual.st_ino) != (info.st_dev, info.st_ino):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            raise RodadaEmAndamento(loja, nome, 'o arquivo da trava foi trocado enquanto eu o abria')
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def criar_banco():
     con = conectar()
     con.executescript(f'''
@@ -110,6 +181,105 @@ def criar_banco():
 
 def agora():
     return datetime.now().isoformat(timespec='seconds')
+
+
+# ---------------------------------------------------------------- versão do código (/api/versao)
+# Arquivos .py que o servidor carrega. O index.html fica de fora: ele é lido do disco a cada pedido, então
+# mudança nele só pede recarregar a página. O genero.py e o api_ofertas.py são importados no primeiro pedido
+# que os usa; mudança neles depois da subida também conta como "mudou" (do lado seguro: reinicie).
+ARQUIVOS_VERSAO = ('servidor.py', 'disparo.py', 'genero.py', 'api_ofertas.py')
+TAMANHO_CODIGO = 12           # caracteres do sha256 no "codigo" e no "em_disco"
+TAMANHO_COMMIT = 7            # caracteres do commit, como no git log --oneline
+MAX_REF_GIT = 4096            # bytes lidos do .git/HEAD e de um ref solto (o normal é 41)
+MAX_PACKED_REFS = 8 * 1024 * 1024
+RE_SHA_GIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')   # sha1 ou sha256
+# Nome de ref aceito: só refs/..., componentes sem ponto no início (nem "..") e sem barra dupla. Um HEAD
+# que aponte para "../fora", caminho absoluto ou outro formato vira git null, sem abrir nada.
+RE_REF_GIT = re.compile(r'refs(?:/[A-Za-z0-9_+@-][A-Za-z0-9_.+@-]*)+')
+# Preenchida no __main__ (registrar_versao); importado como módulo, fica None e a rota responde 503.
+VERSAO = None
+
+
+def hash_do_codigo(base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """sha256[:12] dos bytes de cada arquivo, na ordem, com nome e tamanho no meio (dois arquivos nunca se
+    confundem). Arquivo que não abre entra como ausente: sumir ou voltar também muda o hash."""
+    h = hashlib.sha256()
+    for nome in arquivos:
+        try:
+            with open(os.path.join(base, nome), 'rb') as f:
+                dados = f.read()
+        except OSError:
+            h.update(f'{nome}\0ausente\0'.encode())
+            continue
+        h.update(f'{nome}\0{len(dados)}\0'.encode())
+        h.update(dados)
+    return h.hexdigest()[:TAMANHO_CODIGO]
+
+
+def _ler_dentro(pasta_git, relativo, limite=MAX_REF_GIT):
+    """Texto de um arquivo dentro da pasta .git (no máximo `limite` bytes), ou None. Recusa o que, depois
+    de resolver links, cair fora dela, e o que não for arquivo comum."""
+    raiz = os.path.realpath(pasta_git)
+    alvo = os.path.realpath(os.path.join(raiz, relativo))
+    if not alvo.startswith(raiz + os.sep) or not os.path.isfile(alvo):
+        return None
+    with open(alvo, 'rb') as f:
+        bruto = f.read(limite + 1)
+    if len(bruto) > limite:
+        return None
+    return bruto.decode('ascii')
+
+
+def _sha_curto(texto):
+    texto = (texto or '').strip()
+    return texto[:TAMANHO_COMMIT] if RE_SHA_GIT.fullmatch(texto) else None
+
+
+def commit_git(base=BASE):
+    """Commit curto do HEAD, lido direto de <base>/.git (sem subprocess), ou None.
+
+    HEAD com "ref: refs/..." lê o ref solto e, sem ele, o packed-refs; HEAD destacado traz o sha. Fica
+    None quando: não há .git (ou ele é um arquivo, como numa worktree), o ref é malformado ou sai da pasta
+    .git, o arquivo passa do tamanho esperado ou qualquer leitura falha. Nada além do sha curto sai daqui.
+    """
+    pasta_git = os.path.join(base, '.git')
+    try:
+        if os.path.islink(pasta_git) or not os.path.isdir(pasta_git):
+            return None
+        head = _ler_dentro(pasta_git, 'HEAD')
+        if head is None:
+            return None
+        head = head.strip()
+        if not head.startswith('ref:'):
+            return _sha_curto(head)
+        ref = head[len('ref:'):].strip()
+        if not RE_REF_GIT.fullmatch(ref) or '..' in ref or ref.endswith(('.', '/', '.lock')):
+            return None
+        solto = _ler_dentro(pasta_git, ref)
+        if solto is not None:
+            return _sha_curto(solto)
+        empacotado = _ler_dentro(pasta_git, 'packed-refs', MAX_PACKED_REFS)
+        for linha in (empacotado or '').splitlines():
+            sha, _, nome = linha.strip().partition(' ')
+            if nome == ref:
+                return _sha_curto(sha)
+        return None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def registrar_versao(base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """Guarda em VERSAO o código e o commit desta subida e devolve a linha do log."""
+    global VERSAO
+    VERSAO = {'codigo': hash_do_codigo(base, arquivos), 'git': commit_git(base), 'iniciado_em': agora()}
+    return f'Código {VERSAO["codigo"]} (último commit {VERSAO["git"] or "?"}; pode haver mudança sem commit)'
+
+
+def resposta_versao(versao, base=BASE, arquivos=ARQUIVOS_VERSAO):
+    """JSON do GET /api/versao: o código da subida, o de agora no disco e se mudou."""
+    em_disco = hash_do_codigo(base, arquivos)
+    return {'codigo': versao['codigo'], 'em_disco': em_disco, 'mudou': em_disco != versao['codigo'],
+            'git': versao['git'], 'iniciado_em': versao['iniciado_em']}
 
 
 def linha_para_item(r, manuais=None):
@@ -414,22 +584,78 @@ def conferir_url_amazon(url):
     return url
 
 
+class LimiteDaLeitura(OSError):
+    """Prazo total ou teto de bytes de uma leitura limitada estourado (é OSError: vira `falha_rede`)."""
+
+
 class RedirecionamentoAmazon(urllib.request.HTTPRedirectHandler):
-    """Confere cada redirect antes de segui-lo, não só a URL final."""
+    """Confere cada redirect antes de segui-lo, não só a URL final.
+
+    Pedido com `prazo_final` (leitura limitada, veja buscar_produto_amazon): o prazo passa ao pedido seguinte,
+    redirect depois do prazo levanta LimiteDaLeitura e o salto seguinte espera no máximo o que resta. O urllib
+    abre o salto seguinte com o `req.timeout` do pedido atual, por isso ele é encurtado aqui."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         conferir_url_amazon(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        novo = super().redirect_request(req, fp, code, msg, headers, newurl)
+        prazo_final = getattr(req, 'prazo_final', None)
+        if novo is not None and prazo_final is not None:
+            restante = prazo_final - time.monotonic()
+            if restante <= 0:
+                raise LimiteDaLeitura('prazo total da leitura esgotado')
+            novo.prazo_final = prazo_final
+            if isinstance(req.timeout, (int, float)):
+                req.timeout = min(req.timeout, restante)
+        return novo
 
 
 OPENER_AMAZON = urllib.request.build_opener(RedirecionamentoAmazon)
+BLOCO_LEITURA = 64 * 1024
 
 
-def buscar_produto_amazon(url):
+def _ler_limitado(r, prazo_final, teto_bytes):
+    """Lê o corpo em blocos de até BLOCO_LEITURA com read1 (uma chamada de rede por bloco, então cada bloco espera
+    no máximo o timeout da operação), conferindo o prazo antes de cada bloco e o total de bytes depois de cada um.
+    Levanta LimiteDaLeitura ao estourar um dos dois.
+
+    Conexão que fecha antes do Content-Length levanta IncompleteRead, como o read() faria: o read1 só devolve b''
+    e deixa o que falta em `r.length`. Sem isso, uma página cortada antes do preço viraria `sem_preco` (descarte)
+    e uma cortada antes do título, `bloqueado` (pausa), em vez de `falha_rede`. Na resposta em pedaços (chunked),
+    o próprio read1 já levanta IncompleteRead."""
+    partes, total = [], 0
+    while True:
+        if prazo_final is not None and time.monotonic() >= prazo_final:
+            raise LimiteDaLeitura('prazo total da leitura esgotado')
+        bloco = r.read1(BLOCO_LEITURA)
+        if not bloco:
+            faltam = getattr(r, 'length', None)
+            if faltam:
+                raise http.client.IncompleteRead(b''.join(partes), faltam)
+            return b''.join(partes)
+        total += len(bloco)
+        if teto_bytes is not None and total > teto_bytes:
+            raise LimiteDaLeitura('página maior que o teto')
+        partes.append(bloco)
+
+
+def buscar_produto_amazon(url, timeout=30, prazo_total=None, teto_bytes=None):
+    """Lê uma página da Amazon; `timeout` vale para cada operação de rede. Sem `prazo_total` nem `teto_bytes` (o
+    /api/fetch), lê a página inteira de uma vez, como sempre. Com eles (a releitura), a leitura inteira, redirects
+    incluídos, tem prazo total, conferido a cada redirect e antes de cada bloco, e teto de bytes: estourado um dos
+    dois, a resposta é fechada e sai LimiteDaLeitura (um OSError)."""
     conferir_url_amazon(url)
     req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Language': 'pt-BR,pt;q=0.9',
                                                'Accept': 'text/html,application/xhtml+xml'})
-    with OPENER_AMAZON.open(req, timeout=30) as r:
-        final = r.geturl(); h = r.read().decode('utf-8', 'ignore')
+    prazo_final = None
+    if prazo_total is not None:
+        prazo_final = req.prazo_final = time.monotonic() + prazo_total
+        timeout = min(timeout, prazo_total)
+    with OPENER_AMAZON.open(req, timeout=timeout) as r:
+        final = r.geturl()
+        if prazo_total is None and teto_bytes is None:
+            corpo = r.read()
+        else:
+            corpo = _ler_limitado(r, prazo_final, teto_bytes)
+        h = corpo.decode('utf-8', 'ignore')
     return {'url_final': final, 'asin': _grab(r'/dp/([A-Z0-9]{10})', final),
             'captcha': 'captcha' in h.lower() and 'productTitle' not in h, **extrair_produto_amazon(h)}
 
@@ -449,6 +675,208 @@ def extrair_produto_amazon(h):
         # a tag <img> que tem id="landingImage", com o src antes ou depois do id (a Amazon põe antes)
         'imagem': _grab(r'<img(?=[^>]*\sid="landingImage")[^>]*\ssrc="([^"]*)"', h),
     }
+
+
+# ---------- confirmação do preço de UMA oferta da Amazon (POST /api/v1/amazon/<ASIN>/confirmar-preco) ----------
+# Plano "Rodar sozinho · Entrega 1" do Achadinho Turbo (docs/produto/planos/rodar-sozinho-entrega1.md, lá). O Turbo
+# pede, logo antes de enviar, a releitura da página de um produto que já está no banco. A URL é montada aqui a partir
+# do ASIN validado (nunca vem do cliente) e vai sem tag, para não parecer clique de afiliado.
+RE_ASIN = re.compile(r'[A-Z0-9]{10}')
+# Limites da releitura. O Turbo desiste em 15 s; normalmente a resposta sai em até uns 12 s: o prazo total mais uma
+# operação que começou antes de ele vencer (8 + 4). Ficam de fora do prazo total, limitados só pelos 4 s de cada
+# operação: a espera pelo cabeçalho de cada resposta, o descarte do corpo de um redirect (o urllib faz fp.read()) e
+# a linha de tamanho de uma resposta em pedaços (chunked). A página da Amazon tem 1 a 2 MB. O /api/fetch segue sem
+# prazo total nem teto, com 30 s por operação.
+PRAZO_RELEITURA_S = 8                       # prazo total da leitura, redirects incluídos
+PRAZO_OPERACAO_RELEITURA_S = 4              # timeout de cada operação de rede (conexão, cabeçalho, cada bloco)
+TETO_RELEITURA_BYTES = 4 * 1024 * 1024      # acima disso a página é abandonada (falha_rede)
+CAMPOS_DO_PRECO = ('preco', 'preco_antigo', 'desconto')   # os únicos CAMPOS que a releitura grava
+ERRO_SEM_OFERTA = 'oferta da Amazon não encontrada'
+
+
+def url_releitura_amazon(asin):
+    return f'https://www.amazon.com.br/dp/{asin}'
+
+
+def buscar_releitura_amazon(url, timeout):
+    """O buscar_produto_amazon com o prazo total e o teto da releitura (lidos a cada chamada)."""
+    return buscar_produto_amazon(url, timeout=timeout, prazo_total=PRAZO_RELEITURA_S,
+                                 teto_bytes=TETO_RELEITURA_BYTES)
+
+
+def _classificar_releitura(asin, buscar):
+    """Lê a página e devolve (resultado, página ou None). Mesma classificação do atualizar_precos.py, com uma
+    diferença: página não reconhecida (sem título ou sem ASIN) é `bloqueado`, nunca motivo de descarte.
+    Prazo total ou teto de bytes estourado (LimiteDaLeitura, um OSError) é `falha_rede`."""
+    try:
+        r = buscar(url_releitura_amazon(asin), timeout=PRAZO_OPERACAO_RELEITURA_S)
+    except URLRecusada:   # redirect para fora da Amazon
+        return 'outro_produto', None
+    except urllib.error.HTTPError as e:   # antes do URLError, que é a classe mãe
+        e.close()
+        if e.code in (429, 503):
+            return 'bloqueado', None
+        if e.code in (404, 410):
+            return 'sem_preco', None
+        return 'falha_rede', None
+    except (OSError, http.client.HTTPException):   # URLError, timeout, conexão recusada ou cortada
+        return 'falha_rede', None
+    if r.get('captcha'):
+        return 'bloqueado', None
+    if not r.get('asin'):
+        return 'bloqueado', None
+    if r['asin'] != asin:
+        return 'outro_produto', None
+    if not r.get('titulo'):
+        return 'bloqueado', None
+    if ler_preco(r.get('preco')) is None:
+        return 'sem_preco', None
+    return 'confirmado', r
+
+
+def _numero_do_preco(texto):
+    v = ler_preco(texto)
+    return float(v) if v is not None else None
+
+
+def _resposta_confirmada(vals, quando):
+    """Corpo do `confirmado` a partir do que foi gravado (já saneado): preço, antigo só se maior e desconto em %."""
+    preco = _numero_do_preco(vals['preco'])
+    antigo = _numero_do_preco(vals['preco_antigo'])
+    if antigo is not None and antigo <= preco:
+        antigo = None
+    digitos = re.sub(r'\D', '', str(vals['desconto'] or ''), flags=re.A)[:3]
+    pct = int(digitos) if digitos else None
+    if not pct and antigo:
+        pct = round((1 - preco / antigo) * 100)
+    return {'resultado': 'confirmado', 'preco': preco, 'preco_antigo': antigo,
+            'desconto_pct': pct if pct and 0 < pct < 100 else None, 'preco_em': quando}
+
+
+def confirmar_preco_amazon(con, asin, buscar=buscar_releitura_amazon, agora=agora):
+    """Relê a página do produto da Amazon `asin` e, com preço legível, grava só o preço (CA1.1 e CA1.2).
+
+    Devolve o corpo da resposta (sem a versão): {"resultado": "confirmado", "preco", "preco_antigo",
+    "desconto_pct", "preco_em"} ou {"resultado": "sem_preco" | "outro_produto" | "bloqueado" | "falha_rede"}.
+    ASIN fora de RE_ASIN levanta ValueError; item da Amazon inexistente (antes da leitura ou apagado durante ela)
+    levanta ErroCliente 404. Nos dois casos nada é lido nem gravado.
+
+    A leitura de rede acontece fora de transação. Depois, em BEGIN IMMEDIATE, relê os CAMPOS da linha, aplica o
+    sanear_precos sobre eles com o preço, o antigo e o desconto da página e grava só esses três mais preco_em e
+    atualizado_em. Nunca insere, nunca mexe em url, título, cupom ou foto. Falha não grava nada (o preço velho
+    e o preco_em ficam como estavam).
+    """
+    if not isinstance(asin, str) or not RE_ASIN.fullmatch(asin):
+        raise ValueError('ASIN inválido')
+    sql_linha = f"SELECT id, {', '.join(CAMPOS)} FROM items WHERE loja='amazon' AND item_id=?"
+    if con.in_transaction:
+        con.commit()
+    if con.execute(sql_linha, (asin,)).fetchone() is None:
+        raise ErroCliente(404, ERRO_SEM_OFERTA)
+    resultado, pagina = _classificar_releitura(asin, buscar)
+    if resultado != 'confirmado':
+        return {'resultado': resultado}
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        atual = con.execute(sql_linha, (asin,)).fetchone()
+        if atual is None:   # apagado entre a leitura e a gravação
+            raise ErroCliente(404, ERRO_SEM_OFERTA)
+        vals = sanear_precos({**{c: atual[c] for c in CAMPOS},
+                              **{c: pagina.get(c) or '' for c in CAMPOS_DO_PRECO}})
+        quando = agora()
+        con.execute('UPDATE items SET preco=?, preco_antigo=?, desconto=?, preco_em=?, atualizado_em=? WHERE id=?',
+                    [vals[c] for c in CAMPOS_DO_PRECO] + [quando, quando, atual['id']])
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    return _resposta_confirmada(vals, quando)
+
+
+# Freio da releitura (P5 do plano): uma leitura por vez, FREIO_INTERVALO_S entre o início de duas, no máximo
+# FREIO_TETO_POR_HORA numa janela deslizante de uma hora, FREIO_PAUSA_BLOQUEIO_S sem ler depois de um `bloqueado`
+# e nenhuma leitura enquanto uma rodada da Amazon (coleta ou atualizar_precos.py) segura a trava.
+FREIO_INTERVALO_S = 3
+FREIO_TETO_POR_HORA = 60
+FREIO_JANELA_S = 3600
+FREIO_PAUSA_BLOQUEIO_S = 15 * 60
+FREIO_ESPERA_RODADA_S = 60   # o Retry-After quando a rodada da Amazon está no ar (ela dura muito mais)
+
+
+def rodada_amazon_livre():
+    """True se nenhuma rodada da Amazon segura a trava agora. Pega a trava e a solta na hora: a releitura nunca
+    a segura durante a leitura, então uma rodada pode começar no meio dela (a rodada tem prioridade). Na rara
+    coincidência de a rodada tentar a trava nesses microssegundos, ela sai com 4 ("outra rodada de amazon está em
+    andamento") e basta repeti-la. Trava que não abre (symlink, permissão) conta como ocupada: na dúvida, não lê."""
+    try:
+        with travar_rodada('amazon'):
+            return True
+    except RodadaEmAndamento:
+        return False
+
+
+class FreioReleitura:
+    """Freio da rota de confirmação de preço, em memória (zera quando o servidor reinicia).
+
+    `reservar()` devolve None e marca a leitura como em curso, ou (motivo, segundos) quando recusa: motivo
+    'ocupado', 'pausa', 'intervalo', 'teto' ou 'rodada', e segundos inteiros >= 1 para o Retry-After. Recusa não
+    conta como leitura. `liberar(resultado)` encerra a leitura reservada; `bloqueado` abre a pausa, contada a
+    partir do fim da leitura. `relogio` (monotônico) e `rodada_livre` são injetáveis nos testes.
+    """
+
+    def __init__(self, relogio=time.monotonic, rodada_livre=rodada_amazon_livre):
+        self._relogio, self._rodada_livre = relogio, rodada_livre
+        self._lock = threading.Lock()
+        self._ocupado = False
+        self._inicios = collections.deque()
+        self._pausa_ate = None
+
+    @staticmethod
+    def _segundos(s):
+        return max(1, math.ceil(s))
+
+    def reservar(self):
+        with self._lock:
+            t = self._relogio()
+            if self._ocupado:
+                return 'ocupado', FREIO_INTERVALO_S
+            if self._pausa_ate is not None and t < self._pausa_ate:
+                return 'pausa', self._segundos(self._pausa_ate - t)
+            while self._inicios and self._inicios[0] <= t - FREIO_JANELA_S:
+                self._inicios.popleft()
+            if self._inicios and t - self._inicios[-1] < FREIO_INTERVALO_S:
+                return 'intervalo', self._segundos(self._inicios[-1] + FREIO_INTERVALO_S - t)
+            if len(self._inicios) >= FREIO_TETO_POR_HORA:
+                return 'teto', self._segundos(self._inicios[0] + FREIO_JANELA_S - t)
+            if not self._rodada_livre():
+                return 'rodada', FREIO_ESPERA_RODADA_S
+            self._ocupado = True
+            self._inicios.append(t)
+            return None
+
+    def liberar(self, resultado=None):
+        with self._lock:
+            self._ocupado = False
+            if resultado == 'bloqueado':
+                self._pausa_ate = self._relogio() + FREIO_PAUSA_BLOQUEIO_S
+
+
+FREIO_RELEITURA = FreioReleitura()
+# Caminho da rota abaixo do prefixo da v1. O grupo é o ASIN cru; só vale se casar RE_ASIN (senão, 404).
+RE_ROTA_CONFIRMAR = re.compile(r'amazon/([^/]*)/confirmar-preco')
+ROTA_CONFIRMAR_LOG = 'amazon/(asin)/confirmar-preco'
+
+
+def asin_da_rota_confirmar(caminho):
+    """Para o caminho cru: None se não é a rota de confirmação; '' se é, mas o ASIN está fora do formato;
+    senão, o ASIN."""
+    p = prefixo_v1()
+    if not caminho.startswith(p):
+        return None
+    m = RE_ROTA_CONFIRMAR.fullmatch(caminho[len(p):])
+    if not m:
+        return None
+    return m.group(1) if RE_ASIN.fullmatch(m.group(1)) else ''
 
 
 # ---------- API v1 de ofertas: token, guarda e log ----------
@@ -508,16 +936,22 @@ def eh_rota_v1(caminho):
 def linha_v1_para_log(linha):
     """Linha da requisição da v1 sem nada que o cliente possa ter mandado de segredo.
 
-    Fica o método (se for um conhecido), a rota (se for ofertas ou categorias; senão "(outra rota)"),
-    "?(omitida)" no lugar da query e a versão HTTP (se bem formada). Um ?token= mandado por engano,
-    um token no caminho ou numa linha malformada nunca chegam ao log.
+    Fica o método (se for um conhecido), a rota (se for ofertas ou categorias; a de confirmação de preço sem o
+    ASIN, "amazon/(asin)/confirmar-preco"; senão "(outra rota)"), "?(omitida)" no lugar da query e a versão
+    HTTP (se bem formada). Um ?token= mandado por engano, um token no caminho ou numa linha malformada nunca
+    chegam ao log.
     """
     prefixo = prefixo_v1()
     partes = linha.split()
     metodo = partes[0] if partes and partes[0] in METODOS_HTTP else '?'
     alvo = next((p for p in partes if prefixo[:-1] in p), '')
     caminho, tem_query, _ = alvo.partition('?')
-    rota = caminho if caminho in [prefixo + suf for suf in SUFIXOS_V1_LOG] else prefixo + '(outra rota)'
+    if caminho in [prefixo + suf for suf in SUFIXOS_V1_LOG]:
+        rota = caminho
+    elif asin_da_rota_confirmar(caminho) is not None:
+        rota = prefixo + ROTA_CONFIRMAR_LOG
+    else:
+        rota = prefixo + '(outra rota)'
     versao = partes[-1] if partes and re.fullmatch(r'HTTP/[0-9]\.[0-9]', partes[-1]) else ''
     return ' '.join(p for p in (metodo, rota + ('?(omitida)' if tem_query else ''), versao) if p)
 
@@ -603,8 +1037,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         Ordem: navegador (Origin, mesmo a local, ou Sec-Fetch-Site) dá 403; API desligada (sem
         token) dá 503; sem "Authorization: Bearer <token>" certo dá 401 com WWW-Authenticate; método
-        diferente de GET dá 405, só depois da autenticação. O token só vale no cabeçalho (?token= não
-        autentica) e é comparado em tempo constante. A v1 nunca leva CORS.
+        diferente de GET dá 405 (Allow: GET), só depois da autenticação. A exceção é a rota de confirmação
+        de preço (asin_da_rota_confirmar), que só aceita POST (405 com Allow: POST). O token só vale no
+        cabeçalho (?token= não autentica) e é comparado em tempo constante. A v1 nunca leva CORS.
         """
         if self.headers.get('Origin') is not None or self.headers.get('Sec-Fetch-Site') is not None:
             self.json({'error': 'a API v1 não aceita pedidos de navegador'}, 403); return True
@@ -615,6 +1050,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.json({'error': 'token ausente ou inválido: envie Authorization: Bearer <token>'}, 401,
                       cabecalhos=[('WWW-Authenticate', 'Bearer')])
             return True
+        if asin_da_rota_confirmar(self._caminho) is not None:
+            if self.command != 'POST':
+                self.json({'error': 'método não permitido: esta rota só aceita POST'}, 405,
+                          cabecalhos=[('Allow', 'POST')])
+                return True
+            return False
         if self.command != 'GET':
             self.json({'error': 'método não permitido: a API só aceita GET'}, 405,
                       cabecalhos=[('Allow', 'GET')])
@@ -697,7 +1138,8 @@ class Handler(SimpleHTTPRequestHandler):
         """GET autenticado em /api/v1/ vai para api_ofertas.rota. True se a rota era da v1.
 
         O bloquear_v1() já conferiu navegador, token e método. A conexão fica só de leitura
-        (PRAGMA query_only): a v1 nunca grava. ErroApi vira {"error": msg} com o código; erro
+        (PRAGMA query_only): as rotas GET da v1 nunca gravam (a confirmação de preço tem conexão própria,
+        em despachar_confirmar_preco). ErroApi vira {"error": msg} com o código; erro
         inesperado vira 500 com só o tipo no log (a mensagem do sqlite pode trazer dados).
         """
         if not eh_rota_v1(self._caminho):
@@ -718,6 +1160,70 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self.json(resposta)
         finally:
+            if con is not None:
+                con.close()
+        return True
+
+    def despachar_confirmar_preco(self):
+        """POST autenticado em /api/v1/amazon/<ASIN>/confirmar-preco. True se a rota era essa.
+
+        O bloquear_v1() já conferiu navegador, token e método. Depois: ASIN fora do formato 404 → corpo não
+        vazio 400 → item da Amazon inexistente 404 → freio 429 com Retry-After → leitura (200). É a única rota
+        da v1 com conexão que grava (as outras ficam em query_only). Erro inesperado vira 500 com só o tipo no
+        log, e a linha do log nunca traz o ASIN nem o token (linha_v1_para_log). A resposta nunca traz HTML nem
+        a mensagem de uma exceção. O freio é liberado antes de a resposta sair, em todos os ramos: a pausa depois
+        de `bloqueado` nasce no fim da leitura e o pedido seguinte já vê o freio livre (ou em pausa).
+        """
+        asin = asin_da_rota_confirmar(self._caminho)
+        if asin is None:
+            return False
+        if not asin:
+            self.json({'error': 'rota não encontrada'}, 404); return True
+        # sem ler o corpo: a conexão é HTTP/1.0 e fecha depois da resposta
+        tamanhos = self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') is not None or any(v.strip() != '0' for v in tamanhos):
+            self.json({'error': 'esta rota não aceita corpo'}, 400); return True
+        import api_ofertas
+        con = None
+        reservado = False
+        resultado = None
+
+        def soltar_freio():
+            """Libera a reserva uma vez só. Um erro ao liberar vai para o log (só o tipo) e não impede a resposta."""
+            nonlocal reservado
+            if not reservado:
+                return
+            reservado = False
+            try:
+                FREIO_RELEITURA.liberar(resultado)
+            except Exception as e:   # noqa: BLE001
+                self.log_message('"%s" freio da releitura não liberou: %s', self.requestline, type(e).__name__)
+
+        try:
+            con = conectar()
+            if con.execute("SELECT 1 FROM items WHERE loja='amazon' AND item_id=?", (asin,)).fetchone() is None:
+                raise ErroCliente(404, ERRO_SEM_OFERTA)
+            freio = FREIO_RELEITURA.reservar()
+            if freio is not None:
+                motivo, segundos = freio
+                self.json({'versao': api_ofertas.VERSAO, 'resultado': 'freio', 'motivo': motivo,
+                           'tentar_em_s': segundos}, 429, cabecalhos=[('Retry-After', str(segundos))])
+                return True
+            reservado = True
+            resposta = confirmar_preco_amazon(con, asin)
+            resultado = resposta['resultado']
+            soltar_freio()
+        except ErroCliente as e:
+            soltar_freio()   # 404 do item apagado durante a leitura
+            self.json({'error': e.msg}, e.codigo)
+        except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
+            soltar_freio()
+            self.log_message('"%s" confirmar preço falhou: %s', self.requestline, type(e).__name__)
+            self.json({'error': 'erro interno na API v1'}, 500)
+        else:
+            self.json({'versao': api_ofertas.VERSAO, **resposta})
+        finally:
+            soltar_freio()   # garantia: só age se nada acima liberou (BaseException no meio da leitura)
             if con is not None:
                 con.close()
         return True
@@ -751,6 +1257,11 @@ class Handler(SimpleHTTPRequestHandler):
             if not self.estatico_permitido():
                 return self.json({'error': 'não encontrado'}, 404)
             return super().do_GET()
+        if caminho == '/api/versao':
+            # Fora de ROTAS_ML: o bloquear() já recusou Host estranho e origem que não é a local.
+            if VERSAO is None:
+                return self.json({'error': 'versão do código não registrada na subida'}, 503)
+            return self.json(resposta_versao(VERSAO))
         if caminho == '/api/ml-sem-afiliado':
             con = conectar()
             rows = con.execute("SELECT id, url FROM items WHERE loja='ml' AND url NOT LIKE 'https://meli.la/%' ORDER BY id").fetchall()
@@ -779,7 +1290,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self.json({'error': 'rota não encontrada'}, 404)
 
     def do_POST(self):
-        if self.bloquear() or self.despachar_disparo():
+        if self.bloquear() or self.despachar_confirmar_preco() or self.despachar_disparo():
             return
         if self._caminho == '/api/items':
             try:
@@ -889,9 +1400,10 @@ class Handler(SimpleHTTPRequestHandler):
             # null sem correção para apagar não muda nada: o item não reaparece no cursor da API v1
             if con.total_changes != mudancas:
                 con.execute('UPDATE items SET atualizado_em=? WHERE id=?', (quando, iid))
-            con.commit()
+            # o item é lido ainda dentro da transação: um DELETE depois do commit não deixa a releitura vazia
             r = con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone()
             item = linha_para_item(r, genero.manuais(con))
+            con.commit()
         except Exception as e:   # noqa: BLE001  só o tipo no log: a mensagem do sqlite pode trazer dados
             if con.in_transaction:
                 con.rollback()
@@ -979,6 +1491,7 @@ if __name__ == '__main__':
     # bind antes do agendador: a porta ocupada impede uma segunda instância de disparar em dobro
     servidor = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Site em http://localhost:{PORT}/  (banco: {DB})')
+    print(registrar_versao(), flush=True)
     iniciar_api_v1()
     iniciar_disparo()
     try:

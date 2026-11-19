@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Testes de QA do público (gênero) no backend (docs/produto/planos/genero-nas-categorias.md, etapas 1 a 5).
 
-Uso:  python3 testes/test_genero_qa.py -v          (leva 1 a 2 minutos: usa uma cópia do banco real)
+Uso:  python3 testes/test_genero_qa.py -v          (sem a variável, as classes do banco real pulam; com
+      ACHADINHOS_TESTE_DADOS_REAIS=1, ou verificar.py --dados-reais, levam 1 a 2 minutos)
       python3 testes/test_genero_qa.py -k Concorrencia
 
 Complementa test_genero.py, test_genero_servidor.py, test_disparo.py e test_api_ofertas*.py, sem repetir:
@@ -19,8 +20,8 @@ Complementa test_genero.py, test_genero_servidor.py, test_disparo.py e test_api_
 Segurança do teste: nunca toca o servidor da porta 8765 nem o achadinhos.db real (só leitura, em
 `mode=ro`, para fazer a cópia com sqlite3.backup); servidores de teste usam banco temporário, porta
 livre, proxy morto, ACHADINHOS_DISPARO=0 e um arquivo de token temporário (o api_token.txt do projeto
-nunca é lido). Os testes que dependem do banco real dão SkipTest se o achadinhos.db não existir (clone
-limpo): sem ele só restam os de banco sintético. Só biblioteca padrão.
+nunca é lido). Os testes que dependem do banco real só rodam com ACHADINHOS_TESTE_DADOS_REAIS=1 (skip com motivo
+impresso) e dão SkipTest se o achadinhos.db não existir (clone limpo): sem ele só restam os de banco sintético. Só biblioteca padrão.
 """
 import collections
 import hashlib
@@ -70,6 +71,10 @@ COMMIT_ANTIGO = '1571135'
 # Distribuição da Perfumaria em 2026-11-03 (F 696, M 972, U 178, sem 1.205); a base cresce, então há folga.
 DISTRIBUICAO_2026_11_03 = {'feminino': 696, 'masculino': 972, 'unissex': 178, 'sem': 1205}
 FOLGA = 0.08
+# As classes que copiam o achadinhos.db real só rodam por pedido (verificar.py --dados-reais): o resultado delas
+# depende do que o dono coletou no dia, e uma suíte que falha por dado novo vira "falha conhecida".
+DADOS_REAIS = unittest.skipUnless(os.environ.get('ACHADINHOS_TESTE_DADOS_REAIS') == '1',
+                                  'dados reais: rode verificar.py --dados-reais')
 
 
 def tearDownModule():
@@ -411,6 +416,7 @@ class ClassificadorBordas(unittest.TestCase):
                 self.assertEqual(G.do_item(1, cat, '', 'Perfume Feminino', {1: 'masculino'}), ('sem', ''))
 
 
+@DADOS_REAIS
 @unittest.skipUnless(banco_real_existe(), 'sem achadinhos.db neste clone')
 class DistribuicaoReal(unittest.TestCase):
     """Roda o classificador sobre os itens reais (leitura, mode=ro) e compara com um oráculo independente."""
@@ -472,6 +478,7 @@ class DistribuicaoReal(unittest.TestCase):
 
 
 # ================================================================ CA7: migração na cópia do banco real
+@DADOS_REAIS
 class MigracaoNaCopiaReal(unittest.TestCase):
 
     @classmethod
@@ -549,6 +556,7 @@ class MigracaoNaCopiaReal(unittest.TestCase):
             con.close()
 
 
+@DADOS_REAIS
 class MigracaoConcorrente(unittest.TestCase):
 
     def test_seis_processos_migrando_ao_mesmo_tempo(self):
@@ -568,6 +576,7 @@ class MigracaoConcorrente(unittest.TestCase):
         self.assertEqual([c[0] for c in depois['colunas_items']].count('preco_em'), 1)
 
 
+@DADOS_REAIS
 class CodigoAntigoDuranteAMigracao(ServidorQa):
     """O servidor antigo está no ar sobre o banco v1 quando uma coleta nova (criar_banco) migra para a v2."""
     CODIGO = staticmethod(codigo_antigo)
@@ -594,6 +603,7 @@ class CodigoAntigoDuranteAMigracao(ServidorQa):
         self.assertNotIn('Traceback', self.saida())
 
 
+@DADOS_REAIS
 class CodigoAntigoSobreBancoMigrado(ServidorQa):
     """CA7: o código do commit anterior roda sobre o banco já na v2 e não o estraga."""
     CODIGO = staticmethod(codigo_antigo)
@@ -704,6 +714,7 @@ REGRAS_ANTIGAS = {
 }
 
 
+@DADOS_REAIS
 class RegraAntigaElegeOMesmoConjunto(unittest.TestCase):
 
     @classmethod
@@ -748,6 +759,7 @@ class RegraAntigaElegeOMesmoConjunto(unittest.TestCase):
 
 
 # ================================================================ CA4, CA5, CA6: paridade nos três consumidores
+@DADOS_REAIS
 class ParidadeTresConsumidores(ServidorQa):
     """O mesmo item tem o mesmo gênero em GET /api/items, na API v1 e no `elegiveis` do disparo."""
 
@@ -1090,6 +1102,7 @@ class BelezaEModaNosTresConsumidores(ServidorQa):
         self.assertEqual(st, 400)
 
 
+@DADOS_REAIS
 class V1NadaQueExistiaMuda(unittest.TestCase):
     """O código do commit anterior e o atual respondem igual, menos o campo novo `genero` (e `generos`
     em categorias), sobre o mesmo banco real migrado."""
@@ -1098,6 +1111,16 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
     def setUpClass(cls):
         cls.caminho = copia_v1('v1-regressao')
         migrar(TS.RAIZ, cls.caminho)
+        # A v1 atual só traz preço dentro da validade (24 h, ou config.preco_validade_horas) e o código antigo
+        # não tem essa trava. Aqui se compara tudo o mais, então a cópia (descartável) ganha preço de 1 h antes
+        # do relógio do script (2030-01-01) e validade de 168 h: nenhuma oferta some por idade do preço.
+        con = sqlite3.connect(cls.caminho)
+        try:
+            con.execute("UPDATE items SET preco_em='2029-12-31T23:00:00'")
+            con.execute("INSERT OR REPLACE INTO config (chave, valor) VALUES ('preco_validade_horas', '168')")
+            con.commit()
+        finally:
+            con.close()
         cls.antigo = cls.rodar(codigo_antigo())
         cls.atual = cls.rodar(TS.RAIZ)
 
@@ -1109,11 +1132,15 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
         return json.loads(r.stdout)
 
     @staticmethod
-    def sem_o_novo(resposta):
+    def sem_o_novo(resposta, antigo=False):
+        """A resposta sem os campos novos. Com `antigo=True` (resposta do código de antes da foto grande,
+        commit 7c6f3e1), `imagem` passa pelo `disparo.foto_grande`: o resto do campo continua comparado."""
         r = json.loads(json.dumps(resposta))
         for o in r.get('ofertas', []):
             o.pop('genero', None)
             o.pop('preco_em', None)   # campo da feature atualizar-precos (testes próprios)
+            if antigo:
+                o['imagem'] = D.foto_grande(o['imagem'], o['loja'])
         for c in r.get('categorias', []):
             c.pop('generos', None)
         return r
@@ -1121,7 +1148,19 @@ class V1NadaQueExistiaMuda(unittest.TestCase):
     def test_cada_consulta_responde_igual_menos_o_campo_novo(self):
         for qs in CONSULTAS_V1:
             with self.subTest(qs=qs[:60]):
-                self.assertEqual(self.sem_o_novo(self.atual[qs]), self.sem_o_novo(self.antigo[qs]))
+                self.assertEqual(self.sem_o_novo(self.atual[qs]), self.sem_o_novo(self.antigo[qs], antigo=True))
+
+    def test_a_foto_grande_e_a_unica_diferenca_de_imagem_do_codigo_antigo(self):
+        """Garante que a normalização do lado antigo não esconde nada: há foto que muda, e as que não mudam
+        são iguais nos dois lados."""
+        antigas = {o['id']: o['imagem'] for o in self.antigo['limite=200']['ofertas']}
+        novas = {o['id']: o['imagem'] for o in self.atual['limite=200']['ofertas']}
+        self.assertEqual(set(antigas), set(novas))
+        mudaram = [i for i in antigas if antigas[i] != novas[i]]
+        self.assertGreater(len(mudaram), 20)
+        for i in antigas:
+            self.assertEqual(novas[i], D.foto_grande(antigas[i], next(
+                o['loja'] for o in self.atual['limite=200']['ofertas'] if o['id'] == i)))
 
     def test_as_consultas_comparam_dados_de_verdade(self):
         self.assertGreater(len(self.atual['']['ofertas']), 40)

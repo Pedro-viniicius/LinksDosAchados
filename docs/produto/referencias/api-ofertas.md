@@ -3,8 +3,10 @@
 - Plano: `docs/produto/planos/api-achadinho-turbo.md`. Código: `api_ofertas.py` (regra das ofertas) e `servidor.py` (token, guarda HTTP e log).
 - Estado descrito aqui: o código final da etapa 2, conferido em 2026-11-03, mais o público (`genero`) da etapa 5 do plano `docs/produto/planos/genero-nas-categorias.md` (código do público em `genero.py`). Os campos, parâmetros e erros que já existiam não mudaram e a `versao` continua 1.
 - Atualizado em 2026-11-04 (plano `docs/produto/planos/abas-nichadas-e-coleta.md`): as abas passam a ser 17 e 3 delas têm público. **Só os nomes de `categoria` e as abas com `generos` mudam; nenhum campo, parâmetro ou erro é novo.** Veja "Abas" e a nota de renomeação.
-- Atualizado em 2026-11-04 (plano `docs/produto/planos/atualizar-precos.md`, etapa 3): cada oferta ganha o campo `preco_em` (quando o preço foi confirmado) e há o parâmetro opcional `preco_max_horas`. **Sem o parâmetro, a resposta é a de antes mais o campo novo**: a API não tira oferta de preço velho por conta própria. A `versao` continua 1. Veja "Idade do preço".
-- Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
+- Atualizado em 2026-11-04 (plano `docs/produto/planos/atualizar-precos.md`, etapa 3): cada oferta ganha o campo `preco_em` (quando o preço foi confirmado) e há o parâmetro opcional `preco_max_horas`. A `versao` continua 1. Veja "Idade do preço".
+- **Mudança de comportamento em 2026-11-08 (decisão do dono):** sem `preco_max_horas`, a API passa a trazer só ofertas com preço dentro da validade configurada no Etiqueta (`config.preco_validade_horas`, padrão 24 h), a mesma trava do disparo. Antes, sem o parâmetro, saía também oferta de preço velho. `/api/v1/categorias` não mudou. Nenhum campo, parâmetro ou erro é novo. Veja "Idade do preço".
+- **Mudança em 2026-11-11 (plano "Rodar sozinho · Entrega 1" do Achadinho Turbo, `docs/produto/planos/rodar-sozinho-entrega1.md` no repositório dele): a v1 passa a ter uma rota que grava**, `POST /api/v1/amazon/<ASIN>/confirmar-preco`. Ela relê a página de **uma** oferta da Amazon que já está no banco e grava só o preço. As duas rotas `GET` não mudaram e a `versao` continua 1. Veja "`POST /api/v1/amazon/<ASIN>/confirmar-preco`".
+- Resumo: duas rotas só de leitura, `GET /api/v1/ofertas` e `GET /api/v1/categorias`, e uma que relê e grava o preço de uma oferta da Amazon, `POST /api/v1/amazon/<ASIN>/confirmar-preco`, em `http://127.0.0.1:8765` (ou na porta de `ACHADINHOS_PORTA`). Toda oferta sai com **link de afiliado da própria loja**, como está no banco. O consumidor é um processo no mesmo computador (o Achadinho Turbo, em Node), não um navegador.
 
 ## Como usar em 1 minuto
 
@@ -28,7 +30,7 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 - **Leitura única:** o servidor lê o arquivo uma vez, na subida. Para **trocar** o token, troque o arquivo e **reinicie o `servidor.py`**; depois atualize o valor no consumidor.
 - **Para desligar** a API: apague o arquivo e reinicie. A v1 passa a dar 503.
 - **Onde vai o token:** só no cabeçalho `Authorization: Bearer <token>` (o esquema `Bearer` vale sem diferenciar maiúsculas). **`?token=` na URL não autentica.** Mais de um cabeçalho `Authorization` dá 401. A comparação é em tempo constante (`hmac.compare_digest`).
-- **Nunca** cole o token em conversa de chat, issue, commit, print ou log. O servidor também não o grava: o log de acesso da v1 mostra só o método, a rota e `?(omitida)` no lugar da query, e a mensagem de subida traz só o caminho do arquivo.
+- **Nunca** cole o token em conversa de chat, issue, commit, print ou log. O servidor também não o grava: o log de acesso da v1 mostra só o método, a rota e `?(omitida)` no lugar da query, e a mensagem de subida traz só o caminho do arquivo. A rota de confirmação de preço aparece no log sem o ASIN: `POST /api/v1/amazon/(asin)/confirmar-preco`.
 - Se o token vazar, gere outro, troque o arquivo, reinicie e atualize o consumidor.
 
 ## Guardas, na ordem em que valem
@@ -39,11 +41,12 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 | 2 | Cabeçalho `Origin` (mesmo a do próprio Etiqueta) ou `Sec-Fetch-Site` presente, que é o que um navegador manda | 403 `a API v1 não aceita pedidos de navegador` |
 | 3 | Sem token válido carregado (API desligada) | 503 `a API v1 está desligada: veja o motivo no log do servidor` |
 | 4 | Sem `Authorization: Bearer <token>` certo | 401 `token ausente ou inválido: envie Authorization: Bearer <token>`, com `WWW-Authenticate: Bearer` |
-| 5 | Método diferente de GET (inclui HEAD e OPTIONS) | 405 `método não permitido: a API só aceita GET`, com `Allow: GET` |
-| 6 | Rota que não é `ofertas` nem `categorias` | 404 `rota não encontrada` |
+| 5 | Método diferente de GET (inclui HEAD e OPTIONS); na rota de confirmação de preço, método diferente de POST | 405 `método não permitido: a API só aceita GET`, com `Allow: GET`; na rota de confirmação, 405 `método não permitido: esta rota só aceita POST`, com `Allow: POST` |
+| 6 | Rota que não é `ofertas`, `categorias` nem `amazon/<ASIN>/confirmar-preco` (inclui ASIN fora do formato) | 404 `rota não encontrada` |
 | 7 | Parâmetro inválido | 400 (veja "Erros") |
 
-- **Sem CORS:** nenhuma resposta da v1 leva `Access-Control-Allow-*` e `OPTIONS` não é liberado (dá 401 ou 405, como qualquer método que não seja GET). Uma página aberta no navegador não lê a v1, nem com o token.
+- **Sem CORS:** nenhuma resposta da v1 leva `Access-Control-Allow-*` e `OPTIONS` não é liberado (dá 401 ou 405, como qualquer método não aceito). Uma página aberta no navegador não lê a v1, nem com o token.
+- A rota de confirmação de preço tem guardas próprias depois destas (corpo, item e freio): veja a seção dela.
 - O 405 só aparece depois da autenticação: quem não tem o token vê 401 (ou 503), nunca 405.
 - O `fetch` do Node 22 e o `curl` não mandam `Origin` nem `Sec-Fetch-Site`, então passam. Um navegador sempre manda um deles, então é barrado.
 - O servidor só escuta em `127.0.0.1`. Esta API **não** foi pensada para a internet (veja "Limites").
@@ -51,7 +54,7 @@ Sem `api_token.txt` (ou com token inválido) a v1 fica desligada e responde 503 
 ## Resposta e formato
 
 - `Content-Type: application/json; charset=utf-8`, com acentos em UTF-8. `Cache-Control: no-store`.
-- Toda resposta de sucesso traz `"versao": 1`. Erro é sempre `{"error": "<frase em português>"}`.
+- Toda resposta de sucesso traz `"versao": 1`. Erro é sempre `{"error": "<frase em português>"}`, salvo o 429 do freio da confirmação de preço, que traz `versao`, `resultado`, `motivo` e `tentar_em_s`.
 - Mudança incompatível exige `/api/v2/`. **Campo novo pode entrar na v1:** o consumidor deve ignorar campo que não conhece.
 - **Texto cru:** `titulo`, `busca`, `categoria` e `cupom` saem como foram coletados, sem escape. O consumidor precisa escapar antes de pôr esses campos em HTML (ou em qualquer formato com caracteres especiais).
 - Horários (`criado_em`, `atualizado_em`, `preco_em`) são texto ISO **local do computador, sem fuso**, com precisão de segundo (`2026-11-03T12:24:23`). Trate como texto.
@@ -106,7 +109,7 @@ Parâmetros (todos opcionais). **A validação é estrita:** parâmetro desconhe
 | `limite` | Inteiro de 1 a 200. Padrão 50. |
 | `cursor` | O valor de `proximo` da página anterior, na **mesma ordem**. Opaco: não monte nem altere. Cursor adulterado ou de outra ordem dá 400. |
 | `genero` | Público: `feminino`, `masculino`, `unissex` ou `sem`, exatamente assim (minúsculas, sem acento). Repetível, até os 4; o mesmo valor duas vezes dá 400. Sem `genero`: todos. Vários: qualquer um deles. O filtro é **exato** e vale para todas as abas: `genero=feminino` só traz ofertas com `"genero": "feminino"`, e as abas que não separam por público (todas fora das 3 de "Abas") são sempre `sem`. Para "perfumes femininos e toda a Cozinha", faça dois pedidos (um com `cat` e `genero`, outro só com `cat`). |
-| `preco_max_horas` | Inteiro de 1 a 168 (uma semana), só dígitos. Só traz ofertas com o preço confirmado há **no máximo** essas horas, pelo relógio do Etiqueta (`preco_em` maior ou igual a agora menos as horas e no máximo 5 minutos à frente de agora). Oferta com `preco_em` `null`, fora do formato `AAAA-MM-DDTHH:MM:SS` (hora de 00 a 23, minuto e segundo de 00 a 59, data que existe) ou mais de 5 minutos no futuro nunca passa. **Sem o parâmetro, não filtra** (é o padrão). Repetido dá 400. Veja "Idade do preço". |
+| `preco_max_horas` | Inteiro de 1 a 168 (uma semana), só dígitos. Só traz ofertas com o preço confirmado há **no máximo** essas horas, pelo relógio do Etiqueta (`preco_em` maior ou igual a agora menos as horas e no máximo 5 minutos à frente de agora). Oferta com `preco_em` `null`, fora do formato `AAAA-MM-DDTHH:MM:SS` (hora de 00 a 23, minuto e segundo de 00 a 59, data que existe) ou mais de 5 minutos no futuro nunca passa. **Sem o parâmetro vale `config.preco_validade_horas`** (padrão 24 h, de 1 a 168; ausente ou inválida vale 24), lida a cada pedido: o dono muda o prazo pelo site e a API acompanha, sem reiniciar. Com o parâmetro, vale o número pedido, mesmo maior que o da config. Repetido dá 400. Veja "Idade do preço". |
 
 Mais de 33 pares `nome=valor` no total também dá 400 (`parâmetros demais`). Em `curl`, use `-G --data-urlencode` para acentos e espaços; `+` na query vira espaço.
 
@@ -135,7 +138,7 @@ Mais de 33 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 | `busca` | texto | Termo de busca que trouxe o item. Pode ser vazio. |
 | `titulo` | texto | Título, não vazio. |
 | `link` | texto | **Link de afiliado da própria loja**, pronto para usar: Amazon `https://www.amazon.com.br/...?tag=desejodemen01-20`, ML `https://meli.la/...`, Shopee `https://s.shopee.com.br/...`. |
-| `imagem` | texto ou `null` | URL da foto, só se for do CDN da loja do item (Amazon `m.media-amazon.com`, ML `http2.mlstatic.com`, Shopee `down-br.img.susercontent.com`); senão `null`. |
+| `imagem` | texto ou `null` | URL da foto, só se for do CDN da loja do item (Amazon `m.media-amazon.com`, ML `http2.mlstatic.com`, Shopee `down-br.img.susercontent.com`); senão `null`. A URL já é a da versão grande no mesmo CDN (`disparo.foto_grande`; o banco guarda a miniatura): Amazon `._<mods>_.<ext>` vira `._AC_SL1000_.<ext>`; ML `-<letra maiúscula>.<webp\|jpg\|jpeg\|png>` vira `-F.jpg`; Shopee perde o `_tn` do fim. URL com query ou fragmento, ou sem esse padrão, sai como está gravada. |
 | `preco` | número | Preço em reais, maior que 0 (`"R$ 4.285,90"` vira `4285.9`). |
 | `preco_antigo` | número ou `null` | Preço cheio. `null` se vazio ou se não for maior que `preco`. A Shopee não tem. |
 | `desconto_pct` | inteiro | Desconto em %. Se o texto de desconto da coleta der 0 e houver `preco_antigo`, é `round((1 - preco / preco_antigo) * 100)`. `0` quando não há desconto. |
@@ -151,14 +154,14 @@ Mais de 33 pares `nome=valor` no total também dá 400 (`parâmetros demais`). E
 
 ### Quando uma oferta NÃO sai
 
-Item que falhar em **qualquer** condição fica fora da lista e do `total`:
+Item que falhar em **qualquer** condição fica fora da lista e do `total` (das ofertas):
 
 - `tem_dados` diferente de 1, loja desconhecida, título vazio, ou preço que não seja um número maior que 0 (por exemplo "consulte"). Hoje há centenas de itens da Amazon sem preço.
 - Horário `criado_em` ou `atualizado_em` fora do formato `AAAA-MM-DDTHH:MM:SS`.
 - `link` que não seja de afiliado **e** da própria loja (ML sem `meli.la`, Amazon com tag de terceiro, link de outra loja).
 - Título, cupom, categoria, busca (ou `item_id`, quando não for o próprio link) com algo que se pareça com um endereço de site. A detecção é a mesma e conservadora do disparo: títulos como `i.Phone` ou `55UN85CBPSA.BWZ` ficam de fora de propósito (algumas dezenas de itens no banco de hoje; 27 na contagem de 03/11/2026).
 
-O `preco_em` **não** está nessa lista: preço velho ou sem data continua saindo, a não ser que o pedido traga `preco_max_horas`.
+- Preço velho: `preco_em` além da validade (`preco_max_horas` do pedido ou, sem ele, `config.preco_validade_horas`), `null`, fora do formato ou mais de 5 minutos no futuro. É a regra do `disparo.preco_recente`. Só a rota `ofertas` aplica essa condição: `/categorias` continua contando as ofertas de preço velho.
 
 Não entram na v1: a mensagem pronta (o consumidor monta com o template dele), números de telefone, grupos, regras e histórico de envios do disparo.
 
@@ -166,10 +169,11 @@ Não entram na v1: a mensagem pronta (o consumidor monta com o template dele), n
 
 - **`preco_em` não é `atualizado_em`.** O `atualizado_em` muda também quando o item troca de aba ou tem o público corrigido, sem que ninguém tenha olhado o preço. Para saber se o preço está fresco, use só o `preco_em`.
 - **Quem grava:** a coleta, a atualização de preços em lote (`atualizar_precos.py` e `ColetaML.atualizar`, etapas 4 e 5 do plano) e o "Atualizar preço" do cartão no site, sempre que trazem um preço legível. Reclassificação de aba, correção de público e troca de link não mexem nele.
-- **Itens de antes de 2026-11-04:** a migração do banco (v3) preencheu `preco_em` com o `criado_em`, um limite inferior seguro (o preço pode ser mais novo, nunca mais velho do que diz). Por isso, com `preco_max_horas=24`, um item coletado há mais de um dia só volta a passar depois de uma nova coleta ou atualização do preço.
-- **`preco_max_horas`:** a conta é feita no Etiqueta, com o relógio dele; o consumidor não precisa interpretar a data. A regra de idade é a mesma da trava do disparo do Etiqueta (`config.preco_validade_horas`, padrão 24 h, de 1 a 168): com `preco_max_horas=24`, passa a mesma idade de preço que o disparo aceita com a validade padrão. Um `preco_em` mais de 5 minutos à frente do relógio do Etiqueta conta como velho (relógio adiantado ou gravação errada não deixam um preço "fresco para sempre"). A API **não** lê a validade configurada no Etiqueta: o número vem do pedido.
+- **Itens de antes de 2026-11-04:** a migração do banco (v3) preencheu `preco_em` com o `criado_em`, um limite inferior seguro (o preço pode ser mais novo, nunca mais velho do que diz). Por isso, com a validade de 24 h, um item coletado há mais de um dia só volta a passar depois de uma nova coleta ou atualização do preço.
+- **Padrão sem `preco_max_horas` (desde 2026-11-08):** a lista só traz oferta com preço confirmado há no máximo `config.preco_validade_horas` horas (a mesma trava do disparo; padrão 24, de 1 a 168; chave ausente ou valor inválido vale 24). O prazo é lido da config a cada pedido. O consumidor que nunca manda o parâmetro (o Achadinho Turbo) já fica protegido de preço velho. Com banco de antes da migração v3 (sem `preco_em`), a lista vem vazia: na dúvida, o preço é velho.
+- **`preco_max_horas`:** a conta é feita no Etiqueta, com o relógio dele; o consumidor não precisa interpretar a data. A regra de idade é a mesma da trava do disparo. Com o parâmetro, vale o número pedido (1 a 168), **mesmo maior que a validade da config**, para quem quer ver ofertas mais antigas de propósito. Um `preco_em` mais de 5 minutos à frente do relógio do Etiqueta conta como velho (relógio adiantado ou gravação errada não deixam um preço "fresco para sempre").
 - **Com o cursor:** o filtro vale no instante de cada pedido. Uma oferta cujo preço envelhece entre duas páginas some do filtro sem aviso; quando o preço é atualizado, o `atualizado_em` também muda e ela volta a aparecer depois do cursor (deduplique pela `chave`). O `total` também é o do instante.
-- **Sem preço legível na atualização** (item que sumiu da loja, ficou indisponível ou caiu do piso): o item não é regravado, o preço antigo fica e o `preco_em` envelhece. É por isso que a API não apaga nada: quem filtra por `preco_max_horas` deixa de receber o item.
+- **Sem preço legível na atualização** (item que sumiu da loja, ficou indisponível ou caiu do piso): o item não é regravado, o preço antigo fica e o `preco_em` envelhece. É por isso que a API não apaga nada: o item só deixa de sair na lista quando passa da validade (a da config ou a de `preco_max_horas`).
 
 ## Paginação
 
@@ -180,7 +184,7 @@ Não entram na v1: a mensagem pronta (o consumidor monta com o template dele), n
 - Item atualizado depois (nova coleta, mudança de aba, correção do público pelo site) volta a aparecer depois do cursor. Deduplique pela `chave`.
 - **Público e `atualizado_em`:** o `genero` é calculado a cada leitura. **Mudança de regra do classificador (`genero.py`) não mexe em `atualizado_em`**: quem já passou do cursor não vê o gênero novo dos itens antigos. **Correção manual (pelo site) mexe**: o item volta a aparecer depois do cursor com o `genero` corrigido. Se você filtra por `genero` e a regra mudou, faça uma varredura do zero.
 - Para pegar **só as novidades**: guarde o último `proximo` **não nulo**; uma resposta vazia com `proximo: null` não apaga o cursor. Na próxima execução, chame com `cursor=<guardado>`; se vier vazia, não há novidade e o cursor guardado continua valendo.
-- **Varredura do zero:** um item que passa a ser válido **sem mudar o `atualizado_em`** (por exemplo, mudança na regra de link, mudança na regra do classificador de público ou `migrar_categorias.py --restaurar`) não aparece para quem já passou do cursor. Nesses casos, o consumidor faz uma varredura do zero (sem `cursor`) e deduplica pela `chave`.
+- **Varredura do zero:** um item que passa a ser válido **sem mudar o `atualizado_em`** (por exemplo, mudança na regra de link, mudança na regra do classificador de público, `migrar_categorias.py --restaurar` ou aumento da validade do preço no Etiqueta, que faz ofertas antigas voltarem a valer) não aparece para quem já passou do cursor. Nesses casos, o consumidor faz uma varredura do zero (sem `cursor`) e deduplica pela `chave`.
 
 **Demais ordens:** o resultado é o mesmo de `disparo.ordenar` (as ordens do disparo, com desempate pela ordem de coleta) e o cursor é um **deslocamento** (`"50"`, `"100"`...). `proximo` vem `null` quando não há mais ofertas depois da página.
 
@@ -197,7 +201,7 @@ Nas ordens por deslocamento, uma coleta entre duas páginas pode deslocar itens;
 
 ## `GET /api/v1/categorias`
 
-Não aceita parâmetros (qualquer um dá 400). Conta só as ofertas que passam nas condições acima, em ordem alfabética (sem diferenciar acentos). Cada categoria traz o `total`, a contagem por loja (`lojas`, as 3 chaves sempre) e a contagem por público (`generos`, as 4 chaves sempre, na ordem `feminino`, `masculino`, `unissex`, `sem`). As abas que não separam por público têm tudo em `sem`. A soma de `generos` é o `total` da categoria, e cada número bate com o `total` de `/api/v1/ofertas?cat=<nome>&genero=<valor>` **numa ordem diferente de `atualizacao`** (por exemplo, `ordem=relevancia`). Na ordem padrão `atualizacao`, o `total` desconta os itens alterados nos últimos 60 s (a folga do cursor), então logo depois de uma coleta ou de uma correção pelo site os dois números podem diferir por alguns itens.
+Não aceita parâmetros (qualquer um dá 400). Conta só as ofertas que passam nas condições acima, **menos a do preço velho** (as categorias contam também as ofertas cujo preço passou da validade; por isso a soma pode ser maior que o `total` de `/api/v1/ofertas`), em ordem alfabética (sem diferenciar acentos). Cada categoria traz o `total`, a contagem por loja (`lojas`, as 3 chaves sempre) e a contagem por público (`generos`, as 4 chaves sempre, na ordem `feminino`, `masculino`, `unissex`, `sem`). As abas que não separam por público têm tudo em `sem`. A soma de `generos` é o `total` da categoria. Cada número é um teto do `total` de `/api/v1/ofertas?cat=<nome>&genero=<valor>`: os dois só são iguais quando todos os preços da aba estão dentro da validade (as categorias contam também o preço velho) e **numa ordem diferente de `atualizacao`** (por exemplo, `ordem=relevancia`). Na ordem padrão `atualizacao`, o `total` desconta os itens alterados nos últimos 60 s (a folga do cursor), então logo depois de uma coleta ou de uma correção pelo site os dois números podem diferir por alguns itens.
 
 Exemplo (valores ilustrativos; mostra uma aba sem público e as três com público, em ordem alfabética):
 
@@ -220,15 +224,18 @@ Exemplo (valores ilustrativos; mostra uma aba sem público e as três com públi
 
 ## Erros
 
-Sempre `{"error": "<frase>"}`. A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32, e com `preco_max_horas` para 33, e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
+Sempre `{"error": "<frase>"}` (a exceção é o 429 do freio, na tabela). A frase nunca traz o valor que o cliente mandou. **Decida pelo código HTTP, não pelo texto:** a frase é para gente ler e pode mudar quando a API ganha parâmetros (por exemplo, com `genero` o limite de pares passou de 28 para 32, e com `preco_max_horas` para 33, e alguns pedidos com 29 a 32 pares trocaram "parâmetros demais" pela mensagem do parâmetro específico).
 
 | Código | Quando | Exemplo de frase |
 |---|---|---|
+| 400 | Corpo na rota de confirmação de preço | `esta rota não aceita corpo` |
 | 400 | Parâmetro inválido | `parâmetro desconhecido (use cat, loja, q, desconto_min, ordem, limite, cursor, genero, preco_max_horas)`; `o parâmetro limite só pode aparecer uma vez`; `loja deve ser amazon, ml, shopee, sem repetir`; `genero deve ser feminino, masculino, unissex, sem, sem repetir`; `categorias repetidas`; `cada termo de q (separados por vírgula) precisa ter texto`; `desconto_min deve ser um número inteiro de 0 a 99`; `limite deve ser um número inteiro de 1 a 200`; `preco_max_horas deve ser um número inteiro de 1 a 168`; `a ordem aleatoria não existe na API: ela não pagina (use outra ordem)`; `cursor inválido: use o valor de "proximo" da página anterior, com a mesma ordem`; `parâmetros demais`; `a rota categorias não aceita parâmetros` |
 | 401 | Token ausente ou errado (`WWW-Authenticate: Bearer`) | `token ausente ou inválido: envie Authorization: Bearer <token>` |
 | 403 | `Host` não local; pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | `host não permitido`; `a API v1 não aceita pedidos de navegador` |
-| 404 | Rota v1 desconhecida (só depois da autenticação) | `rota não encontrada` |
-| 405 | Método diferente de GET, depois da autenticação (`Allow: GET`) | `método não permitido: a API só aceita GET` |
+| 404 | Rota v1 desconhecida (só depois da autenticação); ASIN fora do formato na rota de confirmação | `rota não encontrada` |
+| 404 | Confirmação de preço de um ASIN que não é oferta da Amazon no banco | `oferta da Amazon não encontrada` |
+| 405 | Método diferente de GET, depois da autenticação (`Allow: GET`); na rota de confirmação, diferente de POST (`Allow: POST`) | `método não permitido: a API só aceita GET`; `método não permitido: esta rota só aceita POST` |
+| 429 | Freio da confirmação de preço (`Retry-After`) | não é `{"error"}`: `{"versao": 1, "resultado": "freio", "motivo": ..., "tentar_em_s": N}` |
 | 500 | Falha inesperada | `erro interno na API v1` (o log do servidor traz só o tipo do erro, nunca a mensagem, que pode trazer dados) |
 | 503 | API desligada (sem `api_token.txt` válido) | `a API v1 está desligada: veja o motivo no log do servidor` |
 
@@ -274,21 +281,100 @@ const { ofertas, proximo, total } = await r.json();
 
 ## Limites
 
-- **Sem limite de taxa.** Um consumidor local, com token. Se um dia a API sair do computador do dono (VPS), isso e o HTTPS passam a ser requisito.
+- **Sem limite de taxa nas rotas `GET`.** Um consumidor local, com token. Se um dia a API sair do computador do dono (VPS), isso e o HTTPS passam a ser requisito. A rota de confirmação de preço é a exceção: tem freio próprio, porque cada pedido abre a página da Amazon.
 - **O token não protege mais que hoje contra outro processo no mesmo computador:** `GET /api/items` (a API da interface) continua aberto a quem não manda `Origin`. O que a v1 ganha é barrar o navegador e ter o contrato pronto para o dia em que o consumidor estiver em outra máquina.
 - **Item apagado some sem aviso:** a API só lista o que existe agora. O consumidor relê a lista a cada execução.
 - **Reclassificar abas** (`migrar_categorias.py`, `classificar_lista.py`) regrava `atualizado_em` de muitos itens; eles reaparecem na ordem `atualizacao`. É esperado: a `chave` evita repetir o envio. Foi o que a migração para as 17 abas fez em 2026-11-04 (veja "Abas").
 - Não existe `GET /api/v1/ofertas/<id>` (rota desconhecida dá 404).
 
+## `POST /api/v1/amazon/<ASIN>/confirmar-preco`
+
+Relê agora a página de **uma** oferta da Amazon que já está no banco e, com preço legível, grava o preço. O Achadinho Turbo chama logo antes de enviar a oferta. É a mesma leitura do botão "Atualizar preço" do site (`buscar_produto_amazon`) e a mesma classificação do `atualizar_precos.py`. **É a única rota da v1 que grava.** Código: `confirmar_preco_amazon`, `FreioReleitura` e `Handler.despachar_confirmar_preco` em `servidor.py`.
+
+- **`<ASIN>`:** exatamente 10 caracteres de `A-Z` e `0-9`, conferidos no caminho cru (sem decodificar). Minúsculas, `%xx` ou outro tamanho dão 404 `rota não encontrada`. Outro formato de caminho (`/api/v1/amazon/<ASIN>`, barra a mais) é outra rota da v1: `POST` nela dá 405 com `Allow: GET`.
+- **O que é lido:** `https://www.amazon.com.br/dp/<ASIN>`, **sem tag** (a releitura não pode parecer clique de afiliado). A URL é montada pelo Etiqueta a partir do ASIN; nada vem do cliente. Os redirects passam pela mesma conferência do `/api/fetch` (só hosts da Amazon). **Limites da leitura:** prazo total de 8 s para a leitura inteira, redirects incluídos (conferido a cada redirect e antes de cada bloco de 64 KB da página); cada operação de rede (conexão, cabeçalho, cada bloco) espera no máximo 4 s (depois de um redirect, no máximo o que resta do prazo); página que passa de 4 MB é abandonada. Estourado o prazo ou o teto, a conexão é fechada e a resposta é `falha_rede`, sem gravar nada. Normalmente a resposta sai em até uns 12 s (o prazo mais uma operação que começou antes de ele vencer), dentro dos 15 s em que o Turbo desiste. Três esperas ficam de fora do prazo total e são limitadas só pelos 4 s de cada operação: o cabeçalho de cada resposta, o descarte do corpo de um redirect e a linha de tamanho de uma resposta em pedaços (chunked); uma Amazon que mandasse essas partes byte a byte poderia passar dos 12 s. O `/api/fetch` segue como antes: 30 s por operação, sem prazo total nem teto.
+- **Sem corpo:** `POST` sem corpo (`Content-Length` ausente ou `0`). Qualquer corpo, ou `Transfer-Encoding`, dá 400 `esta rota não aceita corpo`. Não há parâmetro.
+
+**Guardas, na ordem** (as 5 primeiras são as de toda a v1):
+
+| # | Condição | Resposta |
+|---|---|---|
+| 1 | `Host` não local | 403 `host não permitido` |
+| 2 | Pedido de navegador (`Origin` ou `Sec-Fetch-Site`) | 403 `a API v1 não aceita pedidos de navegador` |
+| 3 | API desligada (sem token) | 503 |
+| 4 | Token ausente ou errado | 401, com `WWW-Authenticate: Bearer` |
+| 5 | Método diferente de POST (inclui GET, HEAD e OPTIONS) | 405 `método não permitido: esta rota só aceita POST`, com `Allow: POST` |
+| 6 | ASIN fora do formato | 404 `rota não encontrada` |
+| 7 | Corpo não vazio | 400 `esta rota não aceita corpo` |
+| 8 | Não há item com `loja='amazon'` e `item_id=<ASIN>` (inclui item do ML ou da Shopee com o mesmo código) | 404 `oferta da Amazon não encontrada` |
+| 9 | Freio | 429 (veja abaixo) |
+| 10 | Leitura da página | 200 com o resultado |
+
+Nenhuma recusa das linhas 1 a 8 abre a Amazon nem gasta o freio.
+
+**Respostas 200** (sempre com `"versao": 1`; decida pelo `resultado`):
+
+| `resultado` | Quando | Grava? |
+|---|---|---|
+| `confirmado` | Página com título, ASIN igual ao pedido e preço legível (`ler_preco`). | Sim, antes de responder. |
+| `sem_preco` | Título presente e ASIN igual, mas preço ilegível ou ausente (indisponível); ou HTTP 404/410 da Amazon. | Não. |
+| `outro_produto` | A página final é de outro ASIN; ou redirect para fora da Amazon. | Não. |
+| `bloqueado` | Captcha; HTTP 429 ou 503 da Amazon; página sem título ou sem ASIN (página que não dá para reconhecer nunca vira descarte). Abre a pausa de 15 min do freio. | Não. |
+| `falha_rede` | Erro de rede, tempo esgotado (4 s numa operação ou 8 s na leitura inteira), página acima de 4 MB, conexão cortada ou outro código HTTP. | Não. |
+
+```json
+{"versao": 1, "resultado": "confirmado", "preco": 89.9, "preco_antigo": 119.9, "desconto_pct": 25,
+ "preco_em": "2026-11-11T10:30:00"}
+{"versao": 1, "resultado": "sem_preco"}
+```
+
+- No `confirmado`, `preco` é o número gravado; `preco_antigo` vem `null` quando a página não traz o preço cheio ou quando ele não é maior que `preco`; `desconto_pct` é o desconto da página ou, sem ele, o calculado pelo preço antigo, e vem `null` sem desconto (diferente das ofertas, onde é `0`); `preco_em` é o carimbo novo, no formato de "Resposta e formato".
+- A resposta nunca traz HTML da página nem a mensagem de um erro.
+
+**O que é gravado no `confirmado`:** a leitura de rede acontece fora de transação. Depois, numa transação `BEGIN IMMEDIATE`, o servidor relê a linha, aplica a regra do preço antigo implausível (`sanear_precos`: antigo de 5× o preço ou mais é descartado junto com o desconto) e grava **só** `preco`, `preco_antigo` e `desconto` da página, mais `preco_em` e `atualizado_em` com a hora de agora. Nunca insere item, nunca mexe em `url` (o link de afiliado), título, cupom, foto ou nota. Se o item foi apagado durante a leitura, a resposta é 404 `oferta da Amazon não encontrada` e nada é gravado. Qualquer outro resultado não grava nada: o preço anterior e o `preco_em` ficam como estavam. Como o `atualizado_em` muda, a oferta reaparece depois do cursor na ordem `atualizacao` (deduplique pela `chave`).
+
+**Freio** (em memória; zera quando o servidor reinicia):
+
+- 429 com `Retry-After: N` e `{"versao": 1, "resultado": "freio", "motivo": "<motivo>", "tentar_em_s": N}`, `N` inteiro de 1 ou mais.
+- Motivos, na ordem em que são conferidos:
+  - `ocupado`: uma leitura por vez; outra está em curso. O freio é liberado antes de a resposta sair: quem recebe uma resposta e pede de novo já não vê `ocupado` por causa dela.
+  - `pausa`: houve um `bloqueado` há menos de 15 min (contados do fim daquela leitura).
+  - `intervalo`: menos de 3 s desde o início da leitura anterior.
+  - `teto`: 60 leituras na última hora (janela deslizante).
+  - `rodada`: uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) segura a trava `travar_rodada('amazon')`. A rota só confere a trava (pega e solta na hora, em microssegundos) e nunca a segura durante a leitura: a rodada tem prioridade e pode começar no meio. Na rara coincidência de a rodada tentar a trava nesse instante, ela sai com 4 ("outra rodada de amazon está em andamento") e basta repeti-la.
+- Recusa não conta como leitura. Pedido recusado antes do freio (401, 404, 400...) também não.
+
+Exemplo (o dono, no terminal; o arquivo de cabeçalho de "Como usar em 1 minuto"):
+
+```
+curl -s -X POST -H @api_cabecalho.txt "http://localhost:8765/api/v1/amazon/<ASIN>/confirmar-preco"
+```
+
+Node 22: `fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, redirect: 'error' })`, sem corpo; leia o corpo inteiro e trate 429 pelo `tentar_em_s`.
+
+## Para quem mexe no código
+
+Movido do `CLAUDE.md` em 17/11/2026 (plano `docs/produto/planos/endurecer-entrega2.md`, etapa 5). **Regra de negócio** (`api_ofertas.py` e a parte da v1 no `servidor.py`).
+
+- `api_ofertas.py`: API v1 de leitura para o Achadinho Turbo (app Node do dono em `~/Documentos/saas/achadinho_turbo`, porta 3737; outro projeto, não editar daqui).
+- `GET /api/v1/ofertas` (filtros `cat`, `loja`, `q`, `desconto_min`, `genero`, `limite`, `ordem`; cada oferta traz `genero` e `preco_em` (texto ou `null`); `imagem` vem na versão grande (`disparo.foto_grande`); sem `preco_max_horas` vale `config.preco_validade_horas` (`disparo.validade_horas`, lida a cada pedido, padrão 24; preço vencido, nulo, malformado ou no futuro não sai; banco sem a coluna dá lista vazia), com ele vale o pedido (1 a 168), mesmo maior que a validade; `/categorias` conta tudo; testes em `testes/test_api_ofertas_validade_qa.py`; `/categorias` traz `generos`; cursor `(atualizado_em, id)` com folga de 60 s) e `GET /api/v1/categorias`.
+- Só sai oferta com link de afiliado da própria loja (`disparo.link_da_loja_ok`), sem candidata a link no título/cupom e com foto só do CDN da loja.
+- No `servidor.py`: token Bearer lido uma vez na subida de `api_token.txt` (ou `ACHADINHOS_API_TOKEN_ARQUIVO`; sem arquivo válido, 503), guardas Host 403 → `Origin`/`Sec-Fetch-Site` 403 → 503 → 401 → 405, conexão `query_only`, log sem query nem token.
+- `POST /api/v1/amazon/<ASIN>/confirmar-preco`, toda no `servidor.py` (o `api_ofertas.py` continua só de leitura): `confirmar_preco_amazon(con, asin, buscar, agora)` relê `https://www.amazon.com.br/dp/<ASIN>` sem tag (`buscar_releitura_amazon`: prazo total de 8 s com os redirects, 4 s por operação de rede e teto de 4 MB por página; estouro é `falha_rede`; o `/api/fetch` segue 30 s por operação, sem prazo total nem teto), classifica `confirmado`/`sem_preco`/`outro_produto`/`bloqueado`/`falha_rede` (página sem título ou sem ASIN é `bloqueado`, nunca descarte) e, só no `confirmado`, grava em `BEGIN IMMEDIATE` depois da rede, relendo a linha, só `preco`, `preco_antigo`, `desconto` (com `sanear_precos`), `preco_em` e `atualizado_em`; nunca insere nem mexe em `url`.
+- Guardas da rota: as da v1 (405 com `Allow: POST`; o POST nas outras rotas segue 405 `Allow: GET`) → ASIN fora de `[A-Z0-9]{10}` 404 → corpo não vazio 400 → item `loja='amazon'` inexistente 404 → `FreioReleitura` 429 com `Retry-After` (`ocupado`, `pausa` de 15 min depois de `bloqueado`, `intervalo` de 3 s, `teto` de 60/h deslizante, `rodada` quando `travar_rodada('amazon')` está ocupada: pega e solta na hora, nunca segura durante a leitura; em memória, zera ao reiniciar) → leitura.
+- Log com `amazon/(asin)/confirmar-preco` no lugar do ASIN.
+- Testes `test_confirmar_preco` e `test_confirmar_preco_servidor`.
+- Histórico: a validade do preço sem `preco_max_horas` foi decisão do dono em 08/11/2026; a rota de confirmação existe desde 11/11/2026 (plano `docs/produto/planos/rodar-sozinho-entrega1.md` do Turbo, etapas A1 a A3).
+
 ## Guia de encaixe no Achadinho Turbo
 
-Sugestão, sem código, para a sessão que cuida do Turbo. **Este repositório não edita o Turbo.** As linhas citadas são de `/home/ufla/Documentos/achadinhoturbo` em 2026-11-03 e podem mudar (outra sessão edita esses arquivos).
+Sugestão, sem código, para a sessão que cuida do Turbo. **Este repositório não edita o Turbo.** As linhas citadas são de `~/Documentos/saas/achadinho_turbo` em 2026-11-03 e podem mudar (outra sessão edita esses arquivos).
 
 **Nome:** no Turbo, "etiqueta" quer dizer a etiqueta de afiliado do Mercado Livre. Chame a fonte nova de **`catalogo`** ("Catálogo do Etiqueta"), para não colidir.
 
 **Fonte e conexão**
 - Novo tipo de fonte `catalogo` em `candidatesFor` (`src/ml.js`, hoje `:298`) e na validação de tipos da regra (`src/server.js`, `tipo()`), ao lado de `afiliados`, `search` e `list`. A fonte chama `GET /api/v1/ofertas` com os filtros da regra (`cat`, `loja`, `q`, `desconto_min`, `ordem`, `limite`) e o `preco_max_horas` (veja o item seguinte).
-- **Preço velho:** mande `preco_max_horas` em toda chamada da fonte que vai virar envio (sugestão: `24`, a validade padrão do disparo do Etiqueta; o valor pode ser um campo da regra, de 1 a 168). Sem ele, a v1 entrega também ofertas com preço de dias atrás ou sem data (`preco_em` `null`), e o Turbo mandaria esse preço ao grupo. Não há campo equivalente no `renderTemplate`: o `preco_em` serve só para filtrar ou para mostrar na tela do Turbo, se quiser. Se a fonte "secar" com o filtro, é sinal de que os preços do Etiqueta precisam ser atualizados (no Etiqueta, não no Turbo).
+- **Preço velho:** desde 2026-11-08, sem `preco_max_horas` a v1 só entrega oferta com preço dentro da validade configurada no Etiqueta (`config.preco_validade_horas`, padrão 24 h), então o Turbo já fica protegido sem mandar nada. Mande `preco_max_horas` só se quiser um prazo próprio por regra (de 1 a 168, mesmo maior que o da config). Não há campo equivalente no `renderTemplate`: o `preco_em` serve só para filtrar ou para mostrar na tela do Turbo, se quiser. Na hora do envio, reconfira o `preco_em` com a mesma regra ou busque a oferta de novo; não publique de cache. Se a fonte "secar" com o filtro, é sinal de que os preços do Etiqueta precisam ser atualizados (no Etiqueta, não no Turbo).
 - Conexão nova com o endereço `http://127.0.0.1:8765` e o token como **segredo** (campo `segredo` em `PLATAFORMAS`, `src/lojas.js`, e `conexoes.segredos`, que o Turbo nunca devolve ao navegador). Trocar o token: troque o arquivo, reinicie o Etiqueta e atualize em Conexões.
 - Só `fetch` em `127.0.0.1` com `Authorization`: sem `Origin`, passa na guarda.
 

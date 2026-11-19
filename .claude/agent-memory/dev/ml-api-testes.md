@@ -41,4 +41,33 @@ Rodada 2 da etapa 1 do catálogo (R1, R2, S1/R4, Q2, R3, R5, R6, R8, S3; 2026-11
 - R7 (fallback MLB1055 no F14) NÃO feito: o qa tem `test_categoria_e_produto_hostis...` exigindo "pulado (sem category_id)". R2 opcional (`/items` do 1º pai) também não: quebra `RESERVA_FINAIS == 33` e `gets[-3:]` do qa.
 - Script de mutantes da rodada: scratchpad `mutar_r2.py` + cópia `cat1r2/` (20 mutantes; roda as duas suítes do catálogo).
 
+Etapa 2 do catálogo (vínculo, ml_catalogo.json, ofertas; 2026-11-05):
+- `_ler_privado(caminho, teto, recusar)` é a leitura estrita comum (tokens e vínculos) e `gravar_atomico` a escrita; o `test_gravacao_atomica...` do test_ml_api pega o 1º `os.open` que não é a pasta como o tmp: não abra nada antes dele.
+- O teste do catálogo troca `M.CATALOGO` no import (o ml_api já veio importado pelo test_ml_api); o `Catalogo.direto` grava tokens, então espião "a sonda não grava" vai em `gravar_vinculos`, não em `gravar_atomico`.
+- `_provar` devolve trinca `(via, oferta, pid)`; `_Medidas.negado`/`falha` separam 403 e erro passageiro (404 é resposta). `MLFalso.responder` trata `/products/search` antes de `outros`: para estragar a busca, troque `ml.op.responder` por um wrapper.
+- Mutante equivalente: tirar o `RE_MLB.fullmatch(i)` do `_linhas_na_lista` (os ids já vêm validados). Script: scratchpad `e2mutar.py` (23 mutantes, 22 mortos).
+
+Rodada 2 da etapa 2 (R1/S1, Q1, R2-R5; 2026-11-05):
+- `RenovacaoFalhou` virou subclasse de `ErroApi` e sai do `Sessao.renovar` (o `test_ml_api_qa` exige `ErroApi` na renovação 500 e não é arquivo do dev). Quem captura `ErroApi` precisa de `except RenovacaoFalhou: raise` antes (o `_medir` tem); o `_sonda` do F0-F6 de propósito não tem (saída visível igual). O `_OpenerContado.ultimo` saiu (código morto).
+- `vincular`/`_vincular`: inconclusivo sem prova sobe o erro (`raise erro` na busca, `raise m.falha` no fim); os testes do qa que esperavam `(None, None)` nesses casos passaram a `assertRaises`. `_linhas_na_lista`: página sem `paging.total` inteiro é `m.falha` (Q1); página vazia continua fim.
+- Prova "antes falha" sem mexer no projeto: cópia em scratchpad `r2e2/copia/` com o trecho revertido por script.
+
+Etapa 3 do catálogo (fonte `ml` do atualizar_precos.py, testes/test_atualizar_precos_ml.py; 2026-11-05):
+- `test_ml_api_qa.py` `test_nenhum_modulo_do_servidor_ou_do_site_cita_o_ml_api`: o lead liberou `ml_api`/`ACHADINHOS_ML_SECRET` no `atualizar_precos.py`; `ml_tokens`/`ACHADINHOS_ML_TOKENS` continuam proibidos no fonte.
+- `test_atualizar_precos.py` fixa `FONTES` exato e usava `['ml']` como argumento inválido. Essa suíte NÃO aponta `ACHADINHOS_ML_TOKENS` para tmp: nunca rode o subcomando `ml` nela (troquei por `['ml', '--vincular', '1001']`).
+- A suíte nova importa `test_ml_api` e `test_ml_api_catalogo` (MLFalso) e fixa `ACHADINHOS_FEITOS_ATUALIZAR` antes de importar o `atualizar_precos`; por teste, patch de `S.DB`, `A.FEITOS`, `A.BUSCAS`, `M.CATALOGO`, `M.TOKENS` e embrulho do `M.sessao_do_ambiente` (relógio, dormir e aleatório falsos na Sessao real, que faz o pop do Secret).
+- `T.Base.sessao()` passa o opener: o `com_teto` devolve o OpenerFalso, não `None` (só a Sessao do `sessao_do_ambiente` volta a `None`).
+- Token vencendo no meio: o responder avança `self.agora[0]` quando `len(op.gets()) >= k` (o OpenerFalso anota antes de responder): k GETs e 1 POST.
+- Mutantes: scratchpad `e3mutar.py` + cópia `e3mut/` (20 mutantes, todos mortos). Prova do 6a (`_sonda`) pela mesma cópia com o trecho revertido.
+
+Rodada 2 da etapa 3 (reler antes de gravar, metade do teto; 2026-11-05):
+- Com a parada na metade do teto, itens de busca vazia nunca chegam ao teto (saída 0). Para bater o teto no vínculo, um item que começa abaixo da metade tem de gastar o resto em candidatos: `buscas[...] = [pid1, pid2]`, 2 GETs por candidato. `--max-chamadas 1` dá metade 0: nada vincula.
+- Escrita "no meio da rodada": `self.ml.op.responder = T.api_padrao(gets=...)` e um `UPDATE` por conexão própria ao pedir `/products/<pid>/items`. Prova da trava: no espião do upsert, outra conexão com `timeout=0` tem de levar `OperationalError`.
+- `sanear_precos` zera `preco_antigo` quando ele é ≥ 5× o preço: nas fixtures, `original` abaixo disso, senão `preco_antigo` e `desconto` vêm vazios.
+- Fonte falsa no `atualizar`: `mock.patch.dict(A.FONTES, ...)` com gerador (`raise e; yield`). O `test_atualizar_precos` precisa de `testes/fixtures/` na cópia de mutantes (FileNotFoundError no import, 0 FAIL no stderr). Script: scratchpad `mutar_r2e3.py` (32 mutantes, todos mortos).
+
+Etapa 4 do catálogo (README, R6/R7; 2026-11-05):
+- O `test_ml_api_qa.TestReadme` lê o README INTEIRO: toda linha com `ACHADINHOS_ML_SECRET=` precisa de `"$S"` e `unset S`, e `ml_api.py <palavra> ... secret|SECRET` (minúsculo/maiúsculo, sem crase no meio) na mesma linha reprova. Na prosa cite só `ACHADINHOS_ML_SECRET` sem `=`. A seção "## API oficial do Mercado Livre" vai até o próximo `## ` (um `###` novo dentro dela entra na checagem da tabela `| 0 |`; tabela de saídas do `atualizar_precos.py ml` fica em "Atualizar os preços").
+- Conta do tempo: sonda real = 241 chamadas/239 s (~1 s cada), 4,8 chamadas por item (o lead falou 4,4); `ofertas_do_produto` custa 1 a 4 chamadas (produto + até 3 páginas), lote de 20 produtos = 40 a 80 (a razão do "mínimo 40").
+
 **How to apply:** nas etapas 4 e 5 (fonte `ml` do `atualizar_precos.py`, `coletar_ml.py`), que usam `Sessao`/exceções do `ml_api`. Relacionado: [[coletar-shopee-testes]], [[servidor-testes]].

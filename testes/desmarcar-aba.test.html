@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Testes: desmarcar a categoria</title>
+<!--
+  Desmarcar a categoria: clicar de novo na categoria marcada a desmarca e, sem categoria, a lista mostra os produtos de todas as categorias
+  (CA1 a CA7 do pedido do dono). Roda sobre uma cópia do banco, em servidor próprio:
+
+    ACHADINHOS_DB=<copia> ACHADINHOS_PORTA=8766 ACHADINHOS_DISPARO=0 ACHADINHOS_API_TOKEN_ARQUIVO=/nao/existe python3 servidor.py
+    PORTA=8766 node testes/rodar.mjs desmarcar-aba
+
+  Só GET sai para a API (a guarda do iframe bloqueia o resto e registra em VIOL). Itens falsos (ids 9xxxxxxxx) só existem na memória do iframe.
+  As palavras de resultado ficam montadas por concatenação, fora deste comentário.
+-->
+<style>
+  body{font:13px/1.45 ui-monospace,monospace;padding:12px;color:#111}
+  pre{white-space:pre-wrap;margin:0}
+  iframe{position:absolute;left:-9999px;top:0;width:1100px;height:900px;border:0}
+</style>
+</head>
+<body>
+<h1 style="font:600 16px sans-serif">Testes: desmarcar a categoria</h1>
+<pre id="saida"></pre>
+<iframe id="app" title="app sob teste"></iframe>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------- mini-harness
+const PREF_R = 'RESULT' + 'ADO: ';
+const PREF_F = 'FALH' + 'OU: ';
+const SAIDA = document.getElementById('saida');
+const linhas = [PREF_R + 'PENDENTE'];
+const log = l => { linhas.push(l); SAIDA.textContent = linhas.join('\n'); };
+SAIDA.textContent = linhas[0];
+
+class Falha extends Error {}
+const afirma = (cond, msg) => { if (!cond) throw new Falha(msg || 'asserção falhou'); };
+const igual = (obtido, esperado, msg) => {
+  const a = JSON.stringify(obtido), b = JSON.stringify(esperado);
+  if (a !== b) throw new Falha((msg ? msg + ': ' : '') + 'esperado ' + b + ', obtido ' + a);
+};
+const testes = [];
+const teste = (nome, fn) => testes.push({ nome, fn });
+const dormir = ms => new Promise(r => setTimeout(r, ms));
+async function esperar(cond, desc = 'condição', tentativas = 1500, passo = 10) {
+  for (let i = 0; i < tentativas; i++) {
+    let ok = false;
+    try { ok = cond(); } catch (e) { ok = false; }
+    if (ok) return;
+    await dormir(passo);
+  }
+  throw new Falha('tempo esgotado esperando: ' + desc);
+}
+
+let testeAtual = '(início)';
+const erros = [];
+function ouvirErros(janela, origem) {
+  janela.addEventListener('unhandledrejection', e => {
+    erros.push('rejeição não tratada (' + origem + ') durante "' + testeAtual + '": ' + (e.reason && e.reason.message || e.reason));
+  });
+  janela.addEventListener('error', e => { erros.push('erro não capturado (' + origem + ') durante "' + testeAtual + '": ' + e.message); });
+}
+ouvirErros(window, 'página de teste');
+
+// ---------------------------------------------------------------- ambiente
+const ORDEM = ['Celulares e Informática', 'Áudio e Acessórios', 'TV, Alexa e Casa Conectada', 'Games', 'Eletroportáteis',
+  'Eletrodomésticos e Climatização', 'Cozinha', 'Cama, Mesa e Banho', 'Casa, Móveis e Ferramentas', 'Beleza e Cuidados',
+  'Perfumes e Perfumaria', 'Mercado e Limpeza', 'Pets', 'Bebês e Brinquedos', 'Suplementos e Fitness', 'Moda e Viagem', 'Natal e Papelaria'];
+const PRIMEIRA = ORDEM[0], CAMA = ORDEM[7], GAMES = ORDEM[3], PETS = ORDEM[12], PERF = ORDEM[10];
+const PAGINA = 24;   // PAGE em render()
+const TODAS = 'Todas as categorias';
+
+let W, FETCH_ORIG, API = null, API_ANTES = null;
+const VIOL = [];      // tentativas de escrita na API real (devem ficar vazias)
+const COPIADOS = [];  // o que "Copiar todas da página" mandou para a área de transferência
+
+const q = s => W.document.querySelector(s);
+const qa = s => [...W.document.querySelectorAll(s)];
+const txt = el => el.textContent.replace(/\s+/g, ' ').trim();
+const ev = c => W.eval(c);
+const abas = () => qa('#tabs .tab');
+const abaPorNome = nome => abas().find(b => b.dataset.c === nome);
+const abaAtiva = () => abas().filter(b => b.classList.contains('active'));
+const catAtiva = () => ev('activeCat');
+const cartoes = () => qa('#grid .card');
+const totalFiltrado = () => ev('filtrada().length');
+const pager = () => txt(q('.pager .muted'));   // o texto "Página X de Y · N itens"; os botões ficam de fora
+const paginaN = (p, n) => 'Página ' + p + ' de ' + Math.ceil(n / PAGINA) + ' · ' + n + ' itens';
+const selCat = () => q('#selCat');
+const visivel = el => !!el && W.getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+const daCat = c => API.filter(i => i.cat === c);
+const tituloDe = i => (i.data && i.data.titulo || '');
+const precoDe = i => parseFloat(String(i.data && i.data.preco || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+function clicar(el) { el.click(); }
+function escolher(select, valor) {
+  select.value = valor;
+  select.dispatchEvent(new W.Event('change', { bubbles: true }));
+}
+async function largura(px) { document.getElementById('app').style.width = px + 'px'; await dormir(150); }
+
+// cat: undefined = nada guardado; string = valor guardado em localStorage `activeCat`
+async function abrirApp(cat) {
+  document.getElementById('app').style.width = '1100px';
+  localStorage.removeItem('activeCat');
+  if (cat !== undefined) localStorage.setItem('activeCat', cat);
+  const antes = erros.length;
+  const f = document.getElementById('app');
+  await new Promise((res, rej) => { f.onload = res; f.onerror = rej; f.src = '/index.html?t=' + Date.now(); });
+  W = f.contentWindow;
+  ouvirErros(W, 'app');
+  FETCH_ORIG = W.fetch.bind(W);
+  COPIADOS.length = 0;
+  W.fetch = function (entrada, opcoes) {
+    const url = typeof entrada === 'string' ? entrada : ((entrada && entrada.url) || String(entrada));
+    const metodo = String((opcoes && opcoes.method) || (entrada && entrada.method) || 'GET').toUpperCase();
+    if (metodo !== 'GET' && /\/api\//.test(url)) { VIOL.push(metodo + ' ' + url); return Promise.reject(new W.TypeError('bloqueado pelo teste: escrita na API real')); }
+    return FETCH_ORIG(entrada, opcoes);
+  };
+  W.open = (...a) => { VIOL.push('window.open ' + a[0]); return null; };
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+  Object.defineProperty(W.navigator, 'clipboard', { configurable: true, value: { writeText: async t => { COPIADOS.push(t); }, write: async () => {} } });
+  await esperar(() => ev('ofertasProntas === true') && ev('items.length') > 0, 'o index.html carregar os itens (servidor da cópia no ar? PORTA=...)');
+  await dormir(30);
+  if (erros.length > antes) throw new Falha('erro ao abrir o app: ' + erros.slice(antes).join(' | '));
+}
+
+// Item falso só na memória do iframe
+let SEQ = 900000000;
+const iso = d => { const p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); };
+const haHoras = h => iso(new Date(Date.now() - h * 36e5 - 1500));
+const falso = (cat, extra = {}, data = {}) => {
+  const n = ++SEQ;
+  return { id: n, loja: 'amazon', item_id: 'FALSO' + n, cat, busca: 'termo falso', url: 'https://www.amazon.com.br/dp/B0FALSO' + n + '?tag=desejodemen01-20',
+    preco_em: haHoras(1), data: { titulo: 'Produto falso ' + n, preco: 'R$ 10,00', ...data }, genero: 'sem', genero_origem: '', genero_auto: 'sem', ...extra };
+};
+function usarItens(lista, cat = '') {
+  ev('precoValidade = 24; validadeAviso = false; activeCat = ' + JSON.stringify(cat) + '; items = ' + JSON.stringify(lista) + '; page = 1;'
+    + " for (const s of ['#fLoja','#fBusca','#fPreco','#fOrdem','#fTexto']) $(s).value = ''; render();");
+}
+
+// Estado esperado de "nenhuma categoria marcada"
+function confereSemCategoria(desc) {
+  igual(catAtiva(), '', desc + ': activeCat');
+  igual(abaAtiva().length, 0, desc + ': nenhuma pílula ativa');
+  igual(abas().filter(b => b.getAttribute('aria-pressed') !== 'false').length, 0, desc + ': todas com aria-pressed=false');
+  igual(selCat().value, '', desc + ': o seletor fica em "' + TODAS + '"');
+  afirma(!q('#telaOfertas').classList.contains('aba-vazia'), desc + ': a tela não é a de aba vazia');
+  afirma(!q('#telaOfertas').classList.contains('sem-dados'), desc + ': a tela não é a de sem dados');
+  for (const s of ['.filters', '.barra-lista', '.pager', '#grid']) afirma(visivel(q(s)), desc + ': ' + s + ' à vista');
+}
+
+// ================================================================ CA1
+teste('CA1: clicar na categoria marcada desmarca (aria-pressed, estado visual, localStorage) e a lista traz todos os produtos', async () => {
+  await abrirApp(CAMA);
+  igual(catAtiva(), CAMA);
+  igual(abaAtiva().map(b => b.dataset.c), [CAMA]);
+  igual(abaPorNome(CAMA).getAttribute('aria-pressed'), 'true');
+  igual(totalFiltrado(), daCat(CAMA).length);
+  clicar(abaPorNome(CAMA));
+  confereSemCategoria('depois do clique');
+  igual(localStorage.getItem('activeCat'), '', 'a escolha (nenhuma) fica lembrada');
+  igual(totalFiltrado(), API.length, 'todos os produtos de todas as categorias');
+  igual(cartoes().length, PAGINA, 'a primeira página se enche');
+  igual(pager(), paginaN(1, API.length));
+});
+
+teste('CA1: clicar de novo numa categoria marca outra sem desmarcar; marcada outra vez, depois desmarcar e marcar a mesma volta a filtrar', async () => {
+  await abrirApp(CAMA);
+  clicar(abaPorNome(GAMES));
+  igual(catAtiva(), GAMES, 'outra categoria troca, não desmarca');
+  igual(abaAtiva().map(b => b.dataset.c), [GAMES]);
+  igual(totalFiltrado(), daCat(GAMES).length);
+  clicar(abaPorNome(GAMES));
+  confereSemCategoria('Games desmarcada');
+  clicar(abaPorNome(GAMES));
+  igual(catAtiva(), GAMES, 'sem categoria, o clique marca');
+  igual(abaPorNome(GAMES).getAttribute('aria-pressed'), 'true');
+  igual(totalFiltrado(), daCat(GAMES).length);
+});
+
+teste('CA1: a pílula marcada avisa que um novo clique desmarca (title); as outras não', async () => {
+  await abrirApp(CAMA);
+  afirma(/desmarc|todas as categorias/i.test(abaPorNome(CAMA).title), 'title da pílula marcada: "' + abaPorNome(CAMA).title + '"');
+  igual(abaPorNome(GAMES).title, '', 'pílula desmarcada sem title');
+  clicar(abaPorNome(CAMA));
+  igual(abaPorNome(CAMA).title, '', 'sem categoria nenhuma pílula leva o aviso');
+});
+
+teste('CA1/CA6: o foco fica na pílula clicada (desmarcar e marcar)', async () => {
+  await abrirApp(CAMA);
+  const b = abaPorNome(CAMA);
+  b.focus(); clicar(b);
+  confereSemCategoria('desmarcada');
+  igual(W.document.activeElement && W.document.activeElement.dataset.c, CAMA, 'foco depois de desmarcar');
+  clicar(abaPorNome(CAMA));
+  igual(W.document.activeElement && W.document.activeElement.dataset.c, CAMA, 'foco depois de marcar');
+});
+
+teste('CA1: o anúncio para leitor de tela diz "Todas as categorias" e o total', async () => {
+  await abrirApp(CAMA);
+  clicar(abaPorNome(CAMA));
+  igual(txt(q('#anuncioLista')), TODAS + ': ' + String(API.length).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' ofertas');
+});
+
+teste('CA1 (celular): o seletor tem a opção "Todas as categorias" e escolhê-la desmarca; escolher uma categoria marca', async () => {
+  await abrirApp(CAMA);
+  await largura(375);
+  afirma(visivel(selCat()) && !visivel(q('#tabs')), 'no celular só o seletor aparece');
+  const op = selCat().options[0];
+  igual(op.value, '', 'a primeira opção é a de todas');
+  afirma(op.textContent.startsWith(TODAS), 'rótulo: ' + op.textContent);
+  igual(selCat().value, CAMA);
+  escolher(selCat(), '');
+  igual(catAtiva(), '');
+  igual(selCat().value, '');
+  igual(totalFiltrado(), API.length);
+  igual(localStorage.getItem('activeCat'), '');
+  afirma(!q('#telaOfertas').classList.contains('aba-vazia'), 'tela viva');
+  escolher(selCat(), GAMES);
+  igual(catAtiva(), GAMES);
+  igual(totalFiltrado(), daCat(GAMES).length);
+  igual([...selCat().options].map(o => o.value).slice(1), ORDEM, 'o resto das opções é o das 17 abas');
+});
+
+// ================================================================ CA2
+teste('CA2: sem categoria a paginação anda sobre todos os produtos (24 por página, contagem "N itens")', async () => {
+  await abrirApp('');
+  confereSemCategoria('aberto sem categoria');
+  const prim = cartoes().map(c => c.dataset.id);
+  clicar(q('.pager .pg[data-a="proxima"]'));
+  igual(pager(), paginaN(2, API.length));
+  igual(cartoes().length, PAGINA);
+  afirma(cartoes().every(c => !prim.includes(c.dataset.id)), 'a página 2 traz outros itens');
+  clicar(q('.pager .pg[data-a="ultima"]'));
+  igual(cartoes().length, API.length % PAGINA || PAGINA, 'a última página traz o resto');
+  clicar(q('.pager .pg[data-a="primeira"]'));
+  igual(cartoes().map(c => c.dataset.id), prim);
+});
+
+teste('CA2: sem categoria, loja, título, preço e ordem filtram sobre todos os produtos', async () => {
+  await abrirApp('');
+  const lojas = [...new Set(API.map(i => i.loja))];
+  afirma(lojas.length > 0);
+  for (const l of lojas) {
+    escolher(q('#fLoja'), l);
+    igual(totalFiltrado(), API.filter(i => i.loja === l).length, 'loja ' + l);
+  }
+  escolher(q('#fLoja'), '');
+  // título: uma palavra que existe em itens de categorias diferentes
+  const palavra = 'kit';
+  const comPalavra = API.filter(i => tituloDe(i).toLowerCase().includes(palavra));
+  afirma(new Set(comPalavra.map(i => i.cat)).size > 1, 'precondição: "' + palavra + '" aparece em mais de uma categoria');
+  const t = q('#fTexto'); t.value = palavra; t.dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(totalFiltrado(), comPalavra.length, 'título');
+  t.value = ''; t.dispatchEvent(new W.Event('input', { bubbles: true }));
+  // ordem por menor preço: não decrescente, com os sem preço no fim
+  escolher(q('#fOrdem'), 'preco');
+  const precos = ev('filtrada().map(i=>i.data&&i.data.preco)').map(p => precoDe({ data: { preco: p } }) || 1e12);
+  for (let k = 1; k < precos.length; k++) if (precos[k] < precos[k - 1]) throw new Falha('ordem por preço quebrada em ' + k);
+  igual(precos.length, API.length);
+  escolher(q('#fOrdem'), '');
+});
+
+teste('CA2/CA5: sem categoria o filtro de idade do preço, a faixa e a contagem valem para todos os produtos', async () => {
+  await abrirApp('');
+  // 3 itens em Pets (1 velho) e 2 em Games (1 velho): 2 de 5 passam de 24 h; nenhuma categoria marcada
+  usarItens([falso(PETS, { preco_em: haHoras(1) }), falso(PETS, { preco_em: haHoras(30) }), falso(PETS, { preco_em: haHoras(2) }),
+             falso(GAMES, { preco_em: haHoras(1) }), falso(GAMES, { preco_em: haHoras(50) })]);
+  afirma(visivel(q('#faixaPrecos')), 'a faixa aparece sem categoria');
+  igual(txt(q('#faixaPrecosTxt')), '2 de 5 preços de todas as categorias passam de 24 h.');
+  const opcoes = [...q('#fPreco').options].map(o => o.textContent);
+  afirma(opcoes[1].includes('2'), 'velhos: ' + opcoes[1]);
+  afirma(opcoes[2].includes('3'), 'em dia: ' + opcoes[2]);
+  escolher(q('#fPreco'), 'velho');
+  igual(totalFiltrado(), 2);
+  igual(cartoes().length, 2);
+  escolher(q('#fPreco'), 'dia');
+  igual(totalFiltrado(), 3);
+  // com uma categoria marcada, o texto é o de sempre
+  escolher(q('#fPreco'), '');
+  ev("activeCat = " + JSON.stringify(PETS) + "; render()");
+  igual(txt(q('#faixaPrecosTxt')), '1 de 3 preços desta categoria passam de 24 h.');
+});
+
+teste('CA2/CA5: a faixa de preços sem categoria, quando está tudo em dia e quando ninguém tem preço', async () => {
+  await abrirApp('');
+  usarItens([falso(PETS), falso(GAMES)]);
+  igual(txt(q('#faixaPrecosTxt')), 'Todos os preços de todas as categorias têm menos de 24 h.');
+  usarItens([falso(PETS, { preco_em: null }, { preco: '' }), falso(GAMES, { preco_em: null }, { preco: '' })]);
+  igual(txt(q('#faixaPrecosTxt')), 'Nenhum item de todas as categorias tem preço para conferir.');
+});
+
+teste('CA2: o filtro "Todas as buscas" sem categoria lista as buscas de todas as categorias, agrupadas por categoria', async () => {
+  await abrirApp('');
+  const buscas = [...new Set(API.map(i => i.busca).filter(Boolean))];
+  afirma(buscas.length > 17, 'precondição: a cópia tem buscas de várias categorias');
+  const sel = q('#fBusca');
+  igual(sel.options[0].textContent, 'Todas as buscas (' + buscas.length + ')');
+  igual(sel.options.length, buscas.length + 1, 'uma opção por busca, sem repetir');
+  const grupos = qa('#fBusca optgroup');
+  igual(grupos.map(g => g.label), ORDEM.filter(c => daCat(c).some(i => i.busca)), 'um grupo por categoria, na ordem das abas');
+  for (const g of grupos) {
+    const esperadas = [...new Set(daCat(g.label).map(i => i.busca).filter(Boolean))];
+    igual([...g.querySelectorAll('option')].map(o => o.value).sort(), esperadas.sort(), 'buscas do grupo ' + g.label);
+  }
+  const uma = buscas[Math.floor(buscas.length / 2)];
+  escolher(sel, uma);
+  igual(totalFiltrado(), API.filter(i => i.busca === uma).length, 'filtrar por uma busca sem categoria');
+  igual(sel.value, uma, 'a escolha sobrevive ao render');
+  escolher(sel, '');
+  igual(totalFiltrado(), API.length);
+});
+
+teste('CA2: a busca que aparece em duas categorias fica no grupo da primeira aba (ordem das abas), não do primeiro item', async () => {
+  await abrirApp('');
+  // o item da categoria que vem DEPOIS na ordem das abas aparece primeiro na lista: a dona continua sendo a aba que vem antes
+  usarItens([falso(PETS, { busca: 'busca repartida' }), falso(GAMES, { busca: 'busca repartida' }), falso(PETS, { busca: 'so de pets' })]);
+  igual(qa('#fBusca optgroup').map(g => g.label), [GAMES, PETS]);
+  igual([...q('#fBusca optgroup[label="' + GAMES + '"]').querySelectorAll('option')].map(o => o.value), ['busca repartida']);
+  igual([...q('#fBusca optgroup[label="' + PETS + '"]').querySelectorAll('option')].map(o => o.value), ['so de pets']);
+  igual(q('#fBusca').options.length, 3, 'a busca repartida aparece uma vez só');
+});
+
+teste('CA2: com uma categoria marcada o filtro de buscas volta a ser a lista simples daquela categoria', async () => {
+  await abrirApp(CAMA);
+  const buscas = [...new Set(daCat(CAMA).map(i => i.busca).filter(Boolean))];
+  igual(qa('#fBusca optgroup').length, 0, 'sem grupos');
+  igual(q('#fBusca').options[0].textContent, 'Todas as buscas (' + buscas.length + ')');
+  igual(q('#fBusca').options.length, buscas.length + 1);
+  clicar(abaPorNome(CAMA));   // desmarca: agrupa
+  afirma(qa('#fBusca optgroup').length > 1);
+  clicar(abaPorNome(CAMA));   // marca de novo: a busca escolhida antes não vale (trocar de aba zera a busca)
+  igual(qa('#fBusca optgroup').length, 0);
+});
+
+teste('CA2: "Copiar todas da página" copia só os cartões da página, sem categoria', async () => {
+  await abrirApp('');
+  clicar(q('#btnCopyAll'));
+  await esperar(() => COPIADOS.length === 1, 'a cópia');
+  igual(COPIADOS[0].split('\n\n----------\n\n').length, PAGINA, 'uma mensagem por cartão da página');
+});
+
+teste('CA2: sem categoria, um filtro que zera a lista mostra "Limpar filtros" e limpar volta a todos', async () => {
+  await abrirApp('');
+  const t = q('#fTexto'); t.value = 'zzzz-nada-assim'; t.dispatchEvent(new W.Event('input', { bubbles: true }));
+  igual(totalFiltrado(), 0);
+  const b = q('#estadoLista button[data-acao="limpar"]');
+  afirma(b, 'botão "Limpar filtros"');
+  afirma(!q('#telaOfertas').classList.contains('aba-vazia'), 'não é aba vazia');
+  clicar(b);
+  igual(totalFiltrado(), API.length);
+  igual(catAtiva(), '');
+});
+
+// ================================================================ CA3
+teste('CA3: sem nada guardado, ou com activeCat vazio guardado, o site abre com todos os produtos', async () => {
+  for (const guardado of [undefined, '']) {
+    await abrirApp(guardado);
+    confereSemCategoria('guardado=' + JSON.stringify(guardado));
+    igual(totalFiltrado(), API.length);
+    igual(cartoes().length, PAGINA);
+    igual(txt(q('#count')).startsWith(API.length + ' itens no total'), true, 'contagem: ' + txt(q('#count')));
+  }
+});
+
+teste('CA3: com uma categoria guardada reabre nela; guardada que não existe mais volta à primeira aba (como antes)', async () => {
+  await abrirApp(GAMES);
+  igual(catAtiva(), GAMES);
+  igual(totalFiltrado(), daCat(GAMES).length);
+  await abrirApp('Categoria que nunca existiu');
+  igual(catAtiva(), PRIMEIRA);
+  igual(abaAtiva().map(b => b.dataset.c), [PRIMEIRA]);
+});
+
+teste('CA3: a escolha de nenhuma categoria é lembrada ao recarregar', async () => {
+  await abrirApp(CAMA);
+  clicar(abaPorNome(CAMA));
+  igual(localStorage.getItem('activeCat'), '');
+  const f = document.getElementById('app');
+  await new Promise(res => { f.onload = res; W.location.reload(); });
+  W = f.contentWindow;
+  await esperar(() => ev('ofertasProntas === true'), 'recarregar');
+  igual(catAtiva(), '');
+  igual(abaAtiva().length, 0);
+});
+
+teste('CA3: localStorage indisponível (leitura e escrita lançam erro) não quebra', async () => {
+  await abrirApp(CAMA);
+  const P = W.Storage.prototype, g = P.getItem, s = P.setItem, r = P.removeItem;
+  const antes = erros.length;
+  try {
+    P.getItem = function () { throw new W.DOMException('indisponível', 'SecurityError'); };
+    P.setItem = function () { throw new W.DOMException('indisponível', 'SecurityError'); };
+    P.removeItem = function () { throw new W.DOMException('indisponível', 'SecurityError'); };
+    igual(ev('lerCatLembrada()'), '', 'sem leitura, sem categoria');
+    clicar(abaPorNome(CAMA));
+    igual(catAtiva(), '', 'desmarca mesmo sem poder gravar');
+    igual(totalFiltrado(), API.length);
+    clicar(abaPorNome(GAMES));
+    igual(catAtiva(), GAMES, 'marca mesmo sem poder gravar');
+    clicar(abaPorNome(PERF));   // aba com gênero: generoEscolhido lê o público lembrado, que também não pode quebrar
+    igual(catAtiva(), PERF, 'marca uma aba com gênero sem poder ler o público');
+    afirma(q('#publicoBox fieldset'), 'o controle "Público" aparece');
+    igual(ev('generoEscolhido(activeCat)'), '', 'sem leitura, "Todos"');
+    ev('limparFiltros()');   // chama guardarGenero (removeItem) na aba com gênero
+    igual(catAtiva(), PERF, 'limpar os filtros mantém a aba');
+    await dormir(30);
+  } finally { P.getItem = g; P.setItem = s; P.removeItem = r; }
+  igual(erros.slice(antes), [], 'nenhum erro');
+});
+
+// ================================================================ CA4
+teste('CA4: o controle "Público" some sem categoria e não filtra, mesmo com público lembrado numa aba com gênero', async () => {
+  await abrirApp(PERF);
+  const chave = 'genero:' + PERF;
+  const guardado = localStorage.getItem(chave);
+  try {
+    localStorage.setItem(chave, 'feminino');
+    ev('render()');
+    afirma(q('#publicoBox fieldset'), 'com Perfumes marcada o controle existe');
+    clicar(abaPorNome(PERF));   // desmarca
+    confereSemCategoria('Perfumes desmarcada');
+    igual(q('#publicoBox').innerHTML, '', 'sem controle de público');
+    igual(totalFiltrado(), API.length, 'não filtra por gênero');
+    clicar(abaPorNome(PERF));   // marca de novo: o público lembrado volta
+    afirma(q('#publicoBox fieldset'), 'o controle volta');
+    igual(ev('generoEscolhido(activeCat)'), 'feminino');
+  } finally { if (guardado === null) localStorage.removeItem(chave); else localStorage.setItem(chave, guardado); }
+});
+
+teste('CA4: sem categoria, "Limpar filtros" não mexe no público lembrado de nenhuma aba', async () => {
+  await abrirApp('');
+  const antes = Object.keys(localStorage).filter(k => k.startsWith('genero:')).sort();
+  ev("limparFiltros()");
+  igual(Object.keys(localStorage).filter(k => k.startsWith('genero:')).sort(), antes);
+  igual(Object.keys(localStorage).includes('genero:'), false, 'nenhuma chave "genero:" vazia');
+});
+
+// ================================================================ CA5
+teste('CA5: o quadro "Como atualizar os preços" usa "Todas as categorias" sem categoria e conta sobre todos os produtos', async () => {
+  await abrirApp('');
+  ev("$('#quadroPrecos').open = true; atualizarQuadroPrecos()");
+  igual(q('#qpCat').value, '', 'a categoria dos comandos');
+  igual(q('#qpCat').selectedOptions[0].textContent, TODAS);
+  const cmd = txt(q('.qp-loja[data-loja="amazon"] [data-f="cmd"]'));
+  igual(cmd, 'python3 atualizar_precos.py amazon', 'comando sem --cat');
+  const totalAmazon = API.filter(i => i.loja === 'amazon').length;
+  afirma(totalAmazon > 0);
+  const dl = txt(q('.qp-loja[data-loja="amazon"] [data-f="dl"]'));
+  const comPreco = API.filter(i => i.loja === 'amazon' && String(i.data && i.data.preco || '').trim() !== '').length;   // item com preço
+  afirma(dl.includes(String(comPreco).replace(/\B(?=(\d{3})+(?!\d))/g, '.')), 'itens com preço (' + comPreco + '): ' + dl);
+  // marcar uma categoria leva o quadro junto; desmarcar devolve "Todas as categorias"
+  clicar(abaPorNome(CAMA));
+  igual(q('#qpCat').value, CAMA);
+  igual(txt(q('.qp-loja[data-loja="amazon"] [data-f="cmd"]')), 'python3 atualizar_precos.py amazon --cat "' + CAMA + '"');
+  clicar(abaPorNome(CAMA));
+  igual(q('#qpCat').value, '');
+});
+
+// ================================================================ CA6 / adicionar links
+teste('CA6: abrir o site sem categoria não faz escrita nenhuma na API; "Adicionar" sem categoria pede para escolher e não envia', async () => {
+  await abrirApp('');
+  const sel = q('#addCat');
+  igual(sel.value, '', 'sem categoria marcada, o campo "Categoria" não adivinha uma');
+  igual(sel.options.length, ORDEM.length + 1, 'um marcador e as 17 categorias');
+  ev("$('#addLinks').value = 'https://www.amazon.com.br/dp/B0FALSO0001?tag=desejodemen01-20'");
+  VIOL.length = 0;
+  ev("$('#addBox').classList.add('open')");   // o painel "Adicionar" aberto, como no uso (campo escondido não recebe foco)
+  ev("$('#saveLinks').click()");
+  await dormir(100);
+  igual(VIOL, [], 'nada foi enviado');
+  afirma(q('#toastErro').classList.contains('show') && /categoria/i.test(q('#toastErro').textContent), 'aviso: ' + q('#toastErro').textContent);
+  afirma(W.document.activeElement === sel, 'o foco vai para o campo "Categoria"');
+  // com a categoria nova digitada, o envio segue (bloqueado aqui pelo teste, só para provar que tentou)
+  ev("$('#addCatNew').value = 'Categoria de teste'");
+  const f0 = W.fetch;
+  W.fetch = (u, o) => { if (o && o.method === 'POST') { VIOL.push('POST ' + u); return Promise.resolve(new W.Response('{"error":"bloqueado pelo teste"}', { headers: { 'Content-Type': 'application/json' } })); } return f0(u, o); };
+  ev("$('#saveLinks').click()");
+  await dormir(100);
+  W.fetch = f0;
+  igual(VIOL.length, 1, 'com categoria nova, tenta enviar: ' + JSON.stringify(VIOL));
+  VIOL.length = 0;
+});
+
+teste('CA6: "Mover para > + nova..." com nome vazio ou só espaços (ou cancelado) não envia nada', async () => {
+  await abrirApp('');
+  usarItens([falso(PETS)], PETS);
+  VIOL.length = 0;
+  for (const resposta of ['   ', '', null]) {
+    W.prompt = () => resposta;
+    const mv = cartoes()[0].querySelector('select.mv');
+    escolher(mv, '__new');
+    await dormir(80);
+    igual(VIOL, [], 'resposta ' + JSON.stringify(resposta) + ': nada enviado');
+    igual(ev('items[0].cat'), PETS, 'a categoria do item não mudou');
+    igual(cartoes()[0].querySelector('select.mv').value, PETS, 'o card voltou a mostrar a categoria atual');
+  }
+  W.prompt = () => { VIOL.push('prompt'); return null; };
+});
+
+teste('CA6: com categoria marcada o campo "Adicionar em" continua acompanhando a aba', async () => {
+  await abrirApp(CAMA);
+  igual(q('#addCat').value, CAMA);
+});
+
+teste('CA6: aba vazia (com categoria marcada) continua escondendo filtros, lista e paginação; sair dela devolve a tela', async () => {
+  await abrirApp(GAMES);
+  usarItens([falso(PETS)], GAMES);
+  afirma(q('#telaOfertas').classList.contains('aba-vazia'), 'Games sem item: aba vazia');
+  for (const s of ['.filters', '.barra-lista', '.pager', '#grid']) afirma(!visivel(q(s)), s + ' some');
+  clicar(abaPorNome(GAMES));   // desmarca a aba vazia: todos (1 item)
+  afirma(!q('#telaOfertas').classList.contains('aba-vazia'), 'sem categoria não é aba vazia');
+  igual(cartoes().length, 1);
+});
+
+teste('CA6: sem nenhum item no banco continua o estado de "sem ofertas" (não vira lista vazia com filtros)', async () => {
+  await abrirApp('');
+  usarItens([]);
+  afirma(q('#telaOfertas').classList.contains('sem-dados'), 'sem-dados');
+  igual(cartoes().length, 0);
+});
+
+// ================================================================ CA7
+teste('CA7: com todos os produtos só uma página é desenhada (grade e DOM limitados) e o render não explode', async () => {
+  await abrirApp('');
+  igual(cartoes().length, PAGINA);
+  const nos = qa('*').length;
+  afirma(nos < 6000, 'nós no DOM: ' + nos);
+  const t0 = performance.now();
+  ev('render()');
+  const ms = performance.now() - t0;
+  log('      (render sem categoria com ' + API.length + ' itens: ' + Math.round(ms) + ' ms)');
+  afirma(ms < 1500, 'render sem categoria demorou ' + Math.round(ms) + ' ms (limite folgado: 1500 ms)');
+  igual(cartoes().length, PAGINA);
+});
+
+teste('só GET saiu para a API e /api/items ficou idêntico ao do início', async () => {
+  const depois = await (await fetch('/api/items')).text();
+  igual(VIOL, [], 'tentativas de escrita (o teste bloqueou)');
+  afirma(API_ANTES !== null && API_ANTES.length > 2, 'não li /api/items no início');
+  afirma(API_ANTES === depois, 'o conteúdo de /api/items mudou durante o teste');
+});
+
+// ================================================================ execução
+(async () => {
+  let falhas = 0, total = 0;
+  try {
+    API_ANTES = await (await fetch('/api/items')).text();
+    API = JSON.parse(API_ANTES);
+    afirma(Array.isArray(API) && API.length > PAGINA * 3, '/api/items vazio ou pequeno');
+    afirma(API.every(i => ORDEM.includes(i.cat)), 'rode sobre a cópia JÁ migrada (toda categoria é uma das 17)');
+  } catch (e) {
+    log(PREF_F + 'preparação — ' + (e && e.message || e));
+    linhas.shift();
+    log(PREF_R + 'FALH' + 'OU (preparação)');
+    return;
+  }
+  const guardado = localStorage.getItem('activeCat');
+  for (const t of testes) {
+    total++; testeAtual = t.nome;
+    const antesErros = erros.length;
+    try {
+      await t.fn();
+      await dormir(30);
+      if (erros.length > antesErros) throw new Falha(erros.slice(antesErros).join(' | '));
+      log('ok    ' + t.nome);
+    } catch (e) {
+      falhas++;
+      log(PREF_F + t.nome + ' — ' + (e && e.message || e));
+    }
+  }
+  if (guardado === null) localStorage.removeItem('activeCat'); else localStorage.setItem('activeCat', guardado);
+  linhas.shift();
+  log('');
+  log(total + ' testes, ' + (total - falhas) + ' passaram, ' + falhas + ' falharam');
+  log(falhas === 0 && total > 0 ? PREF_R + 'OK' : PREF_R + 'FALH' + 'OU (' + falhas + ' de ' + total + ')');
+})();
+</script>
+</body>
+</html>

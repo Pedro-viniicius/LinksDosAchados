@@ -10,6 +10,7 @@ temporário. O token é gerado aqui e nunca é impresso: as asserções que o en
 assertTrue/assertFalse com mensagem fixa. Nenhum teste cria o api_token.txt do projeto, toca o
 achadinhos.db real, o servidor em 8765 ou a rede. Só biblioteca padrão.
 """
+import contextlib
 import hmac
 import http.client
 import io
@@ -27,7 +28,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
@@ -45,8 +46,8 @@ import api_ofertas as A  # noqa: E402
 
 VAR_TOKEN = 'ACHADINHOS_API_TOKEN_ARQUIVO'
 TOKEN_REAL = os.path.join(TS.RAIZ, 'api_token.txt')
+PRECO_EM_VELHO = '2020-01-01T00:00:00'   # a oferta do ML: velha demais para a validade padrão de 24 h (e para os 168 h)
 ANTIGO = '2026-11-03T12:24:23'   # bem antes da folga de 60 s da ordem "atualizacao"
-PRECO_EM_VELHO = '2020-01-01T00:00:00'   # mais velho que o teto de 168 h do preco_max_horas
 PERFUMES = 'Perfumes e Perfumaria'
 CASA = 'Casa e Decoração'
 LINK_AMAZON = 'https://www.amazon.com.br/dp/B0TESTE001?tag=desejodemen01-20'
@@ -72,7 +73,8 @@ def gravar_token(caminho, conteudo, modo=0o600):
 
 def inserir(con, **campos):
     """Item direto no banco temporário, com horários antigos (passa da folga de 60 s)."""
-    base = {'loja': 'amazon', 'item_id': 'B0TESTE001', 'cat': PERFUMES, 'busca': 'perfume', 'url': LINK_AMAZON,
+    # preco_em de agora (o servidor de teste usa o relógio real): sem o filtro, a API só traz preço dentro da validade
+    base = {'preco_em': datetime.now().isoformat(timespec='seconds'), 'loja': 'amazon', 'item_id': 'B0TESTE001', 'cat': PERFUMES, 'busca': 'perfume', 'url': LINK_AMAZON,
             'titulo': 'Perfume Teste 100ml', 'preco': 'R$ 100,00', 'preco_antigo': 'R$ 150,00', 'desconto': '',
             'avaliacao': '4,5 de 5 estrelas', 'num_avaliacoes': '1.234', 'vendas': 'Mais de 50 compras',
             'frete': 'Frete GRÁTIS', 'cupom': '', 'imagem': 'https://m.media-amazon.com/images/I/71teste.jpg',
@@ -120,7 +122,8 @@ class ServidorApi(TS.ServidorTeste):
         if cls.proc.poll() is not None:
             raise RuntimeError('o servidor de teste saiu: ' + cls.primeira_linha)
         con = sqlite3.connect(cls.db)
-        # preço da Amazon confirmado agora (relógio do servidor), o do ML há anos (atualizar-precos, CA8)
+        # preço da Amazon confirmado agora (relógio do servidor), o do ML há anos (atualizar-precos, CA8): sem
+        # o filtro a API só traz a Amazon; os testes que precisam do ML usam `ml_recente()`
         cls.preco_em_amazon = datetime.now().isoformat(timespec='seconds')
         inserir(con, preco_em=cls.preco_em_amazon)
         inserir(con, loja='ml', item_id='MLB4100000001', cat=CASA, url=LINK_ML, titulo='Luminária de mesa',
@@ -178,6 +181,21 @@ class ServidorApi(TS.ServidorTeste):
 
 class TestApiLigada(ServidorApi):
 
+    @contextlib.contextmanager
+    def ml_recente(self, horas=2):
+        """A oferta do ML (preço de 2020 no banco do teste) com preço de `horas` h atrás, só dentro do bloco:
+        o servidor lê o banco a cada pedido. Devolve o preco_em gravado."""
+        quando = (datetime.now() - timedelta(hours=horas)).isoformat(timespec='seconds')
+        con = sqlite3.connect(self.db, timeout=30)
+        try:
+            con.execute("UPDATE items SET preco_em=? WHERE loja='ml' AND item_id='MLB4100000001'", (quando,))
+            con.commit()
+            yield quando
+        finally:
+            con.execute("UPDATE items SET preco_em=? WHERE loja='ml' AND item_id='MLB4100000001'", (PRECO_EM_VELHO,))
+            con.commit()
+            con.close()
+
     def test_ca9_primeira_linha_do_stdout_continua_igual(self):
         self.assertEqual(self.primeira_linha, f'Site em http://localhost:{self.porta}/  (banco: {self.db})\n')
 
@@ -188,7 +206,8 @@ class TestApiLigada(ServidorApi):
         self.assertFalse(self.token in saida, 'o token apareceu no log')
 
     def test_ca1_ofertas_com_token_da_200_no_formato(self):
-        st, hd, j = self.v1('/api/v1/ofertas', self.auth())
+        with self.ml_recente():
+            st, hd, j = self.v1('/api/v1/ofertas', self.auth())
         self.assertEqual(st, 200, j)
         self.assertEqual(hd.get('Content-Type'), 'application/json; charset=utf-8')
         self.assertEqual(sorted(j), ['ofertas', 'proximo', 'total', 'versao'])
@@ -208,17 +227,29 @@ class TestApiLigada(ServidorApi):
                                         'genero', 'preco_em'])
 
     def test_ca8_preco_em_e_preco_max_horas_pelo_http(self):
-        st, _, j = self.v1('/api/v1/ofertas', self.auth())   # sem o filtro: as duas, cada uma com a sua data
-        self.assertEqual((st, j['total']), (200, 2), j)
-        self.assertEqual({o['chave']: o['preco_em'] for o in j['ofertas']},
-                         {'amazon:B0TESTE001': self.preco_em_amazon, 'ml:MLB4100000001': PRECO_EM_VELHO})
-        for query in ('preco_max_horas=1', 'preco_max_horas=168&ordem=menor_preco', 'preco_max_horas=24&loja=amazon'):
+        # sem o filtro vale a validade da config (24 h, sem a chave): o ML, de 2020, fica de fora, mesmo com 168
+        for query in ('', '?preco_max_horas=168', '?ordem=menor_preco'):
             with self.subTest(query=query):
-                st, _, j = self.v1('/api/v1/ofertas?' + query, self.auth())
+                st, _, j = self.v1('/api/v1/ofertas' + query, self.auth())
                 self.assertEqual((st, j['total'], [o['chave'] for o in j['ofertas']]),
                                  (200, 1, ['amazon:B0TESTE001']), j)
-        st, _, j = self.v1('/api/v1/ofertas?preco_max_horas=24&loja=ml', self.auth())
-        self.assertEqual((st, j['total'], j['ofertas'], j['proximo']), (200, 0, [], None), j)
+                self.assertEqual(j['ofertas'][0]['preco_em'], self.preco_em_amazon)
+        with self.ml_recente() as preco_em_ml:   # preço de 2 h atrás: entra no padrão, cada um com a sua data
+            st, _, j = self.v1('/api/v1/ofertas', self.auth())
+            self.assertEqual((st, j['total']), (200, 2), j)
+            self.assertEqual({o['chave']: o['preco_em'] for o in j['ofertas']},
+                             {'amazon:B0TESTE001': self.preco_em_amazon, 'ml:MLB4100000001': preco_em_ml})
+            for query in ('preco_max_horas=1', 'preco_max_horas=1&ordem=menor_preco', 'preco_max_horas=1&loja=amazon'):
+                with self.subTest(query=query):
+                    st, _, j = self.v1('/api/v1/ofertas?' + query, self.auth())
+                    self.assertEqual((st, j['total'], [o['chave'] for o in j['ofertas']]),
+                                     (200, 1, ['amazon:B0TESTE001']), j)
+            for query in ('preco_max_horas=3', 'preco_max_horas=168&ordem=menor_preco'):
+                with self.subTest(query=query):
+                    st, _, j = self.v1('/api/v1/ofertas?' + query, self.auth())
+                    self.assertEqual((st, j['total']), (200, 2), j)
+            st, _, j = self.v1('/api/v1/ofertas?preco_max_horas=1&loja=ml', self.auth())
+            self.assertEqual((st, j['total'], j['ofertas'], j['proximo']), (200, 0, [], None), j)
         for query in ('preco_max_horas=0', 'preco_max_horas=169', 'preco_max_horas=', f'preco_max_horas={SEGREDO}',
                       'preco_max_horas=1&preco_max_horas=1'):
             with self.subTest(query=query):
@@ -230,6 +261,10 @@ class TestApiLigada(ServidorApi):
         self.assertEqual(st, 400, j)
 
     def test_ca1_paginacao_e_filtros_pelo_http(self):
+        with self.ml_recente():
+            self._paginacao_e_filtros()
+
+    def _paginacao_e_filtros(self):
         st, _, j = self.v1('/api/v1/ofertas?limite=1', self.auth())
         self.assertEqual((st, len(j['ofertas'])), (200, 1))
         st, _, j2 = self.v1('/api/v1/ofertas?limite=1&cursor=' + j['proximo'].replace(':', '%3A'), self.auth())

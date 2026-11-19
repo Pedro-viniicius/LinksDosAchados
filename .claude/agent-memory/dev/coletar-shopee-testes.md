@@ -13,7 +13,13 @@ Vistas na E7 de perfumaria-tres-lojas (2026-11-03):
 - Prova de que o Secret não vaza no subprocesso sem tocar a rede: `python3 -c` que importa o módulo e troca `urlopen`/`OPENER_CONFERENCIA.open` por função que levanta `OSError(<Secret>)`; procure o marcador e "Traceback" na saída.
 - Mutante de "teto de tamanho" só morre se a resposta grande for JSON VÁLIDO e no formato (o `read(MAX+1)` já trunca e quebra o JSON); mutante "termo concatenado" só morre se o teste conferir `set(corpo) == {'query','variables'}`.
 - Com outros `dev` editando `servidor.py`/`index.html` ao mesmo tempo, `test_servidor.py` deu 1 erro em 38 s; isolado, passou 2 vezes em 2 s. Rode de novo antes de concluir que quebrou.
-- Mutantes: copie `coletar_shopee.py`, `servidor.py`, `disparo.py` e `testes/test_coletar_shopee.py` para o scratchpad (o teste acha o módulo pelo `RAIZ` do próprio arquivo).
+- Mutantes: copie `coletar_shopee.py`, `servidor.py`, `disparo.py`, `genero.py` e `testes/test_coletar_shopee.py` para o scratchpad (o teste acha o módulo pelo `RAIZ` do próprio arquivo). Sem `coletar_amazon.py`/`coletar_ml.js` na cópia, `TestUsado.test_mesma_lista_da_amazon_e_do_ml` dá `errors=1` em toda rodada: é da cópia, não do mutante (confira a cópia sem mutação).
+
+Etapa 1 de atualizar-precos-shopee-por-item (2026-11-08):
+
+- O único `OPENER_API.open(` agora fica em `_pedir(cred, corpo)`; `buscar` e `buscar_item` só montam o corpo. O `test_shopee_qa.py` conta as ocorrências no fonte.
+- Ordem "API → dono → pausa → API" do `conferir --por-item` provada com um objeto que anota numa lista só os três falsos (`Ordem` no teste); o mutante "sem pausa" só morre por esse teste.
+- Subprocesso com falha só na 2ª chamada: no `-c`, uma fila com a 1ª resposta e depois `raise OSError(SEG)`; a conferência levanta `HTTPError` 302 com o Location bom.
 
 Vistas na etapa 7 de abas-nichadas-e-coleta (`importar`, 2026-11-04):
 

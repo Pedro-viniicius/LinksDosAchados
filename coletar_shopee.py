@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Coleta produtos da Shopee pela Open API de afiliados (ou de um arquivo do painel) e grava no achadinhos.db.
 
-Uso:  python3 coletar_shopee.py conferir
-      python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens relevancia,vendidos,caros]
+Uso:  python3 coletar_shopee.py conferir [--por-item]
+      python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens vendidos,relevancia,caros]
       python3 coletar_shopee.py importar ARQUIVO
 
 Planos: docs/produto/planos/perfumaria-tres-lojas.md, etapa E7 (CA7), e
-docs/produto/planos/abas-nichadas-e-coleta.md, etapa 7 (CA9: `importar` e piso de 50 vendas).
+docs/produto/planos/abas-nichadas-e-coleta.md, etapa 7 (CA9: `importar` e piso de 50 vendas), e
+docs/produto/planos/atualizar-precos-shopee-por-item.md, etapa 1 (consulta por item e `conferir --por-item`).
 
 Ambiente:
   ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET  credenciais da Open API (obrigatórias em `conferir`
       e `buscas`; o `importar` não as lê). O Secret só é lido do ambiente: nunca vai para arquivo,
-      argumento, URL, stdout, log ou mensagem de erro.
+      argumento, URL, stdout, log ou mensagem de erro. Antes de lê-lo, `proteger_processo()` fecha o
+      /proc/<pid>/environ para os outros processos do usuário (o pop não apaga o Secret dali); se o sistema
+      recusar, o comando segue com um AVISO.
       Num terminal só para isso, sem export (o Secret vale só para este comando):
         read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py ...; unset S
       O script tira o Secret do próprio ambiente assim que o lê.
@@ -19,7 +22,14 @@ Ambiente:
   ACHADINHOS_DB  troca o banco, como no servidor.py.
 Não há variável que troque a URL da API: o Secret assina toda requisição e só vai para o host fixo.
 
-`conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono (utm_source=an_<ID>).
+`conferir` faz uma busca em `vendidos` (ORDEM_PADRAO) e confere, sem gravar nada, que o link gerado é do dono (utm_source=an_<ID>).
+`conferir --por-item` (portão G1) faz o mesmo e, depois da conferência do dono, uma segunda chamada:
+productOfferV2(shopId, itemId) com os ids do primeiro nó válido da busca. Sai com 0 só se voltar o nó com os
+mesmos ids, que passe no no_para_item (link curto de afiliado, título, piso, não usado) e com preço legível, e então
+imprime os ids e o preço lido (para o dono conferir no site a ordem de grandeza); com 1 se a lista vier vazia, com
+nó de outro id, com o nó que o no_para_item recusaria ou sem preço legível, e se a API recusar o argumento (o código
+aparece, como 10010 ou 11001). O filtro desses argumentos é "a confirmar (G1)". Os ids vão nas variáveis Int64
+como texto de dígitos: como número JSON a API recusa com 10010 (medições #37/#38 do garimpo e G1 de 09/11/2026).
 `buscas` faz a mesma conferência antes de gravar o primeiro termo e aborta sem gravar se ela falhar.
 Só entra item com link curto de afiliado da Shopee (servidor.eh_link_shopee), acima do piso de qualidade
 (nota >= 4,5 e >= 50 vendas, P1 de 2026-11-04) e cujo título não é de usado (eh_usado).
@@ -44,10 +54,16 @@ gravação. Formato (JSON em UTF-8, até MAX_RESPOSTA bytes, objeto só com esta
   progresso da Open API (a ordem "Mais vendidos" do painel), então os dois caminhos não repetem o termo.
   Nada do conteúdo do arquivo vai para a saída: só contagens e motivos fixos.
 
+Trava por loja (servidor.travar_rodada): `buscas` e `importar` pegam `<banco>.rodada-shopee.lock` (ao lado do
+ACHADINHOS_DB) sem esperar, antes do proteger_processo, do Secret, do arquivo, do banco e do progresso; outra rodada
+da Shopee no ar (esta coleta ou o atualizar_precos.py shopee) faz sair com 4, sem tocar em nada. O `conferir` não
+grava e não trava.
+
 Saída: 0 ok (no `importar`, também quando nenhum nó passa no piso: o termo não é marcado); 1 erro (dono errado,
 API recusou, resposta ou arquivo fora do formato, arquivo grande demais); 2 configuração (ID de afiliado,
 credenciais, aba ou termo fora do buscas.json, arquivo inexistente ou ilegível, argumento); 3 limite de
-requisições da API (o progresso fica salvo, rode de novo depois).
+requisições da API (o progresso fica salvo, rode de novo depois); 4 outra rodada da Shopee em andamento, ou trava
+recusada (só `buscas` e `importar`; espere a outra terminar); 130 interrompido.
 """
 import argparse, hashlib, json, math, os, random, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
 import servidor as S
@@ -64,11 +80,25 @@ ID_AFILIADO_SHOPEE = '18328801339'
 # ---------- formato da Open API: fontes de terceiros, tudo "a confirmar (F5)" no painel do dono ----------
 URL_API = 'https://open-api.affiliate.shopee.com.br/graphql'   # a confirmar (F5): endpoint do Brasil
 ORDENS = {'relevancia': 1, 'vendidos': 2, 'caros': 3}         # a confirmar (F5): sortType 1, 2 e 3
+# Ordem padrão do `buscas` e do `conferir`: em relevância a busca devolve anúncios novos (0 a 3 vendas), todos abaixo do
+# piso (medição de 18/11/2026: "perfume" 0 de 30 aproveitáveis em relevância, 25 de 30 em vendidos).
+ORDEM_PADRAO = 'vendidos'
 ERRO_LIMITE = 10030                                           # a confirmar (F5): código de limite de requisições
 POR_BUSCA = 30                                                # a confirmar (F5): limit máximo por página
 # a confirmar (F5): nome da consulta, dos argumentos e dos campos. O termo e a ordem vão só em "variables".
 CONSULTA = '''query Busca($keyword: String, $sortType: Int, $page: Int, $limit: Int) {
   productOfferV2(keyword: $keyword, sortType: $sortType, page: $page, limit: $limit) {
+    nodes { itemId shopId productName priceMin priceDiscountRate ratingStar sales imageUrl offerLink }
+  }
+}'''
+# Consulta por item (plano atualizar-precos-shopee-por-item.md). a confirmar (G1): se a API filtra por shopId e itemId.
+# shopId e itemId são Int64 no schema e vão nas variáveis como TEXTO de dígitos: como número JSON a API recusa com
+# 10010 (medições #37 e #38 do garimpo, tools/garimpo_feminino/docs/api_interpretacao.md; repetido no G1 de 09/11/2026).
+# O texto vem de str(int()) depois da validação do corpo_item; nunca dentro da query.
+POR_ITEM = 5                                                  # a confirmar (G1): o filtro deve trazer 1 nó
+MAX_ID_API = 2**63 - 1                                        # teto do Int64: id maior não vai à API
+CONSULTA_ITEM = '''query PorItem($shopId: Int64, $itemId: Int64, $page: Int, $limit: Int) {
+  productOfferV2(shopId: $shopId, itemId: $itemId, page: $page, limit: $limit) {
     nodes { itemId shopId productName priceMin priceDiscountRate ratingStar sales imageUrl offerLink }
   }
 }'''
@@ -138,10 +168,29 @@ class ForaDoBuscas(ErroColeta):
     """Aba ou termo do arquivo do `importar` que não está no buscas.json."""
 
 
+class SemProduto(RespostaInvalida):
+    """data.productOfferV2 veio null, sem "errors": na consulta por item, é o produto pedido que a API não tem."""
+
+
 class ErroApi(ErroColeta):
     def __init__(self, codigo=None, http=None):
         super().__init__(codigo, http)
         self.codigo, self.http = codigo, http
+
+
+# Códigos que recusam a requisição inteira, não um produto (fontes de terceiros, a confirmar F5): parse (10010),
+# autenticação (10020), acesso, ID de afiliado e conta (10031 a 10035), parâmetro (11001) e conta vinculada (11002).
+ERROS_GERAIS = frozenset({10010, 10020, 10031, 10032, 10033, 10034, 10035, 11001, 11002})
+
+
+def erro_do_item(e):
+    """True se o erro da consulta por item parece ser do produto pedido, não da requisição: productOfferV2 null
+    (SemProduto) ou ErroApi com HTTP 200 (ou sem HTTP) e código numérico fora de ERROS_GERAIS e do limite (inclusive o
+    10000, System Error intermitente). Qualquer outro status, código geral ou erro sem código é geral."""
+    if isinstance(e, SemProduto):
+        return True
+    return (isinstance(e, ErroApi) and e.http in (None, 200) and isinstance(e.codigo, int)
+            and not isinstance(e.codigo, bool) and e.codigo not in ERROS_GERAIS and e.codigo not in (0, ERRO_LIMITE))
 
 
 # ---------- funções puras ----------
@@ -159,6 +208,22 @@ def corpo_consulta(termo, sort_type):
     """Corpo JSON da busca. O termo e a ordem vão como variáveis GraphQL, nunca dentro da query."""
     return json.dumps({'query': CONSULTA,
                        'variables': {'keyword': termo, 'sortType': sort_type, 'page': 1, 'limit': POR_BUSCA}},
+                      separators=(',', ':'))
+
+
+def corpo_item(shop, item):
+    """Corpo JSON da consulta por item. Os ids vão nas variáveis GraphQL como texto de dígitos (Int64 do schema:
+    número JSON dá 10010), nunca dentro da query.
+
+    Aceita os ids como no banco (texto só de dígitos) ou como int. Id inválido ou acima do Int64 levanta
+    ValueError com texto fixo, antes de qualquer rede. O texto vem de str(int()): zero à esquerda some ('007' → '7').
+    """
+    ids = [_inteiro(shop), _inteiro(item)]
+    if not all(ids) or any(int(i) > MAX_ID_API for i in ids):
+        raise ValueError('id da Shopee inválido para a consulta por item')
+    return json.dumps({'query': CONSULTA_ITEM,
+                       'variables': {'shopId': str(int(ids[0])), 'itemId': str(int(ids[1])), 'page': 1,
+                                     'limit': POR_ITEM}},
                       separators=(',', ':'))
 
 
@@ -256,6 +321,27 @@ def no_para_item(no, termo, cat):
     return it
 
 
+def no_do_item(nos, shop, item):
+    """O nó de `nos` cujo shopId e itemId são os pedidos, ou None (CA1: nó de outro id não vale).
+
+    Compara pelo `_inteiro`, a mesma regra do item_id que o no_para_item monta: int ou texto só de dígitos;
+    bool, float, texto com sinal, espaço ou outro caractere não casam.
+    """
+    alvo = (_inteiro(shop), _inteiro(item))
+    if not all(alvo) or not isinstance(nos, list):
+        return None
+    for no in nos:
+        if isinstance(no, dict) and (_inteiro(no.get('shopId')), _inteiro(no.get('itemId'))) == alvo:
+            return no
+    return None
+
+
+def preco_legivel(no):
+    """O priceMin do nó vira preço gravável, pela mesma regra do no_para_item."""
+    preco = _numero(no.get('priceMin')) if isinstance(no, dict) else None
+    return bool(preco and 0 < preco < 10**9)
+
+
 def dono_ok(location):
     """Destino do link curto é da Shopee e traz utm_source=an_<ID_AFILIADO_SHOPEE> (forma oficial de conferir)."""
     if not id_afiliado_ok() or not isinstance(location, str) or any(c.isspace() for c in location):
@@ -302,7 +388,13 @@ def nos_da_resposta(resposta):
     if codigo is not None:
         raise ErroApi(codigo)
     try:
-        nos = resposta['data']['productOfferV2']['nodes']
+        oferta = resposta['data']['productOfferV2']
+    except (KeyError, TypeError):
+        raise RespostaInvalida() from None
+    if oferta is None:
+        raise SemProduto()
+    try:
+        nos = oferta['nodes']
     except (KeyError, TypeError):
         raise RespostaInvalida() from None
     if not isinstance(nos, list):
@@ -311,6 +403,21 @@ def nos_da_resposta(resposta):
 
 
 # ---------- ambiente ----------
+AVISO_PROCESSO = ('AVISO: o sistema não deixou fechar o /proc/<pid>/environ deste processo; outro processo do seu '
+                  'usuário pode ler o ambiente (com o Secret) enquanto o comando durar.')
+
+
+def proteger_processo():
+    """PR_SET_DUMPABLE = 0 (o mesmo do tools/garimpo_feminino/garimpo.py): outro processo do mesmo usuário não lê o
+    /proc/<pid>/environ, onde o Secret fica até o fim do comando (o pop só tira do os.environ). Chame antes de ler a
+    credencial. True se o sistema aceitou; False em qualquer falha (fora do Linux, por exemplo), sem levantar."""
+    try:
+        import ctypes
+        return ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0
+    except (ImportError, OSError, AttributeError):
+        return False
+
+
 def credenciais():
     """(AppID, Segredo) do ambiente, ou None se faltar algum ou o AppID tiver formato estranho.
 
@@ -373,10 +480,13 @@ class SemRedirecionar(urllib.request.HTTPRedirectHandler):
 OPENER_API = urllib.request.build_opener(SemRedirecionar)
 
 
-def buscar(cred, termo, ordem):
-    """Uma página de productOfferV2 para o termo na ordem. Único ponto que fala com a API."""
+def _pedir(cred, corpo):
+    """POST assinado do corpo para a URL fixa da API e lista de nós da resposta. Único ponto que fala com a API.
+
+    Não recebe URL: o Secret assina toda requisição e só vai para URL_API. Levanta LimiteAtingido (10030 ou
+    HTTP 429), ErroApi (só código e status) ou RespostaInvalida.
+    """
     app_id, segredo = cred
-    corpo = corpo_consulta(termo, ORDENS[ordem])
     ts = int(time.time())
     req = urllib.request.Request(URL_API, data=corpo.encode('utf-8'), method='POST', headers={
         'Content-Type': 'application/json', 'User-Agent': S.UA,
@@ -395,6 +505,16 @@ def buscar(cred, termo, ordem):
             raise LimiteAtingido() from None
         raise ErroApi(codigo, e.code) from None   # inclusive 3xx: o redirect não é seguido
     return nos_da_resposta(resposta)
+
+
+def buscar(cred, termo, ordem):
+    """Uma página de productOfferV2 para o termo na ordem."""
+    return _pedir(cred, corpo_consulta(termo, ORDENS[ordem]))
+
+
+def buscar_item(cred, shop, item):
+    """Nós de productOfferV2(shopId, itemId). A API pode ignorar o filtro: use no_do_item para achar o pedido."""
+    return _pedir(cred, corpo_item(shop, item))
 
 
 OPENER_CONFERENCIA = urllib.request.build_opener(SemRedirecionar)
@@ -432,13 +552,38 @@ def gravar(itens):
     return c
 
 
-def conferir(cred):
-    itens = [i for i in (no_para_item(n, TERMO_CONFERENCIA, '') for n in buscar(cred, TERMO_CONFERENCIA, 'relevancia')) if i]
+def conferir(cred, por_item=False):
+    """Uma busca e a conferência do dono. Com por_item (portão G1), depois dela consulta por item o primeiro
+    nó válido da busca: 0 só se voltar o mesmo produto com preço legível."""
+    itens = [i for i in (no_para_item(n, TERMO_CONFERENCIA, '') for n in buscar(cred, TERMO_CONFERENCIA, ORDEM_PADRAO)) if i]
     if not itens:
         print(f'A busca "{TERMO_CONFERENCIA}" não trouxe link para conferir. Tente de novo mais tarde.', flush=True)
         return 1
     conferir_dono(itens[0]['url'])
     print(f'OK: o link gerado pela API é do afiliado {ID_AFILIADO_SHOPEE}.', flush=True)
+    if not por_item:
+        return 0
+    shop, item = itens[0]['item_id'].split('.')
+    pausa()
+    no = no_do_item(buscar_item(cred, shop, item), shop, item)
+    if no is None:
+        print('PAROU: a consulta por item não devolveu o produto pedido (shopId e itemId). '
+              'Não rode o atualizar_precos.py shopee; leve esta saída ao lead.', file=sys.stderr, flush=True)
+        return 1
+    it = no_para_item(no, TERMO_CONFERENCIA, '')   # o mesmo filtro da rodada: sem ele, todo item seria indisponível
+    if it is None:
+        print('PAROU: a consulta por item devolveu o produto pedido, mas a rodada o recusaria (sem link curto de '
+              'afiliado, sem título, abaixo do piso ou de usado). '
+              'Não rode o atualizar_precos.py shopee; leve esta saída ao lead.', file=sys.stderr, flush=True)
+        return 1
+    if not preco_legivel(no):
+        print('PAROU: a consulta por item devolveu o produto pedido, mas sem preço legível (priceMin). '
+              'Não rode o atualizar_precos.py shopee; leve esta saída ao lead.', file=sys.stderr, flush=True)
+        return 1
+    print('OK: a consulta por item (shopId e itemId) devolveu o produto pedido, com preço.', flush=True)
+    # só ids e preço (nada de título nem link): o dono confere no site que a ordem de grandeza bate
+    print(f'Produto {it["item_id"]}: preço lido {it["data"]["preco"]}. Abra esse produto no site da Shopee e confira '
+          'que o preço tem a mesma ordem de grandeza (não 100 vezes maior nem menor).', flush=True)
     return 0
 
 
@@ -531,10 +676,12 @@ def ler_argumentos(argv):
     p = argparse.ArgumentParser(prog='coletar_shopee.py',
                                 description='Coleta da Shopee pela Open API de afiliados ou por arquivo do painel.')
     sub = p.add_subparsers(dest='modo', required=True)
-    sub.add_parser('conferir', help='confere que o link gerado pela API é do dono; não grava nada')
+    c = sub.add_parser('conferir', help='confere que o link gerado pela API é do dono; não grava nada')
+    c.add_argument('--por-item', action='store_true',
+                   help='depois, consulta por shopId e itemId o primeiro item da busca (portão G1)')
     b = sub.add_parser('buscas', help='coleta os termos de uma aba do buscas.json')
     b.add_argument('--cat', required=True, help='aba do buscas.json')
-    b.add_argument('--ordens', default='relevancia', help='lista separada por vírgula: ' + ','.join(ORDENS))
+    b.add_argument('--ordens', default=ORDEM_PADRAO, help='lista separada por vírgula: ' + ','.join(ORDENS))
     i = sub.add_parser('importar', help='grava os itens de um arquivo capturado no painel de afiliados; sem credencial')
     i.add_argument('arquivo', help='JSON {cat, busca, nos} (formato no topo do coletar_shopee.py)')
     args = p.parse_args(argv)
@@ -580,8 +727,24 @@ def main(argv=None):
         print('ERRO: preencha ID_AFILIADO_SHOPEE no coletar_shopee.py (só números, o <ID> de utm_source=an_<ID>).',
               file=sys.stderr, flush=True)
         return 2
-    if args.modo == 'importar':   # sem credencial: não chama credenciais() nem lê o ambiente
-        return _rodar_importar(args.arquivo)
+    if args.modo == 'conferir':   # não grava nada: não trava (roda mesmo com outra rodada da Shopee no ar)
+        return _rodar_api(args)
+    try:
+        # buscas e importar gravam: a trava vem antes do proteger_processo, do Secret, do arquivo, do banco e do
+        # progresso. Pega ou não pega na hora (sem espera).
+        with S.travar_rodada('shopee'):
+            if args.modo == 'importar':   # sem credencial: não chama credenciais() nem lê o ambiente
+                return _rodar_importar(args.arquivo)
+            return _rodar_api(args)
+    except S.RodadaEmAndamento as e:   # só a entrada da trava levanta isto
+        print(f'PAROU: {e}', file=sys.stderr, flush=True)
+        return 4
+
+
+def _rodar_api(args):
+    """conferir e buscas: proteger_processo, credenciais e a Open API, com as saídas 0/1/2/3/130."""
+    if not proteger_processo():   # antes de ler o Secret
+        print(AVISO_PROCESSO, file=sys.stderr, flush=True)
     cred = credenciais()
     if cred is None:
         print('ERRO: defina ACHADINHOS_SHOPEE_APP_ID e ACHADINHOS_SHOPEE_SECRET só para este comando, sem export, '
@@ -590,7 +753,7 @@ def main(argv=None):
         return 2
     try:
         if args.modo == 'conferir':
-            return conferir(cred)
+            return conferir(cred, args.por_item)
         termos = termos_da_aba(args.cat)
         if not termos:
             print('ERRO: aba sem termos no buscas.json.', file=sys.stderr, flush=True)

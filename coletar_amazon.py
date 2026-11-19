@@ -9,6 +9,12 @@ Retoma de onde parou: termos já coletados ficam em coleta_amazon_feitos.txt
 (ACHADINHOS_FEITOS troca o caminho desse arquivo).
 As buscas só gravam item que passa no piso de qualidade (`passa_piso`: nota >= 4,5 e volume) e cujo
 título não é de usado/recondicionado (`eh_usado`). Termo em que nenhum achado passa não é marcado como feito.
+Trava por loja (servidor.travar_rodada): antes de abrir o banco ou o progresso, pega `<banco>.rodada-amazon.lock`
+(ao lado do ACHADINHOS_DB) sem esperar; outra rodada da Amazon no ar (esta coleta ou o atualizar_precos.py amazon)
+faz sair com 4, sem tocar em nada.
+
+Saída: 0 ok; 1 erro inesperado (rede, página fora do formato); 2 argumento (aba ou ordem) ou a Amazon pediu
+captcha (o progresso fica salvo); 4 outra rodada da Amazon em andamento, ou trava recusada (espere a outra terminar).
 """
 import argparse, json, os, random, re, sys, time, unicodedata, urllib.parse, urllib.request
 from bs4 import BeautifulSoup
@@ -272,20 +278,26 @@ def ler_argumentos(argv):
 
 def main(argv=None):
     a = ler_argumentos(sys.argv[1:] if argv is None else argv)
-    S.criar_banco()
     try:
-        if a.modo in ('whatsapp', 'tudo'):
-            coletar_whatsapp()
-        if a.modo in ('buscas', 'tudo'):
-            coletar_buscas(a.cat, a.ordens)
-    except ArgInvalido as e:
-        print('ERRO:', e, file=sys.stderr, flush=True)
-        sys.exit(2)
-    except Bloqueado as e:
-        print('PAROU: a Amazon pediu captcha em', e, '- espere uns minutos e rode de novo.', flush=True)
-        sys.exit(2)
-    con = S.conectar()
-    print('TOTAL no banco:', con.execute('SELECT COUNT(*) FROM items').fetchone()[0])
+        # a trava vem antes do criar_banco e de qualquer marcar; pega ou não pega na hora (sem espera)
+        with S.travar_rodada('amazon'):
+            S.criar_banco()
+            try:
+                if a.modo in ('whatsapp', 'tudo'):
+                    coletar_whatsapp()
+                if a.modo in ('buscas', 'tudo'):
+                    coletar_buscas(a.cat, a.ordens)
+            except ArgInvalido as e:
+                print('ERRO:', e, file=sys.stderr, flush=True)
+                sys.exit(2)
+            except Bloqueado as e:
+                print('PAROU: a Amazon pediu captcha em', e, '- espere uns minutos e rode de novo.', flush=True)
+                sys.exit(2)
+            con = S.conectar()
+            print('TOTAL no banco:', con.execute('SELECT COUNT(*) FROM items').fetchone()[0])
+    except S.RodadaEmAndamento as e:   # só a entrada da trava levanta isto
+        print(f'PAROU: {e}', file=sys.stderr, flush=True)
+        sys.exit(4)
 
 
 if __name__ == '__main__':

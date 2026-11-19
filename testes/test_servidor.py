@@ -227,7 +227,9 @@ class TestLinhaDeBase(ServidorTeste):
         with open(os.path.join(RAIZ, 'servidor.py'), encoding='utf-8') as f:
             src = f.read()
         rotas = sorted(set(re.findall(r"""['"](/api/[^'"]*)['"]""", src)))
-        self.assertEqual(rotas, ['/api/', '/api/config/', '/api/fetch', '/api/items', '/api/ml-sem-afiliado'])
+        # /api/versao: etapa 6 de endurecer-engenharia-e-operacao (testes em test_versao_servidor.py)
+        self.assertEqual(rotas, ['/api/', '/api/config/', '/api/fetch', '/api/items', '/api/ml-sem-afiliado',
+                                 '/api/versao'])
         self.assertIsNone(re.search(r'/api/(imagem|img|foto|proxy|copiar)', src, re.I),
                           'rota de proxy de imagem não faz parte do plano')
         # as rotas /api/disparo/* moram no disparo.py, como sufixos do disparo.PREFIXO (R4 da revisão)

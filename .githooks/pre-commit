@@ -1,0 +1,6 @@
+#!/bin/sh
+# Portão de commit (docs/produto/planos/endurecer-engenharia-e-operacao.md, etapa 8, CA7).
+# Liga com: git config core.hooksPath .githooks   (desliga com: git config --unset core.hooksPath)
+# O git roda o hook na raiz do repositório. `git commit --no-verify` passa por cima: protege contra
+# acidente, não contra má-fé.
+exec python3 verificar.py --pre-commit

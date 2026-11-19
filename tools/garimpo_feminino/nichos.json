@@ -1,0 +1,306 @@
+[
+ {
+  "slug": "roupasfemininas",
+  "nome": "Roupas Femininas",
+  "sementes": [
+   "vestido",
+   "vestido longo",
+   "blusa feminina",
+   "cropped",
+   "body feminino",
+   "regata feminina",
+   "camisa feminina",
+   "saia",
+   "saia midi",
+   "short feminino",
+   "calça feminina",
+   "calça wide leg",
+   "pantalona",
+   "conjunto feminino",
+   "macacão feminino",
+   "blazer feminino",
+   "jaqueta feminina",
+   "casaco feminino",
+   "cardigan",
+   "tricô feminino",
+   "moletom feminino",
+   "kimono"
+  ]
+ },
+ {
+  "slug": "modaintima",
+  "nome": "Moda Íntima, Lingerie & Pijamas",
+  "sementes": [
+   "lingerie",
+   "sutiã",
+   "top sem bojo",
+   "calcinha",
+   "kit calcinha",
+   "conjunto lingerie",
+   "body rendado",
+   "cinta modeladora",
+   "shapewear",
+   "pijama feminino",
+   "camisola",
+   "baby doll",
+   "robe",
+   "meia-calça"
+  ]
+ },
+ {
+  "slug": "modapraia",
+  "nome": "Moda Praia",
+  "sementes": [
+   "biquíni",
+   "maiô",
+   "saída de praia",
+   "canga"
+  ]
+ },
+ {
+  "slug": "fitnessfeminino",
+  "nome": "Fitness Feminino",
+  "sementes": [
+   "legging",
+   "top fitness",
+   "conjunto fitness",
+   "short fitness",
+   "macaquinho fitness",
+   "bermuda ciclista"
+  ]
+ },
+ {
+  "slug": "plussize",
+  "nome": "Plus Size",
+  "sementes": [
+   "vestido plus size",
+   "blusa plus size",
+   "calça plus size",
+   "lingerie plus size",
+   "biquíni plus size"
+  ]
+ },
+ {
+  "slug": "sapatosfemininos",
+  "nome": "Sapatos Femininos",
+  "sementes": [
+   "sandália feminina",
+   "rasteirinha",
+   "salto alto",
+   "scarpin",
+   "sandália salto bloco",
+   "mule",
+   "tamanco",
+   "sapatilha",
+   "tênis feminino",
+   "bota feminina",
+   "coturno feminino",
+   "chinelo feminino",
+   "papete",
+   "slide feminino"
+  ]
+ },
+ {
+  "slug": "bolsascarteiras",
+  "nome": "Bolsas & Carteiras",
+  "sementes": [
+   "bolsa feminina",
+   "bolsa transversal",
+   "bolsa tiracolo",
+   "bolsa de mão",
+   "clutch",
+   "bolsa tote",
+   "mochila feminina",
+   "carteira feminina",
+   "necessaire"
+  ]
+ },
+ {
+  "slug": "bijuterias",
+  "nome": "Bijuterias, Joias & Acessórios de Cabelo",
+  "sementes": [
+   "brinco",
+   "argola",
+   "colar",
+   "choker",
+   "pulseira",
+   "tornozeleira",
+   "anel",
+   "kit bijuteria",
+   "prata 925",
+   "banhado a ouro",
+   "piercing",
+   "presilha",
+   "piranha de cabelo",
+   "scrunchie",
+   "tiara",
+   "laço de cabelo"
+  ]
+ },
+ {
+  "slug": "relogiosoculos",
+  "nome": "Relógios, Óculos & Acessórios",
+  "sementes": [
+   "relógio feminino",
+   "smartwatch feminino",
+   "óculos de sol feminino",
+   "cinto feminino",
+   "lenço",
+   "chapéu feminino",
+   "boné feminino"
+  ]
+ },
+ {
+  "slug": "maquiagem",
+  "nome": "Maquiagem",
+  "sementes": [
+   "base",
+   "corretivo",
+   "pó facial",
+   "blush",
+   "bronzer",
+   "iluminador",
+   "contorno",
+   "primer",
+   "fixador de maquiagem",
+   "batom",
+   "batom matte",
+   "lip tint",
+   "gloss",
+   "lip oil",
+   "máscara de cílios",
+   "delineador",
+   "lápis de olho",
+   "paleta de sombras",
+   "pincéis de maquiagem",
+   "esponja de maquiagem",
+   "kit maquiagem"
+  ]
+ },
+ {
+  "slug": "skincare",
+  "nome": "Skincare",
+  "sementes": [
+   "sérum facial",
+   "vitamina C",
+   "ácido hialurônico",
+   "niacinamida",
+   "retinol",
+   "protetor solar facial",
+   "hidratante facial",
+   "sabonete facial",
+   "tônico facial",
+   "máscara facial",
+   "patch olheiras",
+   "skincare coreano",
+   "gua sha",
+   "rolo de jade"
+  ]
+ },
+ {
+  "slug": "cabelos",
+  "nome": "Cabelos",
+  "sementes": [
+   "shampoo",
+   "máscara capilar",
+   "óleo capilar",
+   "cronograma capilar",
+   "leave-in",
+   "finalizador cachos",
+   "tinta de cabelo",
+   "escova secadora",
+   "prancha alisadora",
+   "babyliss",
+   "modelador de cachos",
+   "secador de cabelo",
+   "touca de cetim",
+   "mega hair",
+   "aplique",
+   "peruca",
+   "lace front"
+  ]
+ },
+ {
+  "slug": "unhas",
+  "nome": "Unhas",
+  "sementes": [
+   "esmalte",
+   "esmalte em gel",
+   "cabine led",
+   "kit manicure",
+   "unha postiça",
+   "press on",
+   "tips",
+   "alongamento de unhas",
+   "removedor de cutícula",
+   "adesivo de unha"
+  ]
+ },
+ {
+  "slug": "perfumes",
+  "nome": "Perfumes",
+  "sementes": [
+   "perfume feminino",
+   "body splash",
+   "perfume árabe feminino",
+   "colônia feminina",
+   "kit perfume"
+  ]
+ },
+ {
+  "slug": "corpobanho",
+  "nome": "Corpo, Banho & Depilação",
+  "sementes": [
+   "hidratante corporal",
+   "óleo corporal",
+   "esfoliante corporal",
+   "creme para estrias",
+   "autobronzeador",
+   "cera depilatória",
+   "depilador elétrico",
+   "depilador a laser",
+   "lâmina depilação feminina"
+  ]
+ },
+ {
+  "slug": "ciliossobrancelhas",
+  "nome": "Cílios & Sobrancelhas",
+  "sementes": [
+   "cílios postiços",
+   "cílios magnéticos",
+   "extensão de cílios",
+   "cola de cílios",
+   "curvex",
+   "henna sobrancelha",
+   "lápis de sobrancelha",
+   "gel de sobrancelha"
+  ]
+ },
+ {
+  "slug": "saudeintima",
+  "nome": "Saúde Íntima & Bem-estar",
+  "sementes": [
+   "coletor menstrual",
+   "calcinha absorvente",
+   "absorvente",
+   "sabonete íntimo",
+   "bolsa térmica cólica",
+   "colágeno",
+   "vitamina cabelo e unha"
+  ]
+ },
+ {
+  "slug": "gestante",
+  "nome": "Gestante & Maternidade",
+  "sementes": [
+   "roupa gestante",
+   "vestido gestante",
+   "sutiã amamentação",
+   "cinta gestante",
+   "cinta pós-parto",
+   "bolsa maternidade",
+   "almofada amamentação",
+   "travesseiro gestante"
+  ]
+ }
+]

@@ -11,4 +11,9 @@
 - [Abas por nicho (17 abas, etapas 1-10)](testes-abas-nichadas.md) — abas-qa, Q1/Q2 abertos, fatos da cópia migrada, mutantes e lacunas de usado
 - [Preço sempre atualizado (preco_em, trava, v1, lote)](testes-atualizar-precos.md) — test_atualizar_precos_qa.py, precos-qa, Q1-Q4 baixos, bug do undici >64 KB, mutantes
 - [Painel PHP /painel/ (repo Pagina_desejoMenina)](testes-painel-hostinger.md) — Docker, TLS local, layout CDP, hook só aceita *.test.*, Q1-Q3 corrigidos (rodada 2 aprovada)
-- [API oficial do ML (ml_api.py)](testes-ml-api.md) — test_ml_api_qa.py e test_ml_api_catalogo_qa.py (sonda do catálogo), socket local, 401 concorrente, sondar antigo via git show, servidor real; rodada 2 aprovada (Q1 risco aceito, Q2 corrigido)
+- [API oficial do ML (ml_api.py)](testes-ml-api.md) — test_ml_api_qa.py e test_ml_api_catalogo_qa.py (sonda do catálogo), socket local, 401 concorrente, sondar antigo via git show, servidor real; rodada 2 aprovada (Q1 risco aceito, Q2 corrigido); etapa 3 (atualizar_precos ml): test_atualizar_precos_ml_qa.py, rodada 2 aprovada, Q1 risco aceito (NULL vira vazio)
+- [Foto grande (miniatura -> foto cheia)](testes-foto-grande.md) — tabela compartilhada Python/front, testes antigos do ML alterados, validação por referência
+- [Shopee por item (atualizar_precos shopee, G1)](testes-shopee-por-item.md) — test_shopee_por_item_qa.py (108 testes), rodadas 1 e 2, relógio coerente, mutantes, riscos baixos, cuidado com rsync levando segredos
+- [Entrega 1 de endurecer engenharia (verificar, trava, backup, operacao)](testes-endurecer-engenharia.md) — test_endurecer_qa.py, Q1/Q2 baixos abertos, aviso sobre kill por porta
+- [Entrega 2 (hook de prompt, timers, corte do CLAUDE.md)](testes-entrega2-hook-timers.md) — test_entrega2_qa.py, Q1/Q2 baixos abertos, CA13 sem perda, mutantes, armadilhas nohup/pkill
+- [Freio da confirmação de preço (corrida resposta x liberar)](testes-confirmar-preco-freio.md) — segurar_liberar torna a corrida determinística

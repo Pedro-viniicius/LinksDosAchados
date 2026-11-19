@@ -1,14 +1,19 @@
 - [Ambiente de revisão](revisao-ambiente.md) — git, servidor real só com GET, servidor próprio (exec no subshell para o PID), Chrome headless, testes; `--noproxy` com aspas
 - [Padrões nas mudanças de UI](padroes-ui-designer.md) — borda de campo, cor literal, informação removida, flex:1 em textarea, aria-disabled perdendo para o hover global, regra da spec sem medir, cor da referência sem conferir
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
-- [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível persistente por config, toggle às cegas; formatos reais via GET
-- [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo com o estado que ele cria; a doc herda erro do plano (FEITOS novo recoleta tudo)
-- [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
+- [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível por config, toggle às cegas, pré-filtro que esvazia teste negativo (zrp), teste abaixo do limiar (aviso zrp); formatos via GET
+- [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo; some todas as fases; backup antes dos comandos; na r2, grep em toda consequência nova
+- [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste; ORDEM_PADRAO vendidos
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
-- [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado (0,5 s/pedido), linha ruim e token real em teste (corrigidos), números do contrato
+- [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado, números do contrato; Q1 validade; freio do confirmar-preco: mutantes e estresse 30x
 - [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
-- [Público (gênero)](padroes-genero.md) — gatilhos do classificador no banco copiado, código antigo sobre v2, folga x categorias, mutantes
+- [Público (gênero)](padroes-genero.md) — gatilhos no banco copiado, código antigo sobre v2, folga x categorias, mutantes; Q1 do PUT (ler antes do commit)
 - [Extração da página da Amazon](padroes-extracao-amazon.md) — regex da foto (landingImage), ordem dos atributos no teste decide o mutante
-- [Preço sempre atualizado](padroes-atualizar-precos.md) — "não apagar preço" só no lote (PATCH do cartão escapa); campo novo na v1 quebrou undici concorrente
+- [Preço sempre atualizado](padroes-atualizar-precos.md) — lote x PATCH; v1 x undici; item não marcado = trava; formato da API Shopee: confira medições do garimpo
 - [Painel PHP do Pagina_desejoMenina](revisao-painel-php-hostinger.md) — repo irmão: comandos Docker, imagens, arquivos untracked (guarde cópia na r1), gravação atômica, âncora escondida
-- [API oficial do ML](padroes-ml-api.md) — etapas 1-3 aprovadas na r2; borda .lock existente + pasta sem escrita gasta o code; check-ignore -q com vários dá 128; mutantes precisam do README na cópia
+- [API oficial do ML](padroes-ml-api.md) — etapas 1-3 e catálogo 1-3 aprovadas; catálogo etapa 4 (README) aprovada na conferência pós-r2
+- [Garimpo feminino](padroes-garimpo-feminino.md) — r1 das etapas 1-7: erro vira medição, erro trava a categoria, nó ruim, SIGTERM; prova sem rede; armadilha da chave na etapa 9
+- [Landing pages de grupo](revisao-landing-pages.md) — fora do repo: checks de cada site, 4 cópias do contar.php entre worktrees, origem nova sem teste
+- [Comportamento padrão do front](padroes-front-comportamento.md) — mudar o padrão quebra páginas fora da linha de base; rode todas; mutante por replace na 8767; anote achados da r1
+- [Foto grande (Q1)](padroes-foto-grande.md) — guarda de query sem teste (mutante), fuzz de paridade Python x front, números do banco
+- [Endurecer engenharia (verificar.py)](padroes-endurecer.md) — e1: verificar/mutantes/corrida do backup; e2: guarda segue imports, hook (token_urlsafe, pontuação, marcador com #), unidades com systemctl falso; r2: __pycache__ alheio deixa o verificar vermelho; hook do designer: passe o ls-files inteiro

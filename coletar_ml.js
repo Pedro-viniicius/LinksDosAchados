@@ -18,7 +18,7 @@
  *   4. Depois, numa aba em https://www.mercadolivre.com.br/afiliados/linkbuilder, cole o arquivo e rode:
  *        await ColetaML.afiliar({enviar: false, itens: ['https://produto.mercadolivre.com.br/MLB-…']})
  *        await ColetaML.afiliar({servidor: 'http://localhost:8766'})       // troca as urls por meli.la
- *      Antes, confira na página que a etiqueta é achadosmenicas e que "Links curtos" está ligado. O script
+ *      Antes, confira na página que a etiqueta é achadosmenicas e que "Link curto" está ligado. O script
  *      recusa se o pedido do createLink mostrar outra etiqueta e para se vier link que não é meli.la.
  *      Os inelegíveis aparecem no console: exclua pelo site (o script nunca apaga nada).
  *   5. ColetaML.zerar('http://localhost:8765') esquece o que está guardado no localStorage da aba em que roda:
@@ -26,7 +26,8 @@
  *
  * Cada termo vira um POST em <servidor>/api/items com cat = chave de buscas.json e busca = termo.
  * O progresso fica no localStorage da aba, por servidor: termo já enviado não é coletado de novo.
- * ordem: 'relevancia' (padrão, a listagem de sempre) ou 'caros' (a mesma listagem por maior preço). O progresso da
+ * ordem: 'relevancia' (padrão, a listagem de sempre), 'caros' (a mesma listagem por maior preço) ou 'relampago' (só o
+ * que está em "Oferta relâmpago"). O progresso da
  * relevância é o termo puro; o das outras ordens é "<ordem>|<termo>", então cada ordem coleta uma vez por termo.
  * atualizar() lê a página inteira de cada termo e manda {items, so_existentes: true}; o progresso dele fica em
  * __atualizarML:<servidor>, com "<AAAA-MM-DD>|<ordem>|<termo>", e vale só no dia (local) em que foi gravado.
@@ -52,8 +53,12 @@
   const RX_CAPTCHA = /captcha|account-verification|gz\//;
   const PREFIXO_PROGRESSO = '__coletaML:';
   const MAX_POR_BUSCA = 30;
-  // sufixo da URL da listagem por ordem; o ML só oferece relevância, menor e maior preço (sem "mais vendidos")
-  const ORDENS_ML = { relevancia: '', caros: '_OrderId_PRICE*DESC' };
+  // sufixo da URL da listagem por ordem; o ML só oferece relevância, menor e maior preço (sem "mais vendidos").
+  // 'relampago' não muda a ordem: é o filtro "Oferta relâmpago" da listagem (11/2026). O filtro "Oferta do dia" saiu
+  // da busca do ML em 15/11/2026 (a URL responde 200 sem resultado), então 'ofertadodia' não existe mais.
+  const ORDENS_ML = {
+    relevancia: '', caros: '_OrderId_PRICE*DESC', relampago: '_NoIndex_True_promotion*type_lightning',
+  };
   const PAUSA_PADRAO = [2500, 5000];   // ms entre um termo e outro, sorteado no intervalo
   const PRAZO_MS = 60000;              // cada requisição desiste depois disso
   const CAMPOS = ['titulo', 'preco', 'preco_antigo', 'desconto', 'avaliacao', 'num_avaliacoes',
@@ -494,6 +499,57 @@
     return null;
   }
 
+  /** O valor (já lido com JSON.parse) traz um objeto com "rescue" cujo "type" é "zrp"? Profundidade limitada. */
+  function temRescueZrp(v, nivel = 0) {
+    if (nivel > 12 || v === null || typeof v !== 'object') return false;
+    if (Array.isArray(v)) return v.some((x) => temRescueZrp(x, nivel + 1));
+    const r = Object.prototype.hasOwnProperty.call(v, 'rescue') ? v.rescue : null;
+    if (r !== null && typeof r === 'object' && r.type === 'zrp') return true;
+    return Object.keys(v).some((k) => temRescueZrp(v[k], nivel + 1));
+  }
+
+  /**
+   * A página é a "busca sem resultado" do ML (15/11/2026)? Vale só o que está dentro de um literal .q("…")
+   * decodificado: um "rescue" com "type":"zrp" (zero results page). Cada linha do literal ("0:{json}") é lida com
+   * JSON.parse; texto solto no HTML, outro script ou comentário não contam. O literalQ() não serve: só devolve
+   * literal com "polycard", e a página sem resultado não tem nenhum.
+   */
+  function paginaSemResultado(html) {
+    if (typeof html !== 'string') return false;
+    let i = html.indexOf('.q("');
+    while (i !== -1) {
+      const ini = i + 3;
+      const fim = fimDoLiteral(html, ini);
+      if (fim === -1) {
+        i = html.indexOf('.q("', i + 4);
+        continue;
+      }
+      const bruto = html.slice(ini, fim + 1);
+      if (bruto.includes('zrp')) {
+        const texto = decodificarLiteral(bruto);
+        if (texto !== null) {
+          for (const linha of texto.split('\n')) {
+            const m = /^\d+:([\s\S]*)$/.exec(linha.trim());
+            let v;
+            try { v = JSON.parse(m ? m[1] : linha); } catch (e) { continue; }
+            if (temRescueZrp(v)) return true;
+          }
+        }
+      }
+      i = html.indexOf('.q("', fim + 1);
+    }
+    return false;
+  }
+
+  /**
+   * Todos os termos buscados na rodada (não os pulados pelo progresso) vieram sem resultado, e foram 2 ou mais?
+   * Sinal de que o filtro/ordem saiu do ML ou a busca mudou; só avisa, não muda estado nem a decisão de seguir.
+   */
+  function avisarSemResultadoGeral(estado, buscados, ordem) {
+    if (estado.semResultado.length < 2 || estado.semResultado.length !== buscados) return;
+    console.warn(`[ColetaML] nenhum termo trouxe resultado: o filtro/ordem ${ordem} pode ter saído do ML ou a busca mudou`);
+  }
+
   /** Índice da chave que fecha o objeto que abre em s[ini], respeitando strings JSON, ou -1. */
   function fimDoObjeto(s, ini) {
     let nivel = 0;
@@ -806,9 +862,10 @@
 
   /**
    * Coleta os termos na própria aba do ML e, com enviar:true, grava cada termo no servidor.
-   * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, foraDoPiso, usados, semPiso, parado, erro}.
+   * Devolve o estado: {rodando, servidor, enviar, ordem, feitos, pulados, itens, inserido, atualizado, foraDoPiso, usados, semPiso, semResultado, parado, erro}.
    * Só entram em itens os polycards com nota ≥ 4,5 e "Mais de 50 vendidos" ou mais, e que não são usados
    * (foraDoPiso conta todos os de fora; usados, só os de usado). Termo sem nenhum item no piso vai para semPiso e não entra no progresso.
+   * Termo cuja busca o ML devolve sem resultado (página "zrp", sem nenhum polycard) vai para semResultado, também sem progresso, e a rodada segue.
    * Com enviar:false não fala com o servidor nem usa o progresso: só monta os itens em estado.itens.
    */
   async function coletar(opcoes = {}) {
@@ -818,7 +875,7 @@
     }
     const estado = {
       rodando: false, servidor: null, enviar: null, ordem: null, termoAtual: null, feitos: [], pulados: [], itens: [],
-      inserido: 0, atualizado: 0, foraDoPiso: 0, usados: 0, semPiso: [], parado: false, erro: null,
+      inserido: 0, atualizado: 0, foraDoPiso: 0, usados: 0, semPiso: [], semResultado: [], parado: false, erro: null,
     };
     ultimoEstado = estado;
     const origem = globalThis.location ? globalThis.location.origin : undefined;
@@ -834,6 +891,7 @@
     const feitosAntes = enviar ? lerProgresso(arm, servidor) : new Set();
     const feitos = new Set(feitosAntes);
     let buscou = false;
+    let buscados = 0;
     // chave do progresso: o termo puro na relevância (igual ao que já está no localStorage) e <ordem>|<termo> nas outras
     const chaveDe = (termo) => (ordem === 'relevancia' ? termo : ordem + '|' + termo);
     try {
@@ -846,6 +904,7 @@
           if (execucao.parar) break;
         }
         buscou = true;
+        buscados++;
         estado.termoAtual = termo;
         const cat = categoriaDe(termo);
 
@@ -856,6 +915,13 @@
         estado.foraDoPiso += contagem.foraDoPiso;
         estado.usados += contagem.usados;
         if (!contagem.lidos) {
+          if (paginaSemResultado(pagina.html)) {
+            // o ML não tem produto para o termo (nessa ordem): não é captcha, a rodada segue e o termo roda de novo depois
+            estado.semResultado.push(termo);
+            log(`${n + 1}/${termos.length} "${termo}"${ordem === 'relevancia' ? '' : ' (' + ordem + ')'} → ${cat}: ` +
+              'a busca não trouxe resultado no ML. Nada enviado; o termo não foi marcado como feito.');
+            continue;
+          }
           return falhar(estado, `a busca "${termo}" veio sem polycard: pode ser captcha ou mudança na página do ML. ` +
             'A coleta parou e nada foi enviado deste termo.');
         }
@@ -903,9 +969,10 @@
         log(`parado. ${estado.feitos.length} termos feitos nesta rodada; rode coletar() de novo para continuar.`);
       } else {
         log(`fim: ${estado.feitos.length} termos coletados, ${estado.pulados.length} pulados (já feitos), ` +
-          `${estado.foraDoPiso} itens fora do piso (${estado.usados} usados), ${estado.semPiso.length} termos sem nenhum item no piso` +
+          `${estado.foraDoPiso} itens fora do piso (${estado.usados} usados), ${estado.semPiso.length} termos sem nenhum item no piso, ${estado.semResultado.length} sem resultado` +
           (enviar ? `; inserido ${estado.inserido}, atualizado ${estado.atualizado}.`
             : '. Nada foi enviado: os itens estão em ColetaML.estado.itens.'));
+        avisarSemResultadoGeral(estado, buscados, ordem);
       }
       return estado;
     } finally {
@@ -1023,12 +1090,13 @@
   /**
    * Atualiza preço e dados dos itens do ML que já estão no banco, relendo as buscas dos termos na própria aba.
    * Opções: cat (aba de BUSCAS; sem termos, lê os termos dela e os do ALIAS que apontam para ela), termos, ordem
-   * ('relevancia' ou 'caros'), mais servidor, enviar, pausa, fetch, armazenamento e agora (só testes) do coletar().
+   * (as do coletar(): 'relevancia', 'caros' ou 'relampago'), mais servidor, enviar, pausa, fetch, armazenamento e agora (só testes) do coletar().
    * Lê a página inteira (sem o corte de 30) e manda {items, so_existentes: true}: o servidor nunca insere e preserva
    * o meli.la. Fica fora do lote o card usado, fora do piso ou sem preço legível: o item guarda os dados antigos,
    * o preco_em envelhece e a trava do disparo o tira (CA5). O progresso é por dia local, separado do da coleta.
    * Devolve o estado: {rodando, servidor, enviar, ordem, cat, dia, feitos, pulados, itens, lidos, atualizado,
-   * ausente (itens da página que não estão no banco), foraDoPiso, usados, semPreco, parado, erro}.
+   * ausente (itens da página que não estão no banco), foraDoPiso, usados, semPreco, semResultado (termos cuja busca
+   * veio sem resultado: não entram no progresso nem no lote, e a rodada segue), parado, erro}.
    */
   async function atualizar(opcoes = {}) {
     if (execucao) {
@@ -1038,7 +1106,7 @@
     const estado = {
       rodando: false, servidor: null, enviar: null, ordem: null, cat: null, dia: null, termoAtual: null,
       feitos: [], pulados: [], itens: [], lidos: 0, atualizado: 0, ausente: 0, foraDoPiso: 0, usados: 0, semPreco: 0,
-      parado: false, erro: null,
+      semResultado: [], parado: false, erro: null,
     };
     ultimoEstado = estado;
     const origem = globalThis.location ? globalThis.location.origin : undefined;
@@ -1067,6 +1135,7 @@
       const chaveDe = (termo) => `${dia}|${ordem}|${termo}`;
       const rotulo = ordem === 'relevancia' ? '' : ' (' + ordem + ')';
       let buscou = false;
+      let buscados = 0;
       for (let n = 0; n < termos.length; n++) {
         const termo = termos[n];
         if (execucao.parar) break;
@@ -1076,6 +1145,7 @@
           if (execucao.parar) break;
         }
         buscou = true;
+        buscados++;
         estado.termoAtual = termo;
         const aba = categoriaDe(termo);
 
@@ -1084,6 +1154,12 @@
         const contagem = { lidos: 0, foraDoPiso: 0, usados: 0 };
         const noPiso = extrairItens(pagina.html, termo, aba, Infinity, contagem);
         if (!contagem.lidos) {
+          if (paginaSemResultado(pagina.html)) {
+            estado.semResultado.push(termo);
+            log(`${n + 1}/${termos.length} "${termo}"${rotulo} → ${aba}: a busca não trouxe resultado no ML. ` +
+              'Nada enviado; o termo não foi marcado como feito hoje.');
+            continue;
+          }
           return falhar(estado, `a busca "${termo}" veio sem polycard: pode ser captcha ou mudança na página do ML. ` +
             'A atualização parou e nada foi enviado deste termo.');
         }
@@ -1130,10 +1206,11 @@
       } else {
         log(`fim da atualização de ${dia}: ${estado.feitos.length} termos lidos, ${estado.pulados.length} pulados ` +
           `(já feitos hoje), ${estado.lidos} itens lidos, ${estado.foraDoPiso} fora do piso (${estado.usados} usados), ` +
-          `${estado.semPreco} sem preço` +
+          `${estado.semPreco} sem preço, ${estado.semResultado.length} termos sem resultado` +
           (enviar ? `; atualizado ${estado.atualizado}, ausente ${estado.ausente} (não estão no banco). ` +
             'Quem ficou de fora guarda o preço antigo e envelhece.'
             : '. Nada foi enviado: os itens estão em ColetaML.estado.itens.'));
+        avisarSemResultadoGeral(estado, buscados, ordem);
       }
       return estado;
     } finally {
@@ -1157,7 +1234,7 @@
   const RX_MELI_LA = /^https:\/\/meli\.la\/[A-Za-z0-9]+$/;
   // só error_code de elegibilidade fica guardado como inelegível; os outros são tentados de novo na próxima execução
   const RX_ERRO_ELEGIBILIDADE = /ELIGIB|ELEGIB/i;
-  const MOTIVO_NAO_MELI_LA = "link não é meli.la: confira 'Links curtos'";
+  const MOTIVO_NAO_MELI_LA = "link não é meli.la: confira 'Link curto'";
 
   /** Só https://meli.la/<código>: é o único link que o PATCH pode levar (regra do dono). */
   function ehLinkMeliLa(url) {
@@ -1176,7 +1253,7 @@
    * ({id, url}) pelo código MLB, nunca pela ordem (a resposta pode vir embaralhada e com a url canônica).
    * trocar: link meli.la único para o MLB.
    * inelegiveis: error_code ({codigo, motivo}) ou link que não é meli.la ({naoMeliLa: true}, sintoma de
-   *   "Links curtos" desligado: afiliar() para e não grava nada do lote).
+   *   "Link curto" desligado: afiliar() para e não grava nada do lote).
    * semResposta: MLB ausente da resposta ou com dois links diferentes.
    */
   function mapearLinks(resp, itens) {
@@ -1326,7 +1403,7 @@
   }
 
   /**
-   * Operação da interface do linkbuilder: confere "Links curtos", preenche a primeira caixa de texto com as
+   * Operação da interface do linkbuilder: confere "Link curto", preenche a primeira caixa de texto com as
    * urls (uma por linha), clica em "Gerar" e devolve a resposta do createLink capturada pelo gancho.
    * Recusa se o pedido mostrar uma etiqueta diferente de achadosmenicas.
    */
@@ -1334,16 +1411,17 @@
     const doc = globalThis.document;
     if (!doc) throw new Error('esta aba não tem página');
     const g = instalarGancho();
-    const rotulo = [...doc.querySelectorAll('label')].find((l) => /Links curtos/i.test(l.textContent || ''));
-    if (!rotulo) throw new Error(`não achei a opção "Links curtos" (abra ${ORIGEM_AFILIADOS}${CAMINHO_LINKBUILDER})`);
+    // o ML já chamou a opção de "Links curtos" (caixa de marcar) e de "Link curto" (botão de rádio, 11/2026)
+    const rotulo = [...doc.querySelectorAll('label')].find((l) => /Links? curtos?/i.test(l.textContent || ''));
+    if (!rotulo) throw new Error(`não achei a opção "Link curto" (abra ${ORIGEM_AFILIADOS}${CAMINHO_LINKBUILDER})`);
     const marcador = rotulo.control || (typeof rotulo.querySelector === 'function' ? rotulo.querySelector('input') : null);
     if (!marcador || typeof marcador.checked !== 'boolean') {
       // não dá para saber se está ligado: não clica (poderia desligar). Se estiver desligado, o lote para.
-      avisarUmaVez('rotulo', 'não consegui ver se "Links curtos" está ligado: confira à mão na página.');
+      avisarUmaVez('rotulo', 'não consegui ver se "Link curto" está ligado: confira à mão na página.');
     } else if (!marcador.checked) {
       rotulo.click();
       await dormir(300);
-      if (!marcador.checked) throw new Error('não consegui ligar "Links curtos": ligue à mão e rode de novo');
+      if (!marcador.checked) throw new Error('não consegui ligar "Link curto": ligue à mão e rode de novo');
     }
     const caixa = doc.querySelectorAll('textarea')[0];
     if (!caixa) throw new Error('não achei a caixa de texto do linkbuilder');
@@ -1438,7 +1516,7 @@
   function mensagemNaoMeliLa(ruins, onde) {
     const ex = ruins.slice(0, 3).map((e) => e.mlb).join(', ');
     return `o linkbuilder devolveu link que não é meli.la para ${ruins.length} item(ns)${onde} (${ex}). ` +
-      'Confira se "Links curtos" está ligado e rode afiliar() de novo. Nada deste lote foi gravado.';
+      'Confira se "Link curto" está ligado e rode afiliar() de novo. Nada deste lote foi gravado.';
   }
 
   /** Confere as opções de afiliar(). Devolve {erro} ou a configuração pronta. */
@@ -1469,7 +1547,7 @@
    * https://www.mercadolivre.com.br/afiliados/linkbuilder.
    *   1. Repete enquanto houver pendentes: GET /api/ml-sem-afiliado, gera em lotes, mapeia pelo MLB e faz PATCH.
    *      Quem fica sem resposta tenta de novo em lote de 10; inelegíveis vão para a lista (nunca são apagados).
-   *      Link que não é meli.la para tudo: é sinal de "Links curtos" desligado.
+   *      Link que não é meli.la para tudo: é sinal de "Link curto" desligado.
    *   2. Conferência: gera de novo os links dos itens tocados (a 1ª criação em lote pode trocar os pares) e
    *      corrige o que mudou, até 0 correções. Um meli.la no banco que não foi gravado nesta execução não é
    *      trocado: a divergência vai para o console.
@@ -1512,7 +1590,7 @@
 
     /**
      * Um lote no linkbuilder; {m} ou {erro}. Lote sem nenhum meli.la e com link de outro tipo é sinal de
-     * "Links curtos" desligado: para sem gravar nada. Em lote misto, quem veio sem meli.la fica sem resposta
+     * "Link curto" desligado: para sem gravar nada. Em lote misto, quem veio sem meli.la fica sem resposta
      * (tenta de novo, não é guardado nem vai para "Exclua pelo site") e o resto segue. Na repescagem o lote
      * só tem quem já falhou, então ele nunca para por isso.
      */
@@ -1687,7 +1765,7 @@
         log(`${estado.parado ? 'parado' : 'fim'}: ${estado.trocados.length} links meli.la ${acao}, ` +
           `${estado.semResposta.length} sem resposta, ${estado.correcoes} correções, ` +
           `${estado.divergencias.length} divergências, ${estado.repetidas.length} urls repetidas` +
-          (estado.naoMeliLa.length ? `, ${estado.naoMeliLa.length} respostas sem meli.la (confira 'Links curtos').` : '.'));
+          (estado.naoMeliLa.length ? `, ${estado.naoMeliLa.length} respostas sem meli.la (confira 'Link curto').` : '.'));
       }
     }
   }

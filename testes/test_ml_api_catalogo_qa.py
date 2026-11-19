@@ -8,6 +8,12 @@ teto exato com a reserva, 429/Limite/rede/401 no meio, 404/403 por endpoint, pai
 lista (páginas e offset), faixas do F11 e janela de 48 h, banco em mode=ro, servidor.py real no ar e o `sondar`
 sem --catalogo comparado com o ml_api.py do commit 34d80cf. Nenhum teste fala com o Mercado Livre: MLFalso
 atrás do OpenerFalso, proxy morto (fixado no import do test_ml_api) e servidor só em 127.0.0.1.
+
+Etapa 2 (CA3, CA6): prova falsa (título igual, id parecido, bbw de outro anúncio), lista paginada com o item na
+página 3 e além do limite, 404/5xx/formato inválido em cada ponto do vínculo e das ofertas, cache com data no
+futuro, ids inválidos vindos da API, arquivo symlink (inclusive trocado entre o lstat e o open), 0644, 2 MB+,
+dono diferente de verdade, escrita atômica sem sobra em cada falha (e a sobra do SIGKILL ignorada pelo git), e
+nenhuma suíte cria `ml_catalogo.json` no projeto.
 """
 import collections
 import contextlib
@@ -16,12 +22,16 @@ import io
 import json
 import os
 import re
+import shutil
+import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 import urllib.error
 import urllib.request
@@ -44,8 +54,23 @@ CONTROLE = re.compile(r'[\x00-\x09\x0b-\x1f\x7f-\x9f​-‏ -‮⁠-⁯﻿]')
 POLICY = (403, {'blocked_by': 'PolicyAgent', 'code': 'PA_UNAUTHORIZED_RESULT_FROM_POLICIES'})
 
 
+def _catalogo_no_projeto():
+    """(nome, inode, mtime) do ml_catalogo.json e das sobras .ml_catalogo.json.*.tmp na raiz do projeto."""
+    achados = []
+    for nome in os.listdir(RAIZ):
+        if nome == 'ml_catalogo.json' or (nome.startswith('.ml_catalogo.json.') and nome.endswith('.tmp')):
+            info = os.lstat(os.path.join(RAIZ, nome))
+            achados.append((nome, info.st_ino, info.st_mtime_ns))
+    return sorted(achados)
+
+
+CATALOGO_NO_PROJETO_ANTES = _catalogo_no_projeto()
+
+
 def tearDownModule():
     C.tearDownModule()
+    # CA3/CA6: nada desta suíte cria ou mexe no ml_catalogo.json do projeto
+    assert _catalogo_no_projeto() == CATALOGO_NO_PROJETO_ANTES, 'um teste mexeu no ml_catalogo.json do projeto'
 
 
 def porta_livre():
@@ -1351,6 +1376,757 @@ class TestSondarIgualAoDeAntes(Qa):
         self.assertEqual((a.comando, a.catalogo, a.amostra, a.semente), ('sondar', False, None, None))
         b = self.ANTIGO.ler_argumentos(['sondar'])
         self.assertEqual(b.comando, 'sondar')
+
+
+# =====================================================================================================================
+# Etapa 2: vínculo anúncio → produto com prova, arquivo de vínculos e ofertas por produto (CA3, CA6)
+# =====================================================================================================================
+ITEM, OUTRO, TERCEIRO, HOJE = C.ITEM, C.OUTRO, C.TERCEIRO, C.HOJE
+TITULO_ITEM = C.TITULO_ITEM
+VELHO = {'p': None, 'em': '2026-10-01', 'via': None}       # negativo vencido: o vínculo é tentado de novo
+CAMINHO_OK = re.compile(r'/products/(?:search|MLB[0-9]+(?:/items)?)')
+RE_SOBRA = re.compile(r'\.ml_catalogo\.json\.[0-9a-f]{16}\.tmp')
+
+
+def largo(texto):
+    """Os dígitos ASCII trocados pelos de largura total (parecem iguais, não casam com RE_MLB)."""
+    return ''.join(chr(0xFF10 + int(c)) if c.isdigit() else c for c in texto)
+
+
+def enchimento(n, base=9300000000):
+    return [C.linha_lista(f'MLB{base + k}', 1.0) for k in range(n)]
+
+
+class QaVinculo(T.Base):
+    """MLFalso com um responder por cima: self.trocas[(caminho, offset)] → resposta (dict, list, tupla de erro ou
+    exceção). offset é o texto do parâmetro, '' sem ele."""
+
+    def setUp(self):
+        super().setUp()
+        self.gravar()
+        self.ml = C.MLFalso()
+        self.q = M.consulta_do_titulo(TITULO_ITEM)
+        self.trocas = {}
+        original = self.ml.responder
+
+        def responder(c):
+            chave = (c.caminho, c.query.get('offset', ''))
+            if chave in self.trocas:
+                v = self.trocas[chave]
+                if isinstance(v, tuple):
+                    return T.erro_http(*v)
+                return v() if callable(v) else v
+            return original(c)
+        self.ml.op.responder = T.api_padrao(gets=responder)
+
+    def vincular(self, vinculos=None, item_id=ITEM, titulo=TITULO_ITEM, hoje=HOJE):
+        return M.vincular(self.sessao(self.ml.op), item_id, titulo, vinculos=vinculos, hoje=hoje)
+
+    def ofertas(self, pid, ids, **kw):
+        return M.ofertas_do_produto(self.sessao(self.ml.op), pid, ids, **kw)
+
+    def caminhos(self):
+        return [c.caminho + (f'?offset={c.query["offset"]}' if 'offset' in c.query else '')
+                for c in self.ml.op.gets()]
+
+    def tres_paginas(self, pid, pagina_do_item=None, linhas=50, paginas=3):
+        """Lista de `paginas` páginas de `linhas` linhas de outros anúncios; o ITEM entra no meio da página
+        `pagina_do_item` (1, 2, 3…), se dada."""
+        lista = [enchimento(linhas, 9300000000 + 1000 * i) for i in range(paginas)]
+        if pagina_do_item:
+            lista[pagina_do_item - 1][linhas // 2] = C.linha_lista(ITEM, 123.45)
+        self.ml.listas[pid] = lista
+
+
+# ---------- CA3: só há vínculo com prova ----------
+class TestProvaFalsaQa(QaVinculo):
+    def test_titulo_igual_vendedor_igual_e_ids_parecidos_nao_provam(self):
+        """O produto tem o nome do anúncio, o bbw traz o nosso id em outro campo e a lista tem linhas com o título
+        igual e ids quase iguais (prefixo, sufixo, minúscula, espaço, quebra de linha, dígitos de largura total)."""
+        self.ml.buscas[self.q] = [{'id': 'MLB301', 'status': 'active', 'name': TITULO_ITEM}]
+        p = C.prod('MLB301', OUTRO, 99.0, name=TITULO_ITEM)
+        p['buy_box_winner'].update(id=ITEM, product_id=ITEM, title=TITULO_ITEM)
+        self.ml.produtos['MLB301'] = p
+        quase = [ITEM + '0', ITEM[:-1], ITEM.lower(), ' ' + ITEM, ITEM + '\n', largo(ITEM), 'MLB-' + ITEM[3:],
+                 ITEM.replace('MLB', 'MLA'), int(ITEM[3:])]
+        linhas = [dict(C.linha_lista(i, 10.0), title=TITULO_ITEM) for i in quase]
+        linhas += [{'id': ITEM, 'price': 10.0, 'currency_id': 'BRL', 'title': TITULO_ITEM},
+                   {'item': {'item_id': ITEM}}, dict(C.linha_lista(OUTRO, 10.0), title=TITULO_ITEM, id=ITEM)]
+        self.ml.listas['MLB301'] = [linhas]
+        vinculos = {}
+        self.assertEqual(self.vincular(vinculos), (None, None))
+        self.assertEqual(vinculos, {ITEM: C.vinculo()})
+
+    def test_bbw_de_outro_com_o_nosso_na_lista_prova_pela_lista_e_nunca_pelo_bbw(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB302', 'status': 'active'}]
+        self.ml.produtos['MLB302'] = C.prod('MLB302', OUTRO, 50.0)
+        self.ml.listas['MLB302'] = [[C.linha_lista(OUTRO, 50.0), C.linha_lista(ITEM, 60.0)]]
+        vinculos = {}
+        self.assertEqual(self.vincular(vinculos), ('MLB302', 'lista'))
+        self.assertEqual(vinculos, {ITEM: C.vinculo('MLB302', via='lista')})
+
+    def test_bbw_com_o_nosso_id_em_outro_tipo_nao_prova(self):
+        for estranho in (int(ITEM[3:]), [ITEM], {'id': ITEM}, ITEM + ' ', largo(ITEM), None):
+            with self.subTest(estranho=estranho):
+                self.ml = C.MLFalso()
+                self.ml.buscas[self.q] = [{'id': 'MLB303', 'status': 'active'}]
+                p = C.prod('MLB303', OUTRO, 10.0)
+                p['buy_box_winner']['item_id'] = estranho
+                self.ml.produtos['MLB303'] = p
+                vinculos = {}
+                self.assertEqual(M.vincular(self.sessao(self.ml.op), ITEM, TITULO_ITEM, vinculos=vinculos,
+                                            hoje=HOJE), (None, None))
+                self.assertEqual(vinculos, {ITEM: C.vinculo()})
+
+    def test_prova_so_vale_para_o_proprio_anuncio(self):
+        """A prova do OUTRO (bbw) não vincula o ITEM, e a do ITEM não vincula o TERCEIRO."""
+        self.ml.buscas[self.q] = [{'id': 'MLB304', 'status': 'active'}]
+        self.ml.produtos['MLB304'] = C.prod('MLB304', OUTRO, 10.0)
+        self.ml.listas['MLB304'] = [[C.linha_lista(OUTRO, 10.0), C.linha_lista(ITEM, 11.0)]]
+        vinculos = {}
+        self.assertEqual(self.vincular(vinculos), ('MLB304', 'lista'))
+        self.assertEqual(self.vincular(vinculos, item_id=TERCEIRO), (None, None))
+        self.assertEqual(vinculos, {ITEM: C.vinculo('MLB304', via='lista'), TERCEIRO: C.vinculo()})
+
+
+class TestPaginasQa(QaVinculo):
+    def test_item_na_pagina_3_prova_com_os_offsets_certos(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB311', 'status': 'active'}]
+        self.ml.produtos['MLB311'] = C.prod('MLB311', nulo=True)
+        self.tres_paginas('MLB311', pagina_do_item=3, paginas=4)
+        vinculos = {}
+        self.assertEqual(self.vincular(vinculos), ('MLB311', 'lista'))
+        self.assertEqual(vinculos, {ITEM: C.vinculo('MLB311', via='lista')})
+        self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB311', '/products/MLB311/items',
+                                           '/products/MLB311/items?offset=50', '/products/MLB311/items?offset=100'])
+
+    def test_item_na_pagina_4_fica_alem_do_limite_e_a_pagina_4_nunca_e_pedida(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB312', 'status': 'active'}]
+        self.ml.produtos['MLB312'] = C.prod('MLB312', nulo=True)
+        self.tres_paginas('MLB312', pagina_do_item=4, paginas=5)
+        self.assertEqual(self.vincular({}), (None, None))
+        self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB312', '/products/MLB312/items',
+                                           '/products/MLB312/items?offset=50', '/products/MLB312/items?offset=100'])
+        self.assertEqual(M.PAGINAS_LISTA, 3)
+
+    def test_ofertas_pagina_3_sim_pagina_4_nao(self):
+        self.ml.produtos['MLB313'] = C.prod('MLB313', nulo=True)
+        lista = [enchimento(50, 9300000000 + 1000 * i) for i in range(4)]
+        lista[0][0] = C.linha_lista(OUTRO, 1.5)
+        lista[2][49] = C.linha_lista(ITEM, 2.5)
+        lista[3][0] = C.linha_lista(TERCEIRO, 3.5)
+        self.ml.listas['MLB313'] = lista
+        r = self.ofertas('MLB313', [ITEM, OUTRO, TERCEIRO])
+        self.assertEqual(r, {ITEM: M.Oferta(ITEM, 2.5, None, 'BRL', 'new', 'lista'),
+                             OUTRO: M.Oferta(OUTRO, 1.5, None, 'BRL', 'new', 'lista'), TERCEIRO: None})
+        self.assertEqual([c.query.get('offset', '0') for c in self.ml.gets(prefixo='/products/MLB313/items')],
+                         ['0', '50', '100'])
+
+    def test_offset_segue_o_tamanho_real_da_pagina(self):
+        """Páginas de tamanhos diferentes (o ML pode devolver menos que o limit): o offset soma o que veio."""
+        self.ml.buscas[self.q] = [{'id': 'MLB314', 'status': 'active'}]
+        self.ml.produtos['MLB314'] = C.prod('MLB314', nulo=True)
+        self.ml.listas['MLB314'] = [enchimento(7), enchimento(3, 9310000000), [C.linha_lista(ITEM, 9.0)]]
+        self.assertEqual(self.vincular({}), ('MLB314', 'lista'))
+        self.assertEqual([c.query.get('offset', '0') for c in self.ml.gets(prefixo='/products/MLB314/items')],
+                         ['0', '7', '10'])
+
+
+class TestErroEmCadaPontoQa(QaVinculo):
+    """Só o "não" em que toda leitura respondeu 200 ou 404 vira negativo. Em cada ponto (busca, produto, páginas
+    1, 2 e 3 da lista) um 5xx/4xx ou um formato inválido deixa o cache como estava (aqui, um negativo vencido)."""
+
+    def cenario(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB321', 'status': 'active'}]
+        self.ml.produtos['MLB321'] = C.prod('MLB321', OUTRO, 10.0)
+        self.tres_paginas('MLB321', paginas=4)   # ITEM ausente nas 3 páginas lidas
+
+    def test_cenario_base_e_negativo_conclusivo(self):
+        self.cenario()
+        vinculos = {ITEM: dict(VELHO)}
+        self.assertEqual(self.vincular(vinculos), (None, None))
+        self.assertEqual(vinculos, {ITEM: C.vinculo()})
+        self.assertEqual(len(self.ml.op.gets()), 5)
+
+    def test_404_no_produto_e_na_lista_e_conclusivo(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB322', 'status': 'active'}, {'id': 'MLB323', 'status': 'active'}]
+        vinculos = {ITEM: dict(VELHO)}
+        self.assertEqual(self.vincular(vinculos), (None, None))
+        self.assertEqual(vinculos, {ITEM: C.vinculo()})
+        self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB322', '/products/MLB322/items',
+                                           '/products/MLB323', '/products/MLB323/items'])
+
+    def test_erro_ou_formato_invalido_em_cada_ponto_nao_anota(self):
+        pontos = {
+            ('/products/search', ''): [(404, {'error': 'not_found'}), (500, {}), (502, {}), (400, {}), [],
+                                       {'results': 'x'}, {'results': None}, {'x': 1}],
+            ('/products/MLB321', ''): [(500, {}), (503, {}), (400, {}), (410, {}), [], [{'id': 'MLB321'}]],
+            ('/products/MLB321/items', ''): [(500, {}), (400, {}), [], {'results': None}, {'results': {'a': 1}},
+                                             {'paging': {'total': 150}}],
+            ('/products/MLB321/items', '50'): [(500, {}), (502, {}), [], {'results': 'x', 'paging': {'total': 200}}],
+            ('/products/MLB321/items', '100'): [(503, {}), [], {'results': None, 'paging': {'total': 200}}],
+        }
+        for ponto, respostas in pontos.items():
+            for resposta in respostas:
+                with self.subTest(ponto=ponto, resposta=resposta):
+                    self.ml.op.chamadas.clear()
+                    self.cenario()
+                    self.trocas = {ponto: resposta}
+                    vinculos = {ITEM: dict(VELHO)}
+                    # R1/S1: o inconclusivo sobe o erro (antes voltava (None, None), igual ao negativo)
+                    with self.assertRaises(M.ErroApi if isinstance(resposta, tuple) else M.RespostaInvalida):
+                        self.vincular(vinculos)
+                    self.assertEqual(vinculos, {ITEM: VELHO})
+                    self.assertIn(ponto[0] + (f'?offset={ponto[1]}' if ponto[1] else ''), self.caminhos())
+
+    def test_erro_no_1o_candidato_e_nao_no_2o_nao_anota(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB324', 'status': 'active'}, {'id': 'MLB325', 'status': 'active'}]
+        self.trocas[('/products/MLB324/items', '')] = (500, {})
+        self.ml.produtos['MLB325'] = C.prod('MLB325', OUTRO, 1.0)
+        self.ml.listas['MLB325'] = [[C.linha_lista(OUTRO, 1.0)]]
+        vinculos = {}
+        with self.assertRaises(M.ErroApi):   # R1/S1: sem prova, o erro do 1º candidato sobe
+            self.vincular(vinculos)
+        self.assertEqual(vinculos, {})
+
+    def test_rede_limite_e_401_no_meio_da_lista_sobem_sem_anotar(self):
+        casos = ((lambda: urllib.error.URLError('caiu'), M.ErroRede),
+                 ((429, {'error': 'too_many_requests'}), M.Limite),
+                 ((401, {'error': 'unauthorized'}), M.RefazerAutorizacao),
+                 (POLICY, M.SemPermissao))
+        for resposta, erro in casos:
+            with self.subTest(erro=erro.__name__):
+                self.cenario()
+                self.trocas = {('/products/MLB321/items', '100'): resposta}
+                vinculos = {ITEM: dict(VELHO)}
+                with self.assertRaises(erro):
+                    self.vincular(vinculos)
+                self.assertEqual(vinculos, {ITEM: VELHO})
+
+    def test_q1_lista_sem_paging_valido_nao_vira_negativo(self):
+        """Q1: a 1ª página veio cheia, sem o nosso item, e sem `paging.total` utilizável. Não dá para saber se há
+        página 2: é resposta fora do formato, e o "não" não é conclusivo (a regra do próprio dev)."""
+        for paging in (None, 'x', {}, {'total': '150'}, {'total': 150.0}, {'total': True}):
+            with self.subTest(paging=paging):
+                self.cenario()
+                pagina = {'results': enchimento(50)}
+                if paging is not None:
+                    pagina['paging'] = paging
+                self.trocas = {('/products/MLB321/items', ''): pagina}
+                vinculos = {ITEM: dict(VELHO)}
+                with self.assertRaises(M.RespostaInvalida):   # R1/S1: o inconclusivo sobe o erro
+                    self.vincular(vinculos)
+                self.assertEqual(vinculos, {ITEM: VELHO}, 'negativo de 7 dias anotado sem ler a lista inteira')
+
+
+class TestIdsDaApiQa(QaVinculo):
+    RUINS = ('../users/me', 'MLB1/../../users/me', 'MLB13?a=1', 'MLB12\n', 'MLB1#x', 'MLB1%2F..', largo('MLB12'),
+             'mlb12', 'MLB' + '1' * 20, 'MLB', '', None, 12, ['MLB12'], {'id': 'MLB12'})
+
+    def test_ids_invalidos_da_busca_nunca_viram_caminho(self):
+        self.ml.buscas[self.q] = [{'id': r, 'status': 'active'} for r in self.RUINS[:2]] + [
+            {'id': 'MLB330', 'children_ids': list(self.RUINS[2:]) + ['MLB331']}]
+        self.ml.produtos['MLB331'] = C.prod('MLB331', nulo=True)
+        self.ml.listas['MLB331'] = [[C.linha_lista(ITEM, 5.0)]]
+        vinculos = {}
+        self.assertEqual(self.vincular(vinculos), ('MLB331', 'lista'))
+        self.assertEqual(vinculos, {ITEM: C.vinculo('MLB331', via='lista')})
+        for c in self.ml.op.gets():
+            self.assertTrue(CAMINHO_OK.fullmatch(c.caminho), c.url)
+            self.assertEqual(c.host, M.HOST_API)
+        self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB331', '/products/MLB331/items'])
+
+    def test_busca_so_com_ids_invalidos_faz_uma_chamada(self):
+        self.ml.buscas[self.q] = [{'id': r, 'status': 'active'} for r in self.RUINS[:3]]
+        self.assertEqual(self.vincular({}), (None, None))
+        self.assertEqual(self.caminhos(), ['/products/search'])
+
+    def test_item_id_com_quebra_de_linha_ou_largura_total_na_lista_e_no_bbw(self):
+        self.ml.buscas[self.q] = [{'id': 'MLB332', 'status': 'active'}]
+        p = C.prod('MLB332', ITEM + '\n', 10.0)
+        self.ml.produtos['MLB332'] = p
+        self.ml.listas['MLB332'] = [[C.linha_lista(largo(ITEM), 1.0), C.linha_lista(ITEM + '\n', 1.0),
+                                     C.linha_lista('‮' + ITEM, 1.0)]]
+        self.assertEqual(self.vincular({}), (None, None))
+        self.ml.produtos['MLB333'] = C.prod('MLB333', ITEM + '\n', 10.0)
+        self.ml.listas['MLB333'] = self.ml.listas['MLB332']
+        self.assertEqual(self.ofertas('MLB333', [ITEM]), {ITEM: None})
+
+    def test_pid_e_ids_com_unicode_ou_quebra_sao_recusados_antes_da_rede(self):
+        for pid in (largo('MLB12'), 'MLB12\n', 'MLB12 ', '‮MLB12', 'MLB٣'):
+            with self.subTest(pid=pid), self.assertRaises(ValueError):
+                self.ofertas(pid, [ITEM])
+        for ids in ([largo(ITEM)], [ITEM + '\n'], [ITEM, ITEM.lower()]):
+            with self.subTest(ids=ids), self.assertRaises(ValueError):
+                self.ofertas('MLB12', ids)
+        for item_id in (largo(ITEM), ITEM + '\n', ' ' + ITEM):
+            with self.subTest(item_id=item_id), self.assertRaises(ValueError):
+                self.vincular({}, item_id=item_id)
+        self.assertEqual(self.ml.op.chamadas, [])
+
+
+class TestCacheQa(QaVinculo):
+    def prova(self, pid='MLB341'):
+        self.ml.buscas[self.q] = [{'id': pid, 'status': 'active'}]
+        self.ml.produtos[pid] = C.prod(pid, nulo=True)
+        self.ml.listas[pid] = [[C.linha_lista(ITEM, 7.0)]]
+
+    def test_negativo_com_data_no_futuro_e_tentado_de_novo(self):
+        self.prova()
+        for futuro in ('2026-11-06', '2027-01-01', '9999-12-31'):
+            with self.subTest(futuro=futuro):
+                vinculos = {ITEM: C.vinculo(em=futuro)}
+                self.assertIsNone(M.vinculo_do_cache(vinculos, ITEM, HOJE))
+                antes = len(self.ml.op.gets())
+                self.assertEqual(self.vincular(vinculos), ('MLB341', 'lista'))
+                self.assertGreater(len(self.ml.op.gets()), antes)
+                self.assertEqual(vinculos, {ITEM: C.vinculo('MLB341', via='lista')})
+
+    def test_negativo_no_futuro_com_erro_fica_e_volta_a_ser_tentado(self):
+        self.prova()
+        self.trocas[('/products/MLB341/items', '')] = (500, {})
+        vinculos = {ITEM: C.vinculo(em='9999-12-31')}
+        for _ in range(2):
+            antes = len(self.ml.op.gets())
+            with self.assertRaises(M.ErroApi):   # R1/S1: o inconclusivo sobe o erro
+                self.vincular(vinculos)
+            self.assertEqual(len(self.ml.op.gets()) - antes, 3)    # busca, produto e lista, de novo
+            self.assertEqual(vinculos, {ITEM: C.vinculo(em='9999-12-31')})
+
+    def test_provado_com_data_no_futuro_ou_antiga_vale_sem_chamada(self):
+        for em in ('9999-12-31', '2000-01-01'):
+            vinculos = {ITEM: C.vinculo('MLB342', em, 'lista')}
+            self.assertEqual(self.vincular(vinculos), ('MLB342', 'lista'))
+        self.assertEqual(self.ml.op.chamadas, [])
+
+    def test_entrada_malformada_no_dict_e_ignorada_e_refeita(self):
+        """Quem chama pode montar o dict à mão: entrada fora do formato nunca vale como vínculo."""
+        self.prova('MLB343')
+        for ruim in ({'p': '../users/me', 'em': HOJE, 'via': 'lista'}, {'p': 'MLB1', 'em': HOJE, 'via': 'outra'},
+                     {'p': None, 'em': 'ontem', 'via': None}, {'p': None, 'em': HOJE, 'via': 'lista'},
+                     {'p': 'MLB1', 'em': HOJE}, {'p': 'MLB1', 'em': HOJE, 'via': 'bbw', 'x': 1}, None, 'MLB1'):
+            with self.subTest(ruim=ruim):
+                vinculos = {ITEM: ruim}
+                antes = len(self.ml.op.gets())
+                self.assertEqual(self.vincular(vinculos), ('MLB343', 'lista'))
+                self.assertGreater(len(self.ml.op.gets()), antes)
+                self.assertEqual(vinculos, {ITEM: C.vinculo('MLB343', via='lista')})
+
+    def test_limite_de_7_dias_atravessa_mes_e_ano_bissexto(self):
+        casos = {('2028-02-24', '2028-03-01'): (None, None), ('2028-02-23', '2028-03-01'): None,   # 29/02/2028
+                 ('2026-12-26', '2027-01-01'): (None, None), ('2026-12-25', '2027-01-01'): None}
+        for (em, hoje), esperado in casos.items():
+            with self.subTest(em=em, hoje=hoje):
+                self.assertEqual(M.vinculo_do_cache({ITEM: C.vinculo(em=em)}, ITEM, hoje), esperado)
+
+    def test_ida_e_volta_pelo_arquivo_dispensa_a_api(self):
+        """vincular → gravar_vinculos → ler_vinculos → vincular: a 2ª vez sai do arquivo, sem chamada."""
+        self.prova('MLB344')
+        arq = os.path.join(self.dir, 'ml_catalogo.json')
+        vinculos = M.ler_vinculos(arq)
+        self.assertEqual(self.vincular(vinculos), ('MLB344', 'lista'))
+        self.assertEqual(self.vincular(vinculos, item_id=TERCEIRO), (None, None))
+        M.gravar_vinculos(vinculos, arq)
+        n = len(self.ml.op.chamadas)
+        relidos = M.ler_vinculos(arq)
+        self.assertEqual(relidos, {ITEM: C.vinculo('MLB344', via='lista'), TERCEIRO: C.vinculo()})
+        self.assertEqual(self.vincular(relidos), ('MLB344', 'lista'))
+        self.assertEqual(self.vincular(relidos, item_id=TERCEIRO), (None, None))
+        self.assertEqual(len(self.ml.op.chamadas), n)
+
+
+class TestOfertasQa(QaVinculo):
+    def test_bbw_de_outro_nunca_empresta_o_preco(self):
+        p = C.prod('MLB351', OUTRO, 11111.11)
+        p['buy_box_winner']['original_price'] = 22222.22
+        self.ml.produtos['MLB351'] = p
+        self.ml.listas['MLB351'] = [[{'item_id': ITEM, 'price': '99,90', 'currency_id': 'BRL', 'condition': 'new'},
+                                     {'item_id': TERCEIRO, 'condition': 'new'}]]
+        r = self.ofertas('MLB351', [ITEM, TERCEIRO])
+        self.assertEqual(r, {ITEM: M.Oferta(ITEM, None, None, 'BRL', 'new', 'lista'),
+                             TERCEIRO: M.Oferta(TERCEIRO, None, None, None, 'new', 'lista')})
+        self.assertFalse(any(M.oferta_valida(o) for o in r.values()))
+
+    def test_bbw_de_outro_e_o_nosso_juntos_cada_um_com_o_seu_preco(self):
+        self.ml.produtos['MLB352'] = C.prod('MLB352', OUTRO, 500.0)
+        self.ml.listas['MLB352'] = [[C.linha_lista(OUTRO, 999.0), C.linha_lista(ITEM, 450.0)]]
+        r = self.ofertas('MLB352', [ITEM, OUTRO])
+        self.assertEqual(r[OUTRO], M.Oferta(OUTRO, 500.0, None, 'BRL', 'new', 'bbw'))
+        self.assertEqual(r[ITEM], M.Oferta(ITEM, 450.0, None, 'BRL', 'new', 'lista'))
+
+    def test_bbw_do_nosso_em_dolar_nao_vale_e_nao_cai_para_o_vencedor(self):
+        self.ml.produtos['MLB353'] = C.prod('MLB353', ITEM, 10.0, moeda='USD')
+        self.ml.listas['MLB353'] = [[C.linha_lista(ITEM, 50.0)]]
+        r = self.ofertas('MLB353', [ITEM])
+        self.assertEqual(r, {ITEM: M.Oferta(ITEM, 10.0, None, 'USD', 'new', 'bbw')})
+        self.assertFalse(M.oferta_valida(r[ITEM]))
+
+    def test_ids_repetidos_e_gerador(self):
+        self.ml.produtos['MLB354'] = C.prod('MLB354', nulo=True)
+        self.ml.listas['MLB354'] = [[C.linha_lista(ITEM, 3.0)]]
+        self.assertEqual(self.ofertas('MLB354', iter([ITEM, ITEM])),
+                         {ITEM: M.Oferta(ITEM, 3.0, None, 'BRL', 'new', 'lista')})
+        self.assertEqual(len(self.ml.gets(prefixo='/products/MLB354/items')), 1)
+
+    def cenario(self):
+        self.ml.produtos['MLB355'] = C.prod('MLB355', nulo=True)
+        lista = [enchimento(50, 9300000000 + 1000 * i) for i in range(3)]
+        lista[0][0] = C.linha_lista(ITEM, 1.0)      # achado na página 1
+        lista[2][0] = C.linha_lista(OUTRO, 2.0)     # achado na página 3
+        self.ml.listas['MLB355'] = lista
+
+    def test_cenario_base(self):
+        self.cenario()
+        self.assertEqual(self.ofertas('MLB355', [ITEM, OUTRO, TERCEIRO]),
+                         {ITEM: M.Oferta(ITEM, 1.0, None, 'BRL', 'new', 'lista'),
+                          OUTRO: M.Oferta(OUTRO, 2.0, None, 'BRL', 'new', 'lista'), TERCEIRO: None})
+
+    def test_erro_ou_formato_invalido_em_cada_ponto_sobe(self):
+        """Mesmo com o ITEM já achado na página 1, um erro numa página seguinte sobe: nada sai pela metade."""
+        pontos = {
+            ('/products/MLB355', ''): [((500, {}), M.ErroApi), ((400, {}), M.ErroApi), ([], M.RespostaInvalida),
+                                       (POLICY, M.SemPermissao)],
+            ('/products/MLB355/items', ''): [((500, {}), M.ErroApi), ([], M.RespostaInvalida),
+                                             ({'results': None}, M.RespostaInvalida), (POLICY, M.SemPermissao)],
+            ('/products/MLB355/items', '50'): [((502, {}), M.ErroApi), ({'results': 'x'}, M.RespostaInvalida),
+                                               (POLICY, M.SemPermissao)],
+            ('/products/MLB355/items', '100'): [((503, {}), M.ErroApi), ([], M.RespostaInvalida),
+                                                ((429, {}), M.Limite), (lambda: urllib.error.URLError('x'), M.ErroRede),
+                                                ((401, {}), M.RefazerAutorizacao)],
+        }
+        for ponto, casos in pontos.items():
+            for resposta, erro in casos:
+                with self.subTest(ponto=ponto, resposta=resposta):
+                    self.cenario()
+                    self.trocas = {ponto: resposta}
+                    with self.assertRaises(erro) as cm:
+                        self.ofertas('MLB355', [ITEM, OUTRO, TERCEIRO])
+                    if erro is M.ErroApi:
+                        self.assertEqual(cm.exception.status, resposta[0])
+                    self.assertTrue(CAMINHO_OK.fullmatch(self.ml.op.gets()[-1].caminho))
+
+    def test_erro_no_produto_nao_le_a_lista(self):
+        self.cenario()
+        self.trocas = {('/products/MLB355', ''): (500, {})}
+        with self.assertRaises(M.ErroApi):
+            self.ofertas('MLB355', [ITEM])
+        self.assertEqual(self.ml.gets(prefixo='/products/MLB355/items'), [])
+
+    def test_q1_lista_sem_paging_valido_nao_vira_indisponivel(self):
+        """Q1 (lado das ofertas): sem `paging.total` utilizável, o anúncio que não está na 1ª página não pode
+        voltar None (indisponível): a resposta está fora do formato e deve subir, como a de `results` inválido."""
+        self.ml.produtos['MLB356'] = C.prod('MLB356', nulo=True)
+        self.trocas = {('/products/MLB356/items', ''): {'results': enchimento(50)}}
+        with self.assertRaises(M.RespostaInvalida):
+            self.ofertas('MLB356', [ITEM])
+
+
+# ---------- CA3: arquivo de vínculos (leitura estrita e escrita atômica) ----------
+class TestArquivoQa(C.Vinculos):
+    def test_symlink_quebrado_e_recusado_e_nao_vira_vazio(self):
+        os.symlink(os.path.join(self.dir, 'nao-existe.json'), self.arq)
+        self.recusado('link simbólico')
+
+    def test_symlink_para_fora_e_recusado(self):
+        os.symlink('/etc/passwd', self.arq)
+        self.recusado('link simbólico')
+
+    def test_symlink_trocado_entre_o_lstat_e_o_open_e_recusado(self):
+        """O lstat vê um arquivo comum, mas no open já é symlink: o O_NOFOLLOW recusa."""
+        bom = os.path.join(self.dir, 'bom.json')
+        M.gravar_vinculos({ITEM: C.vinculo()}, bom)
+        os.symlink(bom, self.arq)
+        lstat_real, stat_bom = os.lstat, os.stat(bom)
+        with mock.patch.object(M.os, 'lstat', side_effect=lambda p, *a, **k: stat_bom if p == self.arq
+                               else lstat_real(p, *a, **k)):
+            self.recusado('não consegui abrir')
+
+    def test_dono_diferente_de_verdade(self):
+        alheio = '/etc/passwd'
+        if os.getuid() == 0 or not os.path.isfile(alheio) or os.path.islink(alheio) \
+                or os.stat(alheio).st_uid == os.getuid() or not os.access(alheio, os.R_OK):
+            self.skipTest('sem arquivo comum legível de outro usuário')
+        with self.assertRaises(M.VinculosRecusados) as cm:
+            M.ler_vinculos(alheio)
+        self.assertIn('dono', str(cm.exception))
+        self.assertNotIn('root', str(cm.exception))
+
+    def test_0644_com_conteudo_valido_e_recusado_e_o_644_nao_e_corrigido(self):
+        M.gravar_vinculos({ITEM: C.vinculo()}, self.arq)
+        os.chmod(self.arq, 0o644)
+        self.recusado('chmod 600')
+        self.assertEqual(stat.S_IMODE(os.stat(self.arq).st_mode), 0o644)   # a leitura não mexe no arquivo
+
+    def test_arquivo_que_cresce_depois_do_fstat_e_recusado(self):
+        """O fstat diz 100 bytes, mas o arquivo tem 2 MB + 1: a leitura conta o que leu e recusa."""
+        corpo = json.dumps({'v': 1, 'itens': {ITEM: C.vinculo()}})
+        self.escrever(corpo + ' ' * (M.MAX_ARQUIVO_VINCULOS + 1 - len(corpo)))
+        fstat_real = os.fstat
+
+        def fstat_mentiroso(fd):
+            r = fstat_real(fd)
+            return os.stat_result((r.st_mode, r.st_ino, r.st_dev, r.st_nlink, r.st_uid, r.st_gid, 100,
+                                   int(r.st_atime), int(r.st_mtime), int(r.st_ctime)))
+        with mock.patch.object(M.os, 'fstat', side_effect=fstat_mentiroso):
+            self.recusado('passa de 2097152 bytes')
+
+    def test_recusa_sem_carregar_o_conteudo_na_excecao(self):
+        """O JSONDecodeError guarda o documento inteiro (.doc): ele não pode ir junto na exceção nem no traceback."""
+        for conteudo in ('{"v":1,"itens":{"TITULO-MARCADOR-SEGREDO": 1', '{"v":1,"itens":{},"x":"MARCADOR"}',
+                         'MARCADOR \xe9'.encode('latin-1')):
+            with self.subTest(conteudo=conteudo):
+                self.escrever(conteudo)
+                e = self.recusado('fora do formato')
+                self.assertIsNone(e.__cause__)
+                self.assertIsNone(e.__context__)
+                texto = ''.join(traceback.format_exception(e))
+                self.assertNotIn('MARCADOR', texto)
+
+    def test_escapes_json_de_digitos_unicode_sao_recusados_e_os_ascii_aceitos(self):
+        largo_json = ''.join(f'\\u{0xFF10 + int(c):04x}' for c in ITEM[3:])
+        self.escrever('{"v":1,"itens":{"MLB' + largo_json + '":{"p":null,"em":"2026-11-05","via":null}}}')
+        self.recusado('fora do formato')
+        self.escrever('{"v":1,"itens":{"' + ITEM + '":{"p":"MLB\\u0663","em":"2026-11-05","via":"lista"}}}')
+        self.recusado('fora do formato')
+        self.escrever('{"v":1,"itens":{"' + ITEM + '":{"p":"MLB1\\n","em":"2026-11-05","via":"lista"}}}')
+        self.recusado('fora do formato')
+        self.escrever('{"v":1,"itens":{"\\u004dLB' + ITEM[3:] + '":{"p":null,"em":"2026-11-05","via":null}}}')
+        self.assertEqual(M.ler_vinculos(self.arq), {ITEM: C.vinculo()})
+
+    def test_nan_infinito_e_data_no_futuro(self):
+        for v in ('NaN', 'Infinity', '-Infinity', '1e999'):
+            with self.subTest(v=v):
+                self.escrever('{"v":' + v + ',"itens":{}}')
+                self.recusado('fora do formato')
+        self.escrever(json.dumps({'v': 1, 'itens': {ITEM: C.vinculo(em='9999-12-31')}}))
+        self.assertEqual(M.ler_vinculos(self.arq), {ITEM: C.vinculo(em='9999-12-31')})   # formato válido
+        self.assertIsNone(M.vinculo_do_cache(M.ler_vinculos(self.arq), ITEM, HOJE))      # e é tentado de novo
+
+
+class TestGravacaoQa(C.Vinculos):
+    ANTES = {ITEM: C.vinculo('MLB99', via='lista')}
+    NOVO = {OUTRO: C.vinculo()}
+
+    def setUp(self):
+        super().setUp()
+        M.gravar_vinculos(self.ANTES, self.arq)
+
+    def intacto(self):
+        self.assertEqual(os.listdir(self.dir), ['ml_catalogo.json'])
+        self.assertEqual(M.ler_vinculos(self.arq), self.ANTES)
+
+    def test_falha_em_cada_passo_antes_do_replace_nao_deixa_tmp(self):
+        for nome, erro in (('write', OSError(28, 'sem espaço')), ('fsync', OSError(5, 'E/S')),
+                           ('fchmod', OSError(1, 'negado')), ('write', KeyboardInterrupt()),
+                           ('replace', IsADirectoryError(21, 'pasta'))):
+            with self.subTest(passo=nome, erro=type(erro).__name__):
+                with mock.patch.object(M.os, nome, side_effect=erro):
+                    with self.assertRaises(type(erro)):
+                        M.gravar_vinculos(self.NOVO, self.arq)
+                self.intacto()
+
+    def test_escrita_parcial_continua_ate_o_fim(self):
+        """os.write pode gravar menos que o pedido: o laço completa e o arquivo fica inteiro."""
+        write_real = os.write
+        with mock.patch.object(M.os, 'write', side_effect=lambda fd, b: write_real(fd, bytes(b[:7]))):
+            M.gravar_vinculos(self.NOVO, self.arq)
+        self.assertEqual(M.ler_vinculos(self.arq), self.NOVO)
+        self.assertEqual(os.listdir(self.dir), ['ml_catalogo.json'])
+
+    def test_falha_no_fsync_da_pasta_deixa_o_novo_no_lugar_e_sem_tmp(self):
+        fsync_real, n = os.fsync, []
+
+        def fsync(fd):
+            n.append(fd)
+            if len(n) == 2:
+                raise OSError(5, 'E/S')
+            return fsync_real(fd)
+        with mock.patch.object(M.os, 'fsync', side_effect=fsync), self.assertRaises(OSError):
+            M.gravar_vinculos(self.NOVO, self.arq)
+        self.assertEqual(M.ler_vinculos(self.arq), self.NOVO)
+        self.assertEqual(os.listdir(self.dir), ['ml_catalogo.json'])
+
+    def test_destino_que_e_pasta_nao_e_trocado_e_nao_sobra_tmp(self):
+        pasta = os.path.join(self.dir, 'pasta.json')
+        os.mkdir(pasta)
+        with open(os.path.join(pasta, 'dentro'), 'w') as f:
+            f.write('x')
+        with self.assertRaises(OSError):
+            M.gravar_vinculos(self.NOVO, pasta)
+        self.assertEqual(sorted(os.listdir(self.dir)), ['ml_catalogo.json', 'pasta.json'])
+        self.assertEqual(os.listdir(pasta), ['dentro'])
+
+    def test_temporario_com_nome_tomado_por_symlink_nao_e_seguido_nem_apagado(self):
+        alvo = os.path.join(self.dir, 'alvo.txt')
+        with open(alvo, 'w') as f:
+            f.write('nao mexer')
+        armadilha = os.path.join(self.dir, '.ml_catalogo.json.' + 'f' * 16 + '.tmp')
+        os.symlink(alvo, armadilha)
+        with mock.patch.object(M.secrets, 'token_hex', return_value='f' * 16), self.assertRaises(FileExistsError):
+            M.gravar_vinculos(self.NOVO, self.arq)
+        with open(alvo) as f:
+            self.assertEqual(f.read(), 'nao mexer')
+        self.assertTrue(os.path.islink(armadilha))
+        self.assertEqual(M.ler_vinculos(self.arq), self.ANTES)
+
+    def test_qualquer_umask_grava_0600_exato(self):
+        for mascara in (0, 0o022, 0o277):
+            with self.subTest(umask=oct(mascara)):
+                antigo = os.umask(mascara)
+                try:
+                    M.gravar_vinculos(self.NOVO, self.arq)
+                finally:
+                    os.umask(antigo)
+                self.assertEqual(stat.S_IMODE(os.stat(self.arq).st_mode), 0o600)
+                self.assertEqual(M.ler_vinculos(self.arq), self.NOVO)
+
+    def test_mais_de_2_mb_de_verdade_e_recusado_sem_tocar_no_antigo(self):
+        muitos = {f'MLB{9400000000 + n}': C.vinculo(f'MLB{1000000 + n}', via='lista') for n in range(40000)}
+        bruto = json.dumps({'v': 1, 'itens': muitos}, separators=(',', ':')).encode('ascii')
+        self.assertGreater(len(bruto), M.MAX_ARQUIVO_VINCULOS)
+        with self.assertRaises(M.VinculosRecusados) as cm:
+            M.gravar_vinculos(muitos, self.arq)
+        self.assertEqual(cm.exception.saida, 2)
+        self.intacto()
+        # o que cabe nos 2 MB volta igual
+        cabem = dict(list(muitos.items())[:25000])
+        M.gravar_vinculos(cabem, self.arq)
+        self.assertLessEqual(os.path.getsize(self.arq), M.MAX_ARQUIVO_VINCULOS)
+        self.assertEqual(M.ler_vinculos(self.arq), cabem)
+
+    def test_sigkill_no_meio_deixa_so_a_sobra_0600_que_o_git_ignora(self):
+        pasta = tempfile.mkdtemp(dir=self.dir)
+        arq = os.path.join(pasta, 'ml_catalogo.json')
+        M.gravar_vinculos(self.ANTES, arq)
+        script = os.path.join(self.dir, 'matar.py')   # fora da pasta do arquivo
+        with open(script, 'w') as f:
+            f.write('import os, signal, sys\n'
+                    f'sys.path.insert(0, {RAIZ!r})\n'
+                    'import ml_api as M\n'
+                    'M.os.replace = lambda *a: os.kill(os.getpid(), signal.SIGKILL)\n'
+                    f'M.gravar_vinculos({self.NOVO!r}, sys.argv[1])\n')
+        env = dict(os.environ, ACHADINHOS_ML_CATALOGO=os.path.join(pasta, 'padrao.json'))
+        r = subprocess.run([sys.executable, '-I', script, arq], env=env, cwd=pasta, capture_output=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, -signal.SIGKILL, r.stderr)
+        sobras = [n for n in os.listdir(pasta) if n != 'ml_catalogo.json']
+        self.assertEqual(len(sobras), 1, os.listdir(pasta))
+        self.assertTrue(RE_SOBRA.fullmatch(sobras[0]), sobras)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(pasta, sobras[0])).st_mode), 0o600)
+        self.assertEqual(M.ler_vinculos(arq), self.ANTES)
+        if not shutil.which('git') or not os.path.exists(os.path.join(RAIZ, '.git')):
+            self.skipTest('git não encontrado ou cópia fora do repositório')
+        g = subprocess.run(['git', '-C', RAIZ, 'check-ignore', sobras[0]], capture_output=True, text=True,
+                           timeout=30)
+        self.assertEqual((g.returncode, g.stdout.strip()), (0, sobras[0]), g.stderr)
+
+
+# ---------- CA6: nenhum teste sai para a rede nem cria ml_catalogo.json no projeto ----------
+class TestSemRedeNemArquivoNoProjetoQa(QaVinculo):
+    def test_caminhos_padrao_dos_testes_ficam_na_pasta_temporaria(self):
+        for caminho in (M.CATALOGO, M.TOKENS, M.DB, os.environ['ACHADINHOS_ML_CATALOGO']):
+            self.assertEqual(os.path.dirname(caminho), T.TMP, caminho)
+            self.assertFalse(caminho.startswith(RAIZ + os.sep), caminho)
+
+    def test_vincular_e_ofertas_com_o_opener_de_verdade_batem_no_proxy_morto(self):
+        proxies = [h.proxies for h in M.OPENER.handlers if isinstance(h, urllib.request.ProxyHandler)]
+        self.assertTrue(proxies)
+        self.assertEqual(proxies[0].get('https'), 'http://127.0.0.1:9')   # confere antes de chamar
+        self.assertEqual(os.environ.get('no_proxy'), '')
+        sessao = self.sessao(None)   # None: o OPENER do módulo
+        self.ml.buscas[self.q] = [{'id': 'MLB361', 'status': 'active'}]
+        inicio = time.monotonic()
+        vinculos = {}
+        with self.assertRaises(M.ErroRede):
+            M.vincular(sessao, ITEM, TITULO_ITEM, vinculos=vinculos, hoje=HOJE)
+        with self.assertRaises(M.ErroRede):
+            M.ofertas_do_produto(sessao, 'MLB361', [ITEM])
+        self.assertEqual(vinculos, {})
+        self.assertLess(time.monotonic() - inicio, 10)
+
+    def test_as_suites_do_ml_api_nao_criam_ml_catalogo_no_projeto(self):
+        """Roda as outras três suítes com o caminho padrão (sem ACHADINHOS_ML_CATALOGO): a raiz do projeto
+        não ganha ml_catalogo.json nem sobra .ml_catalogo.json.*.tmp, e um que já exista não muda."""
+        antes = _catalogo_no_projeto()
+        env = dict(os.environ)
+        env.pop('ACHADINHOS_ML_CATALOGO', None)
+        for nome in ('test_ml_api.py', 'test_ml_api_qa.py', 'test_ml_api_catalogo.py'):
+            with self.subTest(suite=nome):
+                r = subprocess.run([sys.executable, os.path.join(RAIZ, 'testes', nome)], env=env, cwd=self.dir,
+                                   capture_output=True, text=True, timeout=300)
+                self.assertEqual(r.returncode, 0, r.stderr[-3000:])
+                self.assertEqual(_catalogo_no_projeto(), antes)
+
+
+# ---------- Etapa 2, rodada 2: o Q1 corrigido sem deixar o "fim da lista" frouxo nem estrito demais ----------
+class TestQ1Rodada2Qa(QaVinculo):
+    def pagina_cheia(self, paging, item=False):
+        pagina = {'results': enchimento(50)}
+        if item:
+            pagina['results'][25] = C.linha_lista(ITEM, 123.45)
+        if paging is not None:
+            pagina['paging'] = paging
+        return pagina
+
+    def cenario(self, pid):
+        self.ml.buscas[self.q] = [{'id': pid, 'status': 'active'}]
+        self.ml.produtos[pid] = C.prod(pid, OUTRO, 10.0)
+
+    def test_total_inteiro_menor_ou_igual_ao_lido_e_fim_conclusivo(self):
+        """Contrato do dev: total inteiro <= offset + lidos é o fim da lista. Uma página só, sem pedir a 2ª, e o
+        "não" é conclusivo (negativo anotado; nas ofertas, None). A 2ª página teria o item: se ela fosse pedida, o
+        vínculo sairia 'lista'."""
+        for total in (0, 1, 49, 50):
+            with self.subTest(total=total):
+                self.ml.op.chamadas.clear()
+                self.cenario('MLB371')
+                self.trocas = {('/products/MLB371/items', ''): self.pagina_cheia({'total': total}),
+                               ('/products/MLB371/items', '50'): self.pagina_cheia({'total': 100}, item=True)}
+                vinculos = {ITEM: dict(VELHO)}
+                self.assertEqual(self.vincular(vinculos), (None, None))
+                self.assertEqual(vinculos, {ITEM: C.vinculo()})
+                self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB371', '/products/MLB371/items'])
+                self.ml.op.chamadas.clear()
+                self.assertEqual(self.ofertas('MLB371', [ITEM]), {ITEM: None})
+                self.assertEqual(self.caminhos(), ['/products/MLB371', '/products/MLB371/items'])
+
+    def test_total_negativo_ou_enorme_nao_faz_laco(self):
+        """total negativo é inteiro menor que o lido: fim na 1ª página (contrato do dev; ver o relatório da
+        rodada 2). total enorme lê só PAGINAS_LISTA páginas. Nenhum dos dois quebra nem faz laço."""
+        for total, paginas in ((-1, 1), (-10 ** 30, 1), (10 ** 30, M.PAGINAS_LISTA)):
+            with self.subTest(total=total):
+                self.ml.op.chamadas.clear()
+                self.cenario('MLB372')
+                pagina = self.pagina_cheia({'total': total})
+                self.trocas = {('/products/MLB372/items', str(50 * k) if k else ''): pagina for k in range(5)}
+                vinculos = {ITEM: dict(VELHO)}
+                self.assertEqual(self.vincular(vinculos), (None, None))
+                self.assertEqual(vinculos, {ITEM: C.vinculo()})
+                self.assertEqual(len(self.ml.gets(prefixo='/products/MLB372/items')), paginas)
+
+    def test_q1_na_2a_pagina_sobe_e_item_achado_antes_do_total_vale(self):
+        """Q1 na página 2 (a 1ª tinha total válido): sobe RespostaInvalida, sem anotar e sem pedir a 3ª. Já o item
+        que está na própria página sem total é prova: o total só decide se há outra página."""
+        for paging in (None, {}, {'total': '200'}, {'total': 200.0}, {'total': False}):
+            with self.subTest(paging=paging):
+                self.ml.op.chamadas.clear()
+                self.cenario('MLB373')
+                self.trocas = {('/products/MLB373/items', ''): self.pagina_cheia({'total': 200}),
+                               ('/products/MLB373/items', '50'): self.pagina_cheia(paging)}
+                vinculos = {ITEM: dict(VELHO)}
+                with self.assertRaises(M.RespostaInvalida):
+                    self.vincular(vinculos)
+                self.assertEqual(vinculos, {ITEM: VELHO})
+                self.assertEqual(self.caminhos(), ['/products/search', '/products/MLB373', '/products/MLB373/items',
+                                                   '/products/MLB373/items?offset=50'])
+                with self.assertRaises(M.RespostaInvalida):
+                    self.ofertas('MLB373', [ITEM])
+
+                self.trocas[('/products/MLB373/items', '50')] = self.pagina_cheia(paging, item=True)
+                self.assertEqual(self.vincular(vinculos), ('MLB373', 'lista'))
+                self.assertEqual(vinculos, {ITEM: C.vinculo('MLB373', via='lista')})
+                o = self.ofertas('MLB373', [ITEM])[ITEM]
+                self.assertEqual((o.item_id, o.preco, o.via), (ITEM, 123.45, 'lista'))
 
 
 if __name__ == '__main__':

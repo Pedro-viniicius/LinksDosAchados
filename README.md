@@ -66,19 +66,76 @@ As três coletas só gravam item com **nota 4,5 ou mais e volume de vendas real*
 
 Preço antigo de **5 vezes o preço ou mais** (desconto de 80% ou mais) não é desconto de verdade: costuma ser preço por litro ou por unidade lido no lugar do preço riscado. O `servidor.py` descarta esse par (`sanear_precos`, com `preco_antigo_plausivel` e a constante `LIMITE_PRECO_ANTIGO = 5`) em toda gravação: no `upsert` das três coletas e no `PATCH /api/items/<id>` com `data`, que é o "Atualizar preço" do cartão da Amazon no site: o item fica sem preço antigo e sem desconto, e a `url` nunca muda. Preço ou antigo vazio ou ilegível não é mexido. Na Amazon, o preço antigo agora vem só do preço riscado. A migração (veja "Reorganizar abas") faz a mesma limpeza nos itens que já estão no banco.
 
+## Verificar
+
+Um comando só diz se o projeto está verde, e é ele que vale (não a lista de testes abaixo):
+
+```
+python3 verificar.py
+```
+
+Ele roda o `py_compile` dos `.py` e todos os testes Python (`testes/` e `tools/garimpo_feminino/testes/`) e Node, **um arquivo por subprocesso**, num ambiente isolado: sem Secret nem nenhuma `ACHADINHOS_*` herdada, proxies mortos (`127.0.0.1:9`), API v1 e agendador do disparo desligados, e banco, progresso e tokens numa pasta temporária. Teste que quebra por causa desse isolamento estava tocando dado real: isso é achado, não motivo para afrouxar o ambiente. Cada arquivo tem timeout de 900 s. Na tela sai **uma linha por arquivo** (saída, tempo e o resumo `Ran`/`OK`/`FAILED`) mais o motivo de cada teste pulado; a saída inteira de cada arquivo fica em `logs/verificar-<data>/<nome>.txt` (a pasta `logs/` está fora do git).
+
+| Opção | O que faz |
+|---|---|
+| (nenhuma) | `py_compile` e tudo; uns 2,5 min |
+| `--rapido` | só muda algo junto com `--dados-reais`: aí pula os lentos (`test_api_ofertas_qa` e `test_genero_qa`, que sobre a cópia do banco real levam uns 5 min juntos). Sem `--dados-reais`, eles levam segundos e rodam (o portão de commit usa o `--rapido`) |
+| `--dados-reais` | liga os testes que usam uma cópia do banco real (`ACHADINHOS_TESTE_DADOS_REAIS=1`); sem ela, esses testes pulam e dizem o porquê |
+| `--hora H` | roda com o relógio local às H horas (0 a 23): nenhum teste pode depender da hora do dia, então `--hora 3` e `--hora 23` passam |
+| `--front` | também roda as páginas do front (`copiar-imagem`, `abas`, `disparo` e as outras) num servidor próprio na **8766**, sobre uma cópia do banco feita em modo somente leitura (`--porta-front P` troca a porta; a 8765 é recusada). Precisa do Chrome e de internet (2 fotos reais); fica fora do `--rapido` e do portão |
+| `--servidor [P]` | não roda testes: faz **um GET** em `/api/versao` do servidor no ar (padrão 8765) e diz se ele roda o código que está em disco |
+
+**Saídas:** 0 tudo verde; 1 algo falhou; 2 uso errado (opção inválida, porta do `--front` ocupada já na largada, a 8765 pedida para o `--front`); 130 interrompido. Se a porta do `--front` for ocupada durante a suíte, a linha `front` sai vermelha e o resumo diz FALHOU (saída 1). Com `--servidor`: 0 em dia; 1 reinicie (o código mudou desde a subida, ou o servidor é anterior à rota) ou fora do ar.
+
+**Falha conhecida não é estado normal.** Teste vermelho vira fixture sintética, `skip` com motivo impresso (o dos dados reais) ou bug aberto, na mesma rodada. Ninguém dá "pronto" com o `verificar.py` vermelho.
+
+O `verificar.py` também avisa (sem falhar) quando uma dependência instalada difere do `requirements.txt` (`beautifulsoup4==4.14.3` e `lxml==6.0.2`, só para a coleta e a atualização da Amazon; o servidor não usa nada além da biblioteca padrão), e quando o portão de commit abaixo está desligado.
+
+**Servidor no ar com código velho.** Mudança em `.py` só vale depois de reiniciar o `servidor.py`. Na subida, ele escreve no terminal a linha `Código <hash> (último commit <commit>; pode haver mudança sem commit)`, e `python3 verificar.py --servidor` diz se o que está no ar ainda é o código em disco (o `index.html` fica de fora: é lido do disco a cada pedido). Para reiniciar, peça a skill `rodar_localmente` (que faz o backup antes, se a subida for migrar o banco). O `GET /api/versao` só atende a origem local (não é rota do ML) e devolve `codigo`, `em_disco`, `mudou`, `git` e `iniciado_em`.
+
+### Portão de commit
+
+O portão é opcional e vem desligado: o dono o liga uma vez, com `git config core.hooksPath .githooks`. Depois disso, cada `git commit` roda `.githooks/pre-commit`, que chama `python3 verificar.py --pre-commit`:
+
+- **Varredura de segredos no que está staged** (`python3 verificar.py --segredos --staged`; `--tudo` varre todos os arquivos do repositório, no disco; sai com 0 se está limpo e 1 se achou algo): recusa nomes que nunca entram no git, inclusive as cópias deles (`api_token*`, `api_cabecalho*`, `ml_tokens.json*`, `ml_catalogo.json*`, `.env*` menos `.env.example`, `*.db*`, `*.sqlite*`, `*.lock`, `backups/`, `logs/`, o `_chat.txt*` do WhatsApp) e linhas adicionadas com cara de chave privada, `Bearer` longo, `secret`/`senha`/`token` com valor longo (letras, dígitos, `-` e `_`), AppID numérico ou token do ML. Valor com `FALSO`, `MARCADOR`, `TESTE`, `EXEMPLO` ou o AppID falso dos testes (`1800012345`) é tido como dado falso de teste e passa. A saída mostra só o arquivo, a linha e o tipo, **nunca o trecho achado**.
+- **Testes:** se houver `.py`, `.mjs`, `.html`, `.json` ou `.sh` staged, roda o `verificar.py --rapido`. Teste novo que ainda não é rastreado (de outra frente de trabalho) não bloqueia o commit. Os testes rodam sobre a **árvore de trabalho** (os arquivos como estão no disco), não sobre o que está staged: uma mudança fora do commit pode fazer o portão passar ou falhar.
+- **Falso positivo:** acrescente ao fim da linha o marcador `# verificar: permitir`; a linha liberada aparece no resumo, para você revisar. `git commit --no-verify` pula o portão: ele protege de acidente, não de má-fé.
+
+**Hook de prompt (segredo colado na conversa).** O portão acima vigia o que vai para o git; o hook `.claude/hooks/segredo_no_prompt.py` vigia o que você digita para o Claude Code: se o prompt traz um segredo, ele é **bloqueado antes de chegar ao Claude**, com uma mensagem que diz só o tipo achado, nunca o trecho. Pega os mesmos padrões do portão (`secret=`, `Bearer`, `APP_USR-`, `TG-`, AppID) e mais um **bloco solto**: uma palavra de 32 a 64 letras e dígitos, com ao menos uma letra e um dígito, que não seja só hexadecimal (hash de commit passa), solta numa frase, como o Secret copiado do painel. Conta como solta sozinha na linha, entre espaços, entre aspas (retas, crase ou curvas), parênteses, colchetes, chaves, `<...>` ou `**...**`, logo depois de `:` (`Chave:X`) ou seguida de pontuação de frase (`.`, `,`, `;`, `:`, `!`, `?`). Presa a outra coisa não conta: `<palavra>.png`, `https://x.com/<palavra>`, `x=<palavra>`. Fica de fora (limite conhecido) um Secret com `-` ou `_`, todo hexadecimal, ou com menos de 32 ou mais de 64 caracteres; com a palavra-chave (`secret=...`), é pego do mesmo jeito. Passam sem problema: hash de commit, ASIN, id do ML, link `s.shopee.com.br`, URL longa, id de arquivo do Telegram e o `read -rs S; ...="$S"` dos comandos. Falso positivo: ponha `# verificar: permitir` na linha. Se o hook não conseguir carregar o `verificar.py`, o bloco solto continua bloqueando; fora isso, se o próprio hook quebrar, o prompt segue sem a conferência (falha aberta).
+
+- **Só vale depois de registrado** em `.claude/settings.json` (o bloco está em `docs/produto/referencias/operacao.md`); sem esse registro o script existe, mas nada o chama.
+- **Não tira o segredo do disco.** O hook impede o envio ao Claude, mas o texto digitado pode ficar no histórico e no transcript locais do Claude Code (`~/.claude/`). Segredo real colado continua pedindo troca da chave no painel.
+- **Teste manual:** gere um falso na hora, só com letras e dígitos, cole-o sozinho num prompt e confira que vem o bloqueio sem o texto; um prompt normal tem de passar:
+
+  ```
+  python3 -c "import secrets,string;a=string.ascii_letters+string.digits;print(''.join(secrets.choice(a) for _ in range(40)))"
+  ```
+
+  Não use `secrets.token_urlsafe`: ele quase sempre tem `-` ou `_` e o hook (de propósito) o deixa passar.
+
+- **Prova com o formato do Secret real, sem mostrá-lo:** cole o Secret no `read` (não aparece na tela) e veja só a saída do hook:
+
+  ```
+  read -rs S; printf '%s' "$S" | python3 -I -c 'import json,sys;sys.stdout.write(json.dumps({"prompt":sys.stdin.read()}))' | python3 -I .claude/hooks/segredo_no_prompt.py >/dev/null 2>&1; echo "saída $?"; unset S
+  ```
+
+  `saída 2`: o Secret real, colado sozinho, está coberto. `saída 0`: o formato dele escapa da regra (por exemplo, tem `-` ou `_`); só cole com a palavra-chave junto (`secret=...`) e avise o lead, sem mostrar o valor.
+
 ## Testes
 
-Use sempre proxies mortos, para nenhum teste sair para a rede:
+Para rodar **um arquivo só** (o `verificar.py` roda todos). Use sempre proxies mortos, para nenhum teste sair para a rede:
 
 ```
 export http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 ftp_proxy=http://127.0.0.1:9
-python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py atualizar_precos.py ml_api.py
+python3 -m py_compile servidor.py coletar_amazon.py coletar_shopee.py migrar_categorias.py disparo.py classificar_lista.py api_ofertas.py genero.py atualizar_precos.py ml_api.py backup_banco.py verificar.py
 python3 testes/test_servidor.py -v
 python3 testes/test_migrar_categorias.py -v
 python3 testes/test_coletar_amazon.py -v
 python3 testes/test_coletar_shopee.py -v
 python3 testes/test_atualizar_precos.py -v
 python3 testes/test_ml_api.py -v
+python3 testes/test_ml_api_catalogo.py -v
+python3 testes/test_atualizar_precos_ml.py -v
 python3 testes/test_disparo.py -v
 python3 testes/test_disparo_servidor.py -v
 python3 testes/test_genero.py -v
@@ -88,7 +145,7 @@ python3 testes/test_api_ofertas.py -v
 python3 testes/test_api_ofertas_servidor.py -v
 node --test testes/coletar_ml.test.mjs
 node --test testes/api_ofertas.test.mjs
-python3 testes/test_api_ofertas_qa.py -v   # lenta: cerca de 60 s
+python3 testes/test_api_ofertas_qa.py -v   # uns 4 s; com ACHADINHOS_TESTE_DADOS_REAIS=1, cerca de 3 min
 node --test testes/api_ofertas_qa.test.mjs
 python3 testes/test_servidor_qa.py -v
 python3 testes/test_migrar_categorias_qa.py -v
@@ -99,6 +156,13 @@ python3 testes/test_front_constantes.py -v
 python3 testes/test_shopee_qa.py -v
 python3 testes/test_ordens_qa.py -v
 node --test testes/coletar_ml_qa.test.mjs
+python3 testes/test_ml_api_catalogo_qa.py -v
+python3 testes/test_atualizar_precos_ml_qa.py -v
+python3 testes/test_trava_rodada.py -v
+python3 testes/test_backup_banco.py -v
+python3 testes/test_versao_servidor.py -v
+python3 testes/test_verificar.py -v
+python3 testes/test_operacao.py -v
 ```
 
 Os testes que falam com o servidor sobem o `servidor.py` como subprocesso, com banco temporário e porta livre; os outros rodam em memória. Nenhum toca no banco real.
@@ -123,7 +187,7 @@ PORTA=8766 node testes/rodar.mjs disparo
 
 ## API para o Achadinho Turbo
 
-O servidor tem uma API só de leitura, `/api/v1/ofertas` e `/api/v1/categorias`, para o Achadinho Turbo (no mesmo computador) buscar ofertas. Toda oferta sai com link de afiliado da própria loja. Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+O servidor tem uma API para o Achadinho Turbo (no mesmo computador): `GET /api/v1/ofertas` e `GET /api/v1/categorias`, só de leitura, para buscar ofertas, e, desde 11/11/2026, `POST /api/v1/amazon/<ASIN>/confirmar-preco`, a única rota que grava (veja "Confirmar o preço de uma oferta da Amazon", abaixo). Toda oferta sai com link de afiliado da própria loja e com preço dentro da validade (veja "Atualizar os preços"). Ela fica **desligada** até você criar um token; o resto do Etiqueta funciona sem ele. O contrato completo (campos, erros, cursor e o guia de encaixe no Turbo) está em [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 **Ligar:** crie o token e reinicie o servidor. O `api_token.txt` fica ao lado do `servidor.py` e está no `.gitignore`.
 
@@ -146,18 +210,41 @@ curl -s -G -H @api_cabecalho.txt --data-urlencode "cat=Perfumes e Perfumaria" -d
 
 **Desligar:** apague o `api_token.txt` e reinicie o servidor (a API passa a responder 503).
 
+### Confirmar o preço de uma oferta da Amazon
+
+O Turbo chama `POST /api/v1/amazon/<ASIN>/confirmar-preco` logo antes de enviar uma oferta da Amazon. O servidor relê a página daquele produto (`https://www.amazon.com.br/dp/<ASIN>`, sem tag; a leitura inteira, redirects incluídos, tem 8 s, cada operação de rede espera no máximo 4 s e página acima de 4 MB é abandonada, então a resposta normalmente sai em até uns 12 s, antes dos 15 s em que o Turbo desiste; o cabeçalho, o corpo de um redirect e a linha de tamanho de uma resposta em pedaços só têm o limite de 4 s por operação), como o "Atualizar preço" do site, e responde `confirmado` (com o preço), `sem_preco`, `outro_produto`, `bloqueado` ou `falha_rede`.
+
+- **Só o item que já existe**, só da Amazon: ASIN que não está no banco dá 404, sem abrir a Amazon. Nunca insere item.
+- **Grava só o preço** (`preco`, `preco_antigo`, `desconto`), mais `preco_em` e `atualizado_em`, e só quando o preço é legível. Nunca troca o link de afiliado, o título, o cupom nem a foto. Qualquer outro resultado não grava nada: o preço anterior e a idade dele ficam como estavam.
+- **Freio** (em memória, zera ao reiniciar o servidor): uma leitura por vez, 3 s entre duas, 60 por hora, 15 min sem ler depois de um captcha ou bloqueio, e nenhuma leitura enquanto uma rodada da Amazon (coleta ou `atualizar_precos.py amazon`) está no ar. Pedido freado recebe 429 com `Retry-After`.
+- **Testar** com uma oferta que você sabe que está no banco (o arquivo de cabeçalho do "Testar" acima): `curl -s -X POST -H @api_cabecalho.txt "http://localhost:8765/api/v1/amazon/<ASIN>/confirmar-preco"`. Um `confirmado` grava o preço novo no banco.
+- O log do servidor mostra a rota sem o ASIN (`POST /api/v1/amazon/(asin)/confirmar-preco`).
+
 ## Backup
 
-O banco está em modo WAL: não use `cp`. Faça a cópia com a API `backup` do SQLite (lê o banco em modo somente leitura e pode rodar com o servidor no ar). Rode na pasta do projeto, porque os caminhos são relativos:
+O banco está em modo WAL: não use `cp`. O backup se faz pelo `backup_banco.py`, que lê o banco em modo somente leitura (pode rodar com o servidor no ar) e confere a cópia. Rode na pasta do projeto:
 
 ```
-mkdir -p backups
-python3 -c "import sqlite3,time;s=sqlite3.connect('file:achadinhos.db?mode=ro',uri=True);d=sqlite3.connect('backups/achadinhos-manual-'+time.strftime('%Y%m%d-%H%M%S')+'.db');s.backup(d);d.close()"
+python3 backup_banco.py --motivo reiniciar
 ```
 
-O `migrar_categorias.py` guarda os dele na mesma pasta, como `backups/achadinhos-AAAAMMDD-HHMMSS.db`. A pasta `backups/` está fora do git (`*.db` no `.gitignore`). Apague os backups antigos à mão quando não precisar mais deles.
+- **Nome:** `backups/auto-<motivo>-AAAAMMDD-HHMMSS.db`. O motivo tem de 1 a 30 caracteres entre `a-z`, `0-9` e `-` (`ml`, `shopee`, `amazon`, `reiniciar`, `diario`...). No mesmo segundo, o nome ganha `-1`, `-2` (também quando dois backups rodam ao mesmo tempo, como o `atualizar-ml.sh` e o `atualizar-shopee.sh`: cada um fica com o seu arquivo). **Nunca sobrescreve** um arquivo que já exista, então repetir o comando é seguro.
+- **Conferência:** exige espaço livre de 2 vezes o tamanho do banco, roda `PRAGMA integrity_check` (tem de dar `ok`) e confere que há itens. Falhou: não fica nenhum backup novo (nem sobra arquivo `.parcial`) e a saída é 1. Se o processo morrer sem tratar a falha (`kill -9`, queda de energia), sobra um `auto-*.db.parcial`, cópia completa do banco com telefones: a rotação do backup seguinte apaga o que estiver parado há mais de 6 h. Interrompido (Ctrl+C ou `kill`): sai com 1 e pede para conferir `backups/`, porque o sinal pode ter chegado depois de o backup ficar gravado. Deu certo: imprime só `backup: <caminho> ok <n> itens` e sai com 0. Motivo ou uso inválido sai com 2.
+- **Permissões e dado pessoal:** o banco tem telefones e ids de grupo (tabela `numeros`), então todo backup leva dado pessoal. A pasta `backups/` fica em 0700 e cada arquivo em 0600, sem `-wal` nem `-shm`. Nunca copie um backup para fora do computador, para o git (`*.db*` e `backups/` estão fora dele) nem para a conversa.
+- **Rotação:** depois do sucesso, ficam só os **14 `auto-*.db` mais novos**, contados **juntos, de todos os motivos** (`--manter N`, mínimo 3, troca o número); os mais velhos somem com o `-wal`/`-shm` deles, se houver. Nada que não comece por `auto-` é apagado: os `achadinhos-*.db` do `migrar_categorias.py`, os `antes-*.db` e os `antes-de-voltar-*` ficam, e você apaga à mão quando quiser. Como a conta é única, um backup de ontem pode sumir depois de uns 14 backups novos; para guardar um de vez, copie-o para um nome sem o prefixo `auto-` (a cópia é segura: o arquivo fechado não está em WAL): `cp backups/auto-ml-AAAAMMDD-HHMMSS.db backups/guardar-ml-AAAAMMDD.db`.
+- **Quando:** os scripts de `operacao/` fazem o backup sozinhos antes de cada rodada (motivo `ml`, `shopee` ou `amazon`); antes de reiniciar o servidor com código que migra o esquema, a skill `rodar_localmente` faz o `reiniciar`; antes de qualquer outro comando novo que grave no banco, faça você.
 
-**Voltar a um backup à mão** (quando o `--restaurar` recusa, por exemplo com o banco corrompido): pare o `servidor.py` e o `coletar_amazon.py` e faça:
+O `migrar_categorias.py` continua guardando os dele na mesma pasta, como `backups/achadinhos-AAAAMMDD-HHMMSS.db`.
+
+**Voltar a um backup:** pare o `servidor.py` **e qualquer rodada** (`atualizar_precos.py`, `coletar_*.py`: o `--restaurar` só confere a porta do servidor, não vê os outros comandos) e use o arquivo datado, sem renomear nada:
+
+```
+python3 migrar_categorias.py --restaurar backups/auto-shopee-AAAAMMDD-HHMMSS.db
+```
+
+No banco real ele pede para digitar `sim` (ou passe `--sim`), como em "Reverter" da migração das categorias. Ele devolve o banco **inteiro**: o que foi gravado depois do backup se perde, inclusive números, regras, envios e correções feitos no site e no disparo. Número ou grupo apagado depois do backup volta: apague de novo pela tela Disparo. Escolha o `auto-<loja>-*` feito **logo antes da rodada que você quer desfazer**: o nome traz a data e a hora. O link de afiliado nunca muda numa rodada de preços, então não há o que desfazer nele.
+
+**Voltar a um backup à mão** (quando o `--restaurar` recusa, por exemplo com o banco corrompido): pare o `servidor.py` e as rodadas e faça:
 
 ```
 D=backups/antes-de-voltar-$(date +%Y%m%d-%H%M%S); mkdir -p "$D"
@@ -165,8 +252,88 @@ mv achadinhos.db achadinhos.db-wal achadinhos.db-shm "$D"/   # -wal e -shm podem
 cp backups/<arquivo>.db achadinhos.db
 ```
 
-
 Suba o servidor e confira `curl -s -o /dev/null -w "%{http_code}" localhost:8765/api/items` (200). O que foi gravado depois do backup se perde.
+
+## Operação
+
+Quem roda as atualizações de preço é o dono, no terminal dele. Os scripts de `operacao/` fazem isso do jeito certo: **backup datado antes**, **log em `logs/`**, a chave pedida sem aparecer na tela e a reação a cada código de saída. Rode-os da pasta do projeto ou de qualquer outra (eles entram na pasta sozinhos):
+
+| Script | O que faz |
+|---|---|
+| `operacao/atualizar-ml.sh [aba ...]` | `atualizar_precos.py ml` **aba por aba** (sem aba, todas as do `buscas.json`, na ordem do arquivo), cada uma com `--vincular 300 --max-chamadas 1500`. Pede a Chave secreta da app "Etiqueta": **Enter vazio usa o token atual** (que dura umas 6 h). Se o token vencer no meio, pede a chave e repete a mesma aba. Com `--sem-chave` (1º argumento) nunca pede a chave: é o modo da rodada automática (veja "Rodadas automáticas") |
+| `operacao/atualizar-shopee.sh [aba]` | padrão "Perfumes e Perfumaria": `coletar_shopee.py conferir --por-item` (1 chamada), um teste pequeno de 10 itens e a aba inteira. Pede o AppID e o Secret |
+| `operacao/atualizar-amazon.sh [--produtos N]` | `atualizar_precos.py amazon` pela busca (uns 40 min), sem credencial; `--produtos N` (0 a 500) abre também a página dos não vistos |
+| `operacao/automatico.sh backup\|amazon\|ml` | o que os timers chamam; pode rodar à mão para testar (veja "Rodadas automáticas") |
+| `operacao/instalar-timers.sh [--remover] [tarefa ...]` | instala ou remove os timers do systemd `--user` |
+
+**Chaves:** só entram por `read -rs` (não aparecem na tela nem no log), ficam numa variável do shell sem `export` e só vão para o ambiente do comando que as usa; nunca para argumento, arquivo ou log. Não rode `set`, `declare -p`, `env` nem `printenv` com a chave na memória do shell (os scripts a apagam ao terminar).
+
+**Saídas** (o script termina com o código do comando que o parou; no ML, 3 se alguma aba parou no teto ou no limite; 0 se todas deram 0):
+
+| Código | Significa | O script faz |
+|---|---|---|
+| 0 | a rodada terminou | segue para a próxima aba e imprime o resumo no fim |
+| 3 | limite da API (429), teto do `--max-chamadas` ou, na Amazon, bloqueio (captcha, 503) | ML: espera `PAUSA_SEG` (padrão 300 s; `PAUSA_SEG=60 operacao/atualizar-ml.sh ...` muda) e segue. Shopee, no teste pequeno: segue (o teto de 10 chamadas é o normal; o limite da API espera). Amazon e passo final da Shopee: para; rode de novo mais tarde |
+| 2 | configuração ou acesso: no ML, o token venceu e falta a chave; Secret recusado; aba fora do `buscas.json` | no ML, pede a chave e repete a aba; nos outros casos, para com a instrução |
+| 4 | **outra rodada da mesma loja está em andamento** (a trava, abaixo) | para; o passo que recebeu o 4 não atualizou nada (o que as abas ou passos anteriores gravaram fica), e o backup `auto-<loja>-*` feito antes da trava ficou em `backups/` e ocupa uma das 14 vagas da rotação |
+| 1 | erro (rede, resposta fora do formato, backup que falhou) | para, com a linha `ERRO`/`PAROU` do comando |
+| 130 | Ctrl+C | para com o resumo; o que já foi gravado fica |
+
+No fim, cada script imprime um resumo (uma linha por aba no ML) e, se parou no meio, o comando para seguir só com as abas que faltam. Se aparecer uma mensagem que você não entende, copie para o Claude **só a linha `ERRO`/`PAROU`**: ela nunca mostra chave nem link.
+
+**Trava por loja (saída 4).** `atualizar_precos.py`, `coletar_amazon.py` (todos os modos) e `coletar_shopee.py` (`buscas` e `importar`) pegam uma trava (`flock`, sem esperar) antes de abrir o banco, o progresso ou os tokens. Quem chega depois sai com **4** e a mensagem `PAROU: outra rodada de <loja> está em andamento (<nome do .lock>); espere ela terminar.` O `coletar_shopee.py conferir` não grava e não trava. A trava é **por loja**: ML e Amazon rodam ao mesmo tempo; coleta e atualização da **mesma** loja se excluem.
+
+- O arquivo é `<banco>.rodada-<loja>.lock`, ao lado do banco (fora do git). Ele **não é o aviso**: quem avisa é o sistema, que solta a trava quando o processo morre, até num `kill -9`. Por isso o arquivo que sobra depois de uma rodada não trava nada.
+- **Só apague o `.lock` com todas as rodadas dessa loja paradas** (`pgrep -af 'atualizar_precos|coletar_'`), e quase nunca precisa: apagá-lo com uma rodada no ar deixa uma segunda rodada passar e gravar junto com a primeira. Se o 4 aparece sem nenhuma rodada no ar, procure o processo (`pgrep`) antes de mexer no arquivo.
+- A trava cobre uma máquina e um banco. Outra máquina, ou uma cópia do banco em outra pasta, não é vista por ela.
+
+**Logs:** cada script grava `logs/<nome>-AAAAMMDD-HHMMSS.log` (`atualizar-ml`, `atualizar-shopee`, `atualizar-amazon` ou, no backup automático, `automatico-backup`), com tudo o que aparece na tela e em 0600. A pasta `logs/` está no `.gitignore`. Os do `verificar.py` ficam em `logs/verificar-<data>/`. Os logs não trazem a chave (o `read -s` não a mostra), mas apague os antigos à mão quando não precisar mais deles.
+
+**Backups das rodadas:** `backups/auto-ml-*`, `auto-shopee-*` e `auto-amazon-*` (regras, rotação e como voltar em "Backup"). Se o backup falhar, o script para com 1 antes de atualizar qualquer coisa.
+
+### Rodadas automáticas
+
+Três tarefas que **não usam credencial** rodam sozinhas, por timers do `systemd --user`: o backup diário do banco, a atualização da Amazon e a do Mercado Livre (esta só enquanto o acesso ao ML valer). **A Shopee não entra e não tem como entrar:** ela precisa do AppID e do Secret digitados por você no terminal (`operacao/atualizar-shopee.sh`), e a rodada automática nunca tem segredo. Pedir `shopee` aos dois scripts abaixo sai com 2.
+
+| Tarefa | Horário | O que roda |
+|---|---|---|
+| `backup` | 03:30 | `python3 backup_banco.py --motivo diario` (gera `backups/auto-diario-*`) |
+| `amazon` | 06:00 | `operacao/atualizar-amazon.sh` |
+| `ml` | 06:45 | `operacao/atualizar-ml.sh --sem-chave` |
+
+Cada horário tem até 10 min de atraso aleatório. Com `Persistent=true`, se o computador estava desligado na hora, a tarefa roda assim que você entra na sessão; se a rede ainda não subiu nesse momento, a rodada para com aviso e a próxima retoma (o `After=network-online.target` das unidades não vale para unidades `--user`). **Sem linger** (`loginctl enable-linger` não foi ligado), os timers só rodam com você logado, e o aviso de área de trabalho só chega a quem está na sessão. Para mudar um horário, edite o `HORARIO` no topo de `operacao/instalar-timers.sh` e rode o instalador de novo.
+
+**Antes de instalar, faça o commit do código.** Cada rodada automática confere com o git se algum `.py` da raiz do projeto, o `buscas.json` ou a pasta `operacao/` têm mudança sem commit, inclusive arquivo novo ainda não rastreado (um módulo novo, por exemplo) ou apagado; se tiverem (ou se o git não responder), **todas as rodadas** (inclusive o backup) saem com 1 sem rodar nada e avisam. É a guarda contra rodar código pela metade de uma edição. Ficam de fora o `testes/`, o `index.html` e o que não é `.py`. Para ver se está limpo (tem de sair vazio): `git --glob-pathspecs status --short --untracked-files=normal -- '*.py' buscas.json operacao/`.
+
+**Instalar, ver e remover** (como o seu usuário, sem `sudo`):
+
+```
+operacao/instalar-timers.sh                  # os três; ou só alguns: operacao/instalar-timers.sh backup amazon
+systemctl --user list-timers 'etiqueta-*'    # próximo horário de cada um
+systemctl --user start etiqueta-backup.service   # roda o backup agora, para testar
+operacao/instalar-timers.sh --remover        # desliga e apaga os três (ou só alguns, pelo nome)
+```
+
+O instalador grava `etiqueta-<tarefa>.service` e `.timer` em `~/.config/systemd/user/` (ou `$XDG_CONFIG_HOME/systemd/user/`), todos com a 1ª linha "Gerado por operacao/instalar-timers.sh". Rodar de novo regrava os arquivos dele; um arquivo de mesmo nome que você tenha feito à mão (sem essa linha) **não é sobrescrito nem apagado**: o instalador para com 1 antes de gravar qualquer coisa. As unidades não levam variável de ambiente nenhuma. Os outros timers da máquina (por exemplo os do Achadinho Turbo) não são tocados.
+
+**Onde olhar o que aconteceu:**
+
+- **Log:** `logs/automatico-backup-AAAAMMDD-HHMMSS.log` (backup), `logs/atualizar-amazon-*.log` e `logs/atualizar-ml-*.log`, em 0600, como nas rodadas manuais.
+- **Journal:** `journalctl --user -u etiqueta-backup -n 50` (troque `backup` por `amazon` ou `ml`). Traz a mesma saída dos logs.
+- **Backup novo:** `ls -l backups/auto-diario-*` (0600). Os `auto-*` de todos os motivos dividem as mesmas 14 vagas da rotação: com backup diário e rodadas de preço, 14 cobrem uns 5 a 7 dias. Os backups sem `auto-` no nome nunca são apagados.
+
+**O que cada aviso quer dizer.** Quando uma rodada para, sai um aviso na área de trabalho (`notify-send`) com o título "Etiqueta: <tarefa> parou (saída N)" e um texto sempre igual, nunca a saída de um comando. Se o `notify-send` não existir ou não houver sessão gráfica, nada acontece além do log.
+
+| Saída | Texto do aviso | Significa |
+|---|---|---|
+| 2, no `ml` | acesso vencido: rode operacao/atualizar-ml.sh no terminal | O token do ML vale umas 6 h e só se renova com a Chave secreta. Aqui é um **lembrete**: a rodada parou antes do backup, sem gastar chamada. Rode `operacao/atualizar-ml.sh` no terminal. Se o lembrete diário incomodar: `operacao/instalar-timers.sh --remover ml` |
+| 2, outra tarefa | segredo no ambiente: nada rodou (ou erro: veja o log) | Alguma `ACHADINHOS_ML_SECRET`, `ACHADINHOS_SHOPEE_SECRET` ou `ACHADINHOS_SHOPEE_APP_ID` estava no ambiente do timer. A rodada automática se recusa a rodar assim; tire a variável (`systemctl --user unset-environment <nome>`) |
+| 1 | código com mudança sem commit: nada rodou | A guarda acima. Faça o commit (ou descarte a mudança) e espere o próximo horário |
+| 3 | bloqueio ou limite da loja: a próxima rodada retoma | Captcha, 503 ou 429. O progresso fica salvo |
+| 4 | outra rodada da mesma loja estava no ar | A trava por loja (veja acima): uma rodada sua, manual, ocupava a loja. Nada foi gravado pela automática nesta loja; no `ml`, nada a partir da aba que parou (as abas anteriores já tinham gravado) |
+| outra | erro: veja o log | Abra o log ou o journal |
+
+A saída 2 do `ml` pode ser as duas coisas: o texto do aviso é que distingue "segredo no ambiente" (variável de segredo no timer, nada rodou) de "acesso vencido" (o lembrete de rodar com a chave).
 
 ## Reorganizar abas
 
@@ -211,7 +378,7 @@ Ele recusa se o servidor estiver no ar e, antes de sobrescrever, guarda o estado
 python3 coletar_amazon.py buscas     # só os termos de buscas.json, sem passar pelo WhatsApp
 ```
 
-Cada termo é gravado e marcado em `coleta_amazon_feitos.txt` quando termina; Ctrl+C e rodar de novo retoma de onde parou. A chave do progresso é o termo (`busca|<termo>`), então só faltam os termos que ainda não foram coletados. Só entra item que passa no piso de qualidade e não é usado (veja "Piso de qualidade das coletas"). Esta coleta acessa a Amazon de verdade: nunca rode em teste.
+Cada termo é gravado e marcado em `coleta_amazon_feitos.txt` quando termina; Ctrl+C e rodar de novo retoma de onde parou. A chave do progresso é o termo (`busca|<termo>`), então só faltam os termos que ainda não foram coletados. Só entra item que passa no piso de qualidade e não é usado (veja "Piso de qualidade das coletas"). Esta coleta acessa a Amazon de verdade: nunca rode em teste. Duas rodadas da Amazon ao mesmo tempo não são aceitas: a segunda sai com **4** (a trava por loja, em "Operação").
 
 ## Coleta do Mercado Livre
 
@@ -229,25 +396,25 @@ await ColetaML.afiliar({servidor: 'http://localhost:8765'})
 
 API (`ColetaML`):
 
-- `coletar({termos, ordem, servidor, enviar, pausa})`: busca cada termo, monta os itens e faz um POST em `<servidor>/api/items` com `cat` = aba do termo. `ordem` é `'relevancia'` (padrão) ou `'caros'` (veja "Ordens da coleta"); outra ordem é recusada antes de qualquer pedido. `servidor` padrão `http://localhost:8765`; `enviar:false` só monta os itens em `ColetaML.estado.itens`, sem gravar; `pausa` é `[min, max]` em ms entre termos. O progresso fica no `localStorage` da aba, por servidor: termo já enviado (na mesma ordem) não é coletado de novo.
+- `coletar({termos, ordem, servidor, enviar, pausa})`: busca cada termo, monta os itens e faz um POST em `<servidor>/api/items` com `cat` = aba do termo. `ordem` é `'relevancia'` (padrão), `'caros'` ou `'relampago'` (veja "Ordens da coleta"); outra ordem é recusada antes de qualquer pedido. `servidor` padrão `http://localhost:8765`; `enviar:false` só monta os itens em `ColetaML.estado.itens`, sem gravar; `pausa` é `[min, max]` em ms entre termos. O progresso fica no `localStorage` da aba, por servidor: termo já enviado (na mesma ordem) não é coletado de novo.
 - `afiliar({servidor, enviar, itens})`: troca a `url` dos itens do ML sem afiliado pelo link `https://meli.la/...` gerado no linkbuilder (PATCH). Com `enviar:false`, passe `itens: ['https://produto.mercadolivre.com.br/MLB-...']` para só ver o que trocaria.
 - `parar()`: para depois do termo (ou lote) atual. `estado`: o resultado da última execução. `BUSCAS` e `ALIAS`: cópias de `buscas.json` e do `ALIAS` do `migrar_categorias.py`. `zerar(servidor)`: esquece o progresso guardado.
 
 Cuidados:
 
 - **Passe sempre `termos`.** Sem eles, a coleta busca todos os termos de `buscas.json`.
-- Antes de `afiliar()`, confira na página do linkbuilder que a etiqueta é **`achadosmenicas`** e que **"Links curtos"** está ligado. O script recusa outra etiqueta e, se um lote inteiro vier sem `meli.la`, para: só aquele lote não é gravado (os anteriores ficam). Num lote misto, o item que volta sem `meli.la` é tentado de novo na mesma execução (repescagem em lote de até 10, no máximo 2 tentativas) e, se ainda assim não vier, fica "sem resposta" para a próxima execução; os que vieram certos são gravados.
+- Antes de `afiliar()`, confira na página do linkbuilder que a etiqueta é **`achadosmenicas`** e que **"Link curto"** está ligado. O script recusa outra etiqueta e, se um lote inteiro vier sem `meli.la`, para: só aquele lote não é gravado (os anteriores ficam). Num lote misto, o item que volta sem `meli.la` é tentado de novo na mesma execução (repescagem em lote de até 10, no máximo 2 tentativas) e, se ainda assim não vier, fica "sem resposta" para a próxima execução; os que vieram certos são gravados.
 - **Itens inelegíveis** (o ML não gera link de afiliado) aparecem no console no fim do `afiliar()`. O script nunca apaga nada: exclua-os pelo site. Enquanto `GET /api/ml-sem-afiliado` não for `[]`, há itens com link comum: rode `afiliar()` de novo.
-- Depois de `afiliar()`, olhe `ColetaML.estado.divergencias` (link já `meli.la` no banco que não bate com o gerado agora) e `ColetaML.estado.naoMeliLa` (link que veio sem ser `meli.la`; sintoma de "Links curtos" desligado). O que aparecer aí é para conferir à mão.
+- Depois de `afiliar()`, olhe `ColetaML.estado.divergencias` (link já `meli.la` no banco que não bate com o gerado agora) e `ColetaML.estado.naoMeliLa` (link que veio sem ser `meli.la`; sintoma de "Link curto" desligado). O que aparecer aí é para conferir à mão.
 - `zerar()` precisa rodar **nas duas abas**: o progresso da coleta fica na aba `lista.` e o dos inelegíveis na aba `www.`.
-- Captcha ou "sem polycard": a coleta para sem gravar o termo. Resolva na aba e rode de novo.
+- Captcha ou "sem polycard": a coleta para sem gravar o termo. Resolva na aba e rode de novo. Já a busca que o ML responde "Não encontramos resultados" (sem produto nenhum) não para a coleta: o termo vai para `ColetaML.estado.semResultado`, não entra no progresso e a rodada segue para o próximo. Se todos os termos buscados na rodada (2 ou mais, fora os pulados pelo progresso) vierem sem resultado, o console dá um aviso `[ColetaML] nenhum termo trouxe resultado: ...` (o filtro ou a ordem pode ter saído do ML); vale para `coletar()` e `atualizar()`.
 - Contrato com o servidor: só JSON, só as origens `https://lista.mercadolivre.com.br` e `https://www.mercadolivre.com.br`, e nenhum DELETE.
 - **Piso:** `coletar()` só envia o card com nota 4,5 ou mais e "Mais de 50 produtos vendidos" (ou mais) e recusa usado (veja "Piso de qualidade das coletas"). O que ficou de fora aparece em `ColetaML.estado.foraDoPiso` (e `usados`); o termo sem nenhum item no piso não entra no progresso.
 - **Plano B:** se o Chrome continuar bloqueando o "Acesso à rede local" (as chamadas ao `localhost` ficam presas mesmo com a permissão dada), **o Mercado Livre fica para depois**: a Amazon e a Shopee seguem sem ele, e a meta de itens do ML vira risco aceito. Não há caminho alternativo recomendado (uma ponte manual também precisaria do mesmo acesso no `afiliar()`).
 
 ## API oficial do Mercado Livre
 
-O `ml_api.py` (só biblioteca padrão) fala com a API oficial do ML pelo app **Etiqueta** do DevCenter (Client ID `3553760734310605`), com OAuth 2.0 e PKCE, **só para leitura**. Hoje ele só autoriza, confere e testa o acesso (`autorizar`, `conferir`, `sondar` e `sair`). A atualização de preços e a coleta pela API só entram depois que o `sondar` mostrar o que a API libera para afiliado (portão G1 do plano `docs/produto/planos/api-oficial-ml.md`). Até lá, o ML continua no console (seção acima), e o link `meli.la` continua vindo só do `ColetaML.afiliar()`.
+O `ml_api.py` (só biblioteca padrão) fala com a API oficial do ML pelo app **Etiqueta** do DevCenter (Client ID `3553760734310605`), com OAuth 2.0 e PKCE, **só para leitura**. Ele autoriza, confere e testa o acesso (`autorizar`, `conferir`, `sondar` e `sair`). A sonda mostrou que a API de afiliado só libera o catálogo (`/products/*`): em cima disso, o `atualizar_precos.py ml` atualiza o **preço** dos anúncios que já estão no banco (veja "Mercado Livre pela API (catálogo)" em "Atualizar os preços"). A coleta de itens novos e a busca por termo continuam no console (seção acima), e o link `meli.la` continua vindo só do `ColetaML.afiliar()`.
 
 **Etapa 0 (uma vez, antes do primeiro `autorizar`):**
 
@@ -272,10 +439,12 @@ O comando só aceita o endereço da página de retorno (`https://desejodemenina.
 ```
 python3 ml_api.py conferir
 read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py sondar; unset S
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 ml_api.py sondar --catalogo --amostra 50; unset S
 ```
 
 - `conferir` chama `GET /users/me` e mostra só "OK" e os escopos. Se aparecer `write`, ele avisa: deixe o app em somente leitura e rode o `autorizar` de novo.
 - `sondar` testa os endpoints candidatos (F0 a F6 do plano): `/users/me`, a busca `/sites/MLB/search`, `/products/search` e `/products/{id}/items`, `/items/bulk` (com e sem `attributes`), `/items/{id}` e `/reviews/item/{id}`. Ele usa o termo fixo "perfume" e 3 ids `MLB` lidos do banco (`ACHADINHOS_DB`, só leitura; sem banco, pula os endpoints de item). Para cada um, imprime só o status, o código de erro e os **nomes** de campo de uma lista fixa (`price`, `original_price`, `sold_quantity`, `condition`, `status`, `rating_average`, `catalog_product_id`, `thumbnail`), nunca os valores. Mande a saída ao lead: é ela que decide o G1. Um 403 num endpoint é resposta, não falha (a saída continua 0).
+- `sondar --catalogo [--amostra N] [--semente S]` mede o catálogo com uma amostra de itens do ML sorteada do banco (`--amostra` de 1 a 100, padrão 50; a mesma `--semente` dá a mesma amostra, padrão 20261105). Para cada item busca candidatos a produto de catálogo pelo título e confere se o anúncio **pertence** ao produto. Imprime só contagens, nomes de campo e ids de anúncio, nunca título nem preço. Para no teto de 500 chamadas, com pausa de 0,3 a 0,8 s entre elas (a de 241 chamadas levou cerca de 4 min). **Não grava nada**: nem vínculo, nem banco. Serve para ver quanto da sua base o catálogo cobre antes de rodar o `atualizar_precos.py ml`.
 - O access_token vale 6 horas. Enquanto vale, `conferir` e `sondar` rodam sem o Secret. Quando faltam menos de 5 minutos, o comando renova sozinho, e aí **precisa** do Secret: sem ele, sai com 2 e mostra o prefixo `read -rs S; ...` do próprio comando. Por isso o `sondar` acima já vai com o prefixo.
 
 **Sair:**
@@ -290,7 +459,8 @@ Apaga o arquivo de tokens deste computador. Para cortar o acesso também do lado
 
 - `ACHADINHOS_ML_SECRET`: o Secret do app. Só no ambiente do comando, com o prefixo `read -rs S; ...; unset S`, nunca com `export`. O script o tira do próprio ambiente assim que o lê, e ele vai só no corpo do pedido de token ao host fixo `api.mercadolibre.com`.
 - `ACHADINHOS_ML_TOKENS`: arquivo dos tokens (padrão `ml_tokens.json` ao lado do `ml_api.py`).
-- `ACHADINHOS_DB`: o banco de onde o `sondar` lê os 3 ids, como no `servidor.py`.
+- `ACHADINHOS_DB`: o banco de onde o `sondar` lê os 3 ids (e a amostra do `--catalogo`), como no `servidor.py`.
+- `ACHADINHOS_ML_CATALOGO`: arquivo dos vínculos anúncio → produto de catálogo (padrão `ml_catalogo.json` ao lado do `ml_api.py`; veja "Mercado Livre pela API (catálogo)"). Não é segredo.
 
 Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O `servidor.py` não lê `ACHADINHOS_ML_SECRET`, `ACHADINHOS_ML_TOKENS` nem o arquivo de tokens.
 
@@ -302,7 +472,7 @@ Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O
 |---|---|---|
 | 0 | tudo certo | nada |
 | 1 | a API recusou (a mensagem traz só o status HTTP e o código do ML), resposta fora do formato, falha de rede, endereço colado errado ou autorização negada (`error=`) | rede ou endereço: rode de novo; recusa da API: mande o status e o código ao lead |
-| 2 | sem tokens ou autorização vencida ("rode `ml_api.py autorizar`"), renovação que voltou fora do formato ou sem `refresh_token` (confira o fluxo "Refresh Token" do app no DevCenter), Secret ausente ou recusado, permissão funcional que falta no DevCenter (403 `PolicyAgent`) ou arquivo de tokens recusado | siga a mensagem: rode o `autorizar`, passe o Secret com o prefixo, ative "Publicação e sincronização" em somente leitura ou corrija o arquivo (`chmod 600`) |
+| 2 | sem tokens ou autorização vencida ("rode `ml_api.py autorizar`"), renovação que voltou fora do formato ou sem `refresh_token` (confira o fluxo "Refresh Token" do app no DevCenter), renovação recusada pelo ML com erro 5xx (os tokens não mudam), Secret ausente ou recusado, permissão funcional que falta no DevCenter (403 `PolicyAgent`) ou arquivo de tokens recusado | siga a mensagem: rode o `autorizar`, passe o Secret com o prefixo, ative "Publicação e sincronização" em somente leitura ou corrija o arquivo (`chmod 600`); na renovação com 5xx, espere alguns minutos e rode de novo (se repetir, `autorizar`) |
 | 3 | limite de requisições da API (429 depois de 3 tentativas com espera crescente) | espere de 15 a 30 min e rode de novo |
 | 130 | interrompido com Ctrl+C | o arquivo de tokens nunca fica pela metade; rode o comando de novo |
 
@@ -317,7 +487,7 @@ Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O
 
 ## Ordens da coleta
 
-Além da relevância (o padrão, igual ao de sempre), dá para coletar os mais vendidos, os mais bem avaliados e os mais caros. O campo `busca` do item continua sendo o termo, e a ordem não é gravada. Item que já existe é atualizado, não duplicado.
+Além da relevância (o padrão na Amazon e no ML; na Shopee o padrão é `vendidos`), dá para coletar os mais vendidos, os mais bem avaliados e os mais caros. O campo `busca` do item continua sendo o termo, e a ordem não é gravada. Item que já existe é atualizado, não duplicado.
 
 **Amazon:**
 
@@ -335,11 +505,12 @@ python3 coletar_amazon.py buscas --cat "Perfumes e Perfumaria" --ordens vendidos
 await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})
 ```
 
-- O ML só oferece relevância, menor preço e maior preço na listagem. Por isso `ordem` aceita só `'relevancia'` (padrão) e `'caros'` (maior preço). Não existe "mais vendidos" nem "mais avaliados" aqui.
+- O ML só oferece relevância, menor preço e maior preço na listagem. Por isso, para ordenar, `ordem` tem só `'relevancia'` (padrão) e `'caros'` (maior preço). Não existe "mais vendidos" nem "mais avaliados" aqui.
+- **Ofertas (11/2026):** `ordem: 'relampago'` busca o termo só entre os itens do filtro "Oferta relâmpago" da listagem (o sufixo `_NoIndex_True_promotion*type_lightning`). O piso de qualidade é o mesmo. O filtro "Oferta do dia" saiu da busca do ML em 15/11/2026 (a página volta sem resultado), então `ordem: 'ofertadodia'` não existe mais e é recusada. O progresso guarda `relampago|<termo>`: como essas ofertas trocam ao longo do dia, para buscar de novo o mesmo termo rode `ColetaML.zerar()` na aba da lista (ele esquece também o progresso das outras ordens e o do dia do `atualizar()`, e a relevância volta a buscar todos os termos; para outro servidor, passe o endereço: `ColetaML.zerar('http://localhost:8766')`). Termo sem nenhuma oferta no filtro vem como "Não encontramos resultados" (a página "zrp" do ML, sem card): o termo vai para `ColetaML.estado.semResultado` (no `coletar()` e no `atualizar()`), o log diz `a busca não trouxe resultado no ML`, nada é enviado, o termo não entra no progresso (roda de novo na próxima rodada) e a coleta segue para o próximo termo. Página sem card e sem esse marcador (captcha, mudança de formato) continua parando com o aviso de "sem polycard".
 - Progresso no `localStorage` da aba: a relevância guarda o termo puro (o mesmo de antes) e `caros` guarda `caros|<termo>`. Cada ordem coleta uma vez por termo.
 - "Mais caros" traz lote, atacado e contratipo com frequência. Exclua o que não serve pelo site.
 
-**Shopee:** as ordens são `relevancia`, `vendidos` e `caros` (veja a seção seguinte).
+**Shopee:** as ordens são `relevancia`, `vendidos` e `caros`; o padrão é `vendidos` (veja a seção seguinte).
 
 ## Coleta da Shopee
 
@@ -363,17 +534,18 @@ Nesse terminal, **nunca rode `set` ou `declare -p` antes do `unset S`** (eles mo
 
 ```
 python3 coletar_shopee.py conferir
-python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens relevancia,vendidos,caros]
+python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens vendidos,relevancia,caros]
 ```
 
 Cada um roda com o prefixo do passo 3, por exemplo:
 
 ```
-read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" --ordens relevancia,vendidos,caros; unset S
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria"; unset S
 ```
 
 - `conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono: o destino do link curto precisa trazer `utm_source=an_<ID_AFILIADO_SHOPEE>`. Rode antes da primeira coleta.
-- `buscas --cat ABA` coleta os termos da aba, uma vez por ordem (padrão `relevancia`). Antes de gravar o primeiro termo, faz a mesma conferência do dono; se ela falhar, não grava nada.
+- `buscas --cat ABA` coleta os termos da aba, uma vez por ordem (padrão `vendidos`; `--ordens` aceita também `relevancia` e `caros`). Antes de gravar o primeiro termo, faz a mesma conferência do dono; se ela falhar, não grava nada.
+- **Por que `vendidos` é o padrão (18/11/2026):** na `relevancia` a busca devolve anúncios novos (0 a 3 vendas), todos abaixo do piso: com as credenciais do dono, "perfume" trouxe 30 nós e nenhum passou; em `vendidos`, 25 de 30. O `conferir` também busca em `vendidos` (antes saía com 1 por esse motivo). O progresso é guardado por ordem (`vendidos|<termo>`): **a primeira rodada em `vendidos` refaz os termos que já estavam feitos em `relevancia`**; `--ordens relevancia` continua valendo e usa o progresso antigo.
 - Só entra item com link `https://s.shopee.com.br/<código>` (host exato, sem query) acima do piso de qualidade (**nota 4,5 ou mais e pelo menos 50 vendas**; era 1) e cujo título não é de usado (veja "Piso de qualidade das coletas"). O resto é descartado. Link de outro host (por exemplo `shope.ee`) também é recusado.
 - Progresso em `coleta_shopee_feitos.txt` (chave `<ordem>|<termo>`; `ACHADINHOS_FEITOS_SHOPEE` troca o arquivo). Termo que não trouxe nenhum item no piso não é marcado e fica para a próxima rodada. Ctrl+C e rodar de novo retoma (saída 130).
 - Cada item grava `item_id` = `<shopId>.<itemId>`, `url` = o link de afiliado, e a foto só se for do CDN da Shopee. A API não dá o preço cheio, então não há "preço antigo". A Shopee não tem "Atualizar preço" no site: o preço é o da última coleta.
@@ -391,7 +563,7 @@ Grava os itens capturados no painel de afiliados (`affiliate.shopee.com.br`, "Ob
 - **Campos de cada nó:** `itemId`, `shopId`, `productName`, `offerLink` (`https://s.shopee.com.br/<código>`; qualquer outro link descarta o nó), `ratingStar` e `sales` (o piso) e, opcionais, `priceMin`, `priceDiscountRate` e `imageUrl` (só do CDN `down-br.img.susercontent.com`; de outro host fica sem foto). O resto é ignorado.
 - **O que ele faz:** aplica o piso (nota 4,5 e 50 vendas, sem usado), confere o dono de **cada** link distinto que passou (`utm_source=an_<ID_AFILIADO_SHOPEE>`, com uma pausa de 1 a 3 s entre um e outro) antes de gravar (se um só falhar, nada é gravado), grava pelo mesmo caminho da coleta e marca `vendidos|<termo>` em `coleta_shopee_feitos.txt`, o mesmo progresso da Open API (o painel é percorrido em "Mais vendidos"), então os dois caminhos não repetem o termo.
 - **Saída:** só contagens e motivos fixos; o conteúdo do arquivo nunca vai para a tela nem para o log. Se nenhum nó passa no piso, sai 0 e o termo **não** é marcado.
-- **Códigos de saída:** 0 (ok), 1 (dono errado em algum link, ou arquivo fora do formato ou grande demais) e 2 (aba ou termo fora do `buscas.json`, arquivo inexistente ou ilegível, argumento errado). O 3 (limite da API) não existe aqui, porque não há chamada à API.
+- **Códigos de saída:** 0 (ok), 1 (dono errado em algum link, ou arquivo fora do formato ou grande demais) e 2 (aba ou termo fora do `buscas.json`, arquivo inexistente ou ilegível, argumento errado). O 3 (limite da API) não existe aqui, porque não há chamada à API. O 4 quer dizer que outra rodada da Shopee está em andamento (a trava de "Operação"): nada foi lido nem gravado.
 - Apague o arquivo depois de importar. Esta importação não chama a Open API: só faz uma requisição a cada link curto `s.shopee.com.br` para conferir o dono (sem credencial e sem seguir redirect). Já o que a captura no painel faz (por botões do navegador) é com o dono ou com o assistente do plugin, nunca por script contra a API interna do painel.
 
 **Códigos de saída:**
@@ -402,6 +574,7 @@ Grava os itens capturados no painel de afiliados (`affiliate.shopee.com.br`, "Ob
 | 1 | erro: o link não é do dono, a API recusou ou a resposta veio fora do formato (a mensagem traz só o código da API) |
 | 2 | configuração: `ID_AFILIADO_SHOPEE` vazio ou inválido (hoje já vem preenchido), credenciais ausentes, aba sem termos ou argumento errado |
 | 3 | limite de requisições da API: o progresso está salvo, espere um pouco e rode de novo |
+| 4 | `buscas` ou `importar` com **outra rodada da Shopee em andamento** (a trava de "Operação"): nada foi gravado; espere a outra terminar. O `conferir` não trava |
 
 Os nomes dos campos e das ordens da API vêm de fontes de terceiros e ainda precisam ser conferidos na documentação do painel (a confirmar). Se o `conferir` terminar com "a API da Shopee recusou" ou "fora do formato esperado", comece por aí.
 
@@ -420,7 +593,7 @@ Os nomes dos campos e das ordens da API vêm de fontes de terceiros e ainda prec
 
 Preço velho vai para os grupos como se fosse novo. Por isso cada item guarda `preco_em`, o momento em que o preço foi confirmado pela última vez, e o disparo recusa o item cujo preço passou da validade. Plano: `docs/produto/planos/atualizar-precos.md`; spec da tela: `docs/produto/specs/atualizar-precos.md`.
 
-**Quem grava `preco_em`:** a coleta, a atualização em lote (esta seção), o `importar` da Shopee, o "Atualizar preço" do cartão da Amazon e o POST do site, sempre que a escrita traz um preço legível. Reclassificar, corrigir o público, trocar a `url` e a migração de abas **não** mexem nele.
+**Quem grava `preco_em`:** a coleta, a atualização em lote (esta seção), o `importar` da Shopee, o "Atualizar preço" do cartão da Amazon, a confirmação de preço da API v1 (o Turbo, um item da Amazon por vez) e o POST do site, sempre que a escrita traz um preço legível. Reclassificar, corrigir o público, trocar a `url` e a migração de abas **não** mexem nele.
 
 **Validade:** `config/preco_validade_horas`, um número só para o disparo, os cartões, o filtro do site e a API. Padrão 24 h, de 1 a 168; valor ausente ou inválido vale 24. Ajuste no site, no quadro "Como atualizar os preços" (botão na lista, ou o atalho `#precos`), que grava por `PUT /api/config/preco_validade_horas`.
 
@@ -445,6 +618,7 @@ python3 atualizar_precos.py amazon --cat "Pets" --produtos 50     # e, depois da
 - **Tempo (estimativa pelas pausas do código, não medida):** cada página leva de 4 a 8 s de pausa mais a rede, cerca de 9 s. Uma atualização completa lê até 282 páginas (cada par termo e ordem já coletado): cerca de **40 min**; "Perfumes e Perfumaria" sozinha, cerca de **25 min**. Cada página do `--produtos` soma cerca de 9 s.
 - **Progresso:** `atualizar_precos_feitos.txt` (já no `.gitignore`; `ACHADINHOS_FEITOS_ATUALIZAR` troca o arquivo), uma linha `<loja>|<AAAA-MM-DD>|<ordem>|<termo>` por página gravada (`produto|<ASIN>` no `--produtos`). **Vale só no dia:** Ctrl+C e rodar de novo no mesmo dia retoma de onde parou; no dia seguinte começa de novo. O banco é gravado a cada página, então o que já foi lido fica.
 - **Captcha ou bloqueio** (captcha, HTTP 503 ou 429): o comando **sai com 3**, guarda o que já fez e imprime "PAROU". Espere de 15 a 30 min e rode o **mesmo comando** de novo: ele retoma pelo progresso do dia. Para dividir o trabalho, use `--cat`. Se o captcha repetir, pare por hoje e não aumente o `--produtos`.
+- **Outra rodada da Amazon no ar:** o comando sai com **4** e a mensagem `PAROU: outra rodada de amazon está em andamento (...)`, sem abrir o banco nem o progresso (a trava por loja, em "Operação"). Espere a outra terminar.
 - **Resumo no fim** (só contagens e até 20 códigos de produto; nunca título nem link): selecionados, já confirmados hoje, atualizados, sem preço legível (os dados antigos ficam), fora do piso, usados, indisponíveis, sumidos e **não vistos**.
 
 ### Mercado Livre (console do Chrome)
@@ -457,34 +631,130 @@ await ColetaML.atualizar({cat: 'Perfumes e Perfumaria', ordem: 'caros'})    // a
 await ColetaML.atualizar({termos: ['Body splash'], enviar: false})          // só monta o lote, não grava nada
 ```
 
-- **Exige `cat` ou `termos`** (sem nenhum dos dois, recusa sem fazer nada). Com `cat`, lê os termos da aba (e os do `ALIAS` que apontam para ela); `termos` precisa estar no `buscas.json` e, se vier junto com `cat`, ser dessa aba. Só roda em `https://lista.mercadolivre.com.br`. Aceita as mesmas opções `servidor`, `enviar` e `pausa` do `coletar()`, e `ordem` (`'relevancia'` ou `'caros'`).
+- **Exige `cat` ou `termos`** (sem nenhum dos dois, recusa sem fazer nada). Com `cat`, lê os termos da aba (e os do `ALIAS` que apontam para ela); `termos` precisa estar no `buscas.json` e, se vier junto com `cat`, ser dessa aba. Só roda em `https://lista.mercadolivre.com.br`. Aceita as mesmas opções `servidor`, `enviar` e `pausa` do `coletar()`, e `ordem` (as mesmas do `coletar()`: `'relevancia'`, `'caros'` ou `'relampago'`; com a última só alcança o que está em oferta na hora).
 - **Só atualiza o que já existe:** manda `POST /api/items` com `"so_existentes": true`. O servidor não insere e preserva o `meli.la`. Lê a página inteira de cada termo (sem o corte de 30 da coleta), com o piso e a recusa de usado da coleta; o card usado, fora do piso ou sem preço legível não vai no lote.
 - **Progresso por dia**, no `localStorage` da aba, por servidor (`__atualizarML:<servidor>`, com `<AAAA-MM-DD>|<ordem>|<termo>`), separado do progresso da coleta. Rodar de novo no mesmo dia pula os termos já feitos; no dia seguinte começa de novo. `ColetaML.parar()` para depois do termo atual; `ColetaML.zerar()` também esquece o progresso do atualizar.
-- **Resultado:** o log do console traz uma linha por termo e um fim com os totais. Em `ColetaML.estado` ficam `atualizado`, `ausente` (item da página que não está no banco: nada é inserido), `foraDoPiso`, `usados` e `semPreco`.
+- **Resultado:** o log do console traz uma linha por termo e um fim com os totais. Em `ColetaML.estado` ficam `atualizado`, `ausente` (item da página que não está no banco: nada é inserido), `foraDoPiso`, `usados`, `semPreco` e `semResultado` (termos cuja busca o ML devolveu sem resultado: não entram no progresso do dia, não geram lote e a rodada segue).
 - **Tempo (não medido):** o plano contou 99 termos do ML com itens no banco (todas as abas), com pausa de 2,5 a 5 s entre um e outro mais o carregamento de cada página: pelo menos uns 6 min de pausa para tudo, e provavelmente bem mais. Por aba é proporcional aos termos dela.
-- **Captcha ou bloqueio:** se a busca de um termo vier **sem polycard** (captcha ou mudança na página do ML), a atualização **para** e não envia nada daquele termo. Resolva o captcha na aba e chame `ColetaML.atualizar(...)` de novo com as mesmas opções: ela retoma pelo progresso do dia. Se o servidor recusar ou não responder, também para, com o motivo no console.
+- **Captcha ou bloqueio:** se a busca de um termo vier **sem polycard** (captcha ou mudança na página do ML; a busca "Não encontramos resultados" não conta, ela só vai para `estado.semResultado`), a atualização **para** e não envia nada daquele termo. Resolva o captcha na aba e chame `ColetaML.atualizar(...)` de novo com as mesmas opções: ela retoma pelo progresso do dia. Se o servidor recusar ou não responder, também para, com o motivo no console.
+
+### Mercado Livre pela API (catálogo)
+
+Atualiza o **preço** dos anúncios do ML que já estão no banco pela API oficial (`ml_api.py`; para autorizar e conferir o acesso, veja "API oficial do Mercado Livre"). Plano: `docs/produto/planos/api-oficial-ml-catalogo.md`. Ela existe ao lado do console: a coleta de itens novos e o `meli.la` continuam no console, e o que a API não cobre (veja "Cobertura") segue pelo `ColetaML.atualizar` acima.
+
+**Antes do primeiro lote real:**
+
+1. Faça um backup do banco (seção "Backup": banco em WAL, **nunca `cp`**). O `operacao/atualizar-ml.sh` já o faz antes de cada rodada (`backups/auto-ml-AAAAMMDD-HHMMSS.db`); à mão, use o comando abaixo. Cada vez grava um arquivo novo e nunca sobrescreve, mas só ficam os 14 `auto-*` mais novos: se quiser guardar o de antes do primeiro lote, copie-o para um nome sem o prefixo `auto-`.
+
+   ```
+   python3 backup_banco.py --motivo ml
+   ```
+
+2. Rode uma **aba pequena** (`--cat`) e confira **5 itens** atualizados: abra a página do anúncio no ML e compare com o preço que o site mostra. Só siga para as outras abas se baterem. Para achar itens atualizados, abra a aba no site (`localhost:8765`), escolha **"Em dia (N)"** no filtro de idade do preço (o seletor que começa em "Todos os preços", ao lado dos outros filtros) e olhe os cartões do Mercado Livre (o filtro de loja "Mercado Livre" ajuda): o atualizado traz a linha **"Preço de agora há pouco"** (na primeira hora) ou **"Preço de hoje, HH:MM"** (a hora da rodada). O RESUMO do comando só lista os ids dos itens **não vistos**, então não serve para achar os atualizados.
+3. **Reverter:** pare o `servidor.py` **e o `atualizar_precos.py`** (o `--restaurar` só confere a porta do servidor, não vê o outro comando) e use `python3 migrar_categorias.py --restaurar backups/auto-ml-AAAAMMDD-HHMMSS.db` (o backup feito logo antes do lote ruim). No banco real ele pede para digitar `sim` (ou passe `--sim`), como em "Reverter" da migração das categorias. Ele devolve o banco **inteiro**: o que foi atualizado, e tudo o que mudou no site e no disparo desde o backup, se perde. Número ou grupo apagado depois do backup volta: apague de novo pela tela Disparo. O link de afiliado nunca muda, então não há o que desfazer nele. O `ml_catalogo.json` pode ficar: só tem ids.
+
+```
+read -rs S; ACHADINHOS_ML_SECRET="$S" python3 atualizar_precos.py ml --cat "Pets"; unset S
+python3 atualizar_precos.py ml --cat "Pets" --vincular 100 --max-chamadas 1500
+```
+
+- **Secret:** só é usado se o access_token precisar ser renovado (vale 6 h). Se ainda vale, basta teclar Enter no `read`, **mas só se o token durar a rodada inteira**: se ele vencer no meio, o comando sai com 2 e pede o Secret (o que já foi gravado fica). Numa rodada longa, ou se a última renovação foi há umas 5 h, informe o Secret já no começo. Use um terminal só para isso, sem `export`, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`. O segundo exemplo roda sem o Secret (o token tem de estar valendo).
+- **Opções:** `--cat ABA` (uma aba do `buscas.json`; sem ele, todas), `--vincular N` (0 a 1000, padrão 300: quantos anúncios **sem vínculo guardado** são ligados ao catálogo por rodada) e `--max-chamadas N` (1 a 10000, padrão 3000: teto de chamadas à API por rodada; a pausa entre elas é de 0,3 a 0,8 s). `python3 atualizar_precos.py ml --help` lista as três.
+- **O que muda:** só `preco`, `preco_antigo` e `desconto` (e o `preco_em`, que registra a hora). O `atualizado_em` do item também é regravado, como em qualquer atualização pelo servidor: o item reaparece no cursor da API v1 (ordem por atualização). A ordem "recentes" do disparo não muda, porque usa a data de criação do item. **Nunca insere** item e **nunca troca o `meli.la`**. Título, nota, vendas, foto, frete e cupom ficam como estão: o comando relê a linha do banco logo antes de gravar cada item, então o que você ou o console mudaram durante a rodada não é desfeito. O preço é o da **oferta do próprio anúncio** (nunca o do vencedor da página do produto). O `meli.la` continua vindo só do `ColetaML.afiliar()`.
+- **Cobertura:** só anúncio **ligado a um produto de catálogo** tem preço pela API (a busca e o `/items` estão fechados para afiliado). Na sonda real de 05/11/2026, com amostra de 50 itens, **74% (37 de 50) foram provados** num produto de catálogo, e em 12 itens comparáveis (preço do banco de até 48 h) **83% tinham preço igual** ao da API. Os outros ~26% não foram ligados a um produto de catálogo e não são atualizados por aqui (ficam "não vistos"; o `ColetaML.atualizar` do console cobre esses).
+- **Primeiro vínculo e tempos (estimativa, não medida de ponta a ponta):**
+  - Ligar um anúncio ao catálogo custa cerca de 5 chamadas por item (teto conservador: a sonda gastou 241 chamadas para 50 itens, 4,8 por item; essas 241 incluem uns 20 testes fora do vínculo, e as repetições do 429 não entram na conta, só no tempo). Com cerca de 3.800 itens do ML, são uns 18.000 chamadas **só para ligar tudo**, mais ou menos 1 s cada (a sonda levou 239 s para 241 chamadas): **perto de 5 horas só de vínculo, em cerca de 13 rodadas de `--vincular 300`**.
+  - Mas cada rodada **também lê as ofertas** dos itens ligados. Se as rodadas forem no mesmo dia, uma rodada com os padrões gasta uns 1.440 chamadas de vínculo mais de 440 a 880 de ofertas, **de 30 a 40 min**. Se forem em dias diferentes, a outra metade do teto vai para as ofertas dos que já estão ligados, e a rodada chega perto de 3.000 chamadas, **cerca de 50 min**. No total, as ~13 rodadas somam **de 7 a 11 horas**, não 5.
+  - O teto vale para vínculo e ofertas juntos. O vínculo **para de ligar itens novos ao chegar à metade do teto** (linha `[ml] vínculo parou na metade do teto; N itens ficam para a próxima rodada`) e a outra metade fica para ler as ofertas.
+  - **Recomendado: faça a primeira ligação aba por aba, ao longo de vários dias** (`--cat ABA`, uma ou duas rodadas por dia, no tempo que couber no seu dia). Em dias seguidos **é esperado parar no teto (saída 3)**; isso não é erro: rode de novo e a rodada segue de onde parou. Os vínculos já provados ficam em `ml_catalogo.json` (gravados a cada 20 vínculos novos e ao fim, também quando a rodada para) e não custam chamadas de novo; no mesmo dia, o item que já teve o preço atualizado sai da seleção. Em outro dia, o preço de todos volta a ser lido (o preço envelhece), mas o vínculo continua valendo.
+  - Depois de ligados, cada rodada gasta de 2 a 4 chamadas por produto de catálogo (o produto e até 3 páginas da lista de anúncios dele). Para uns 2.800 itens ligados, isso dá de uns 5.600 a uns 11.000 chamadas, **de 1,5 a 3 h por dia, em 2 a 4 rodadas** (o pior caso é um anúncio por produto; anúncios que dividem um produto custam uma vez só).
+- **Arquivo de vínculos:** `ml_catalogo.json` (`ACHADINHOS_ML_CATALOGO` troca o caminho), ao lado do `ml_api.py`, no `.gitignore`, modo 0600, gravado de uma vez. Guarda só ids (anúncio, produto, data e como foi provado), nenhum título nem preço. Só entra vínculo **provado** (o anúncio é o vencedor do produto ou aparece na lista de anúncios dele); título parecido não basta. O **vínculo negativo** (sem produto de catálogo) é tentado de novo depois de 7 dias, o que custa chamadas novas. O **vínculo provado não vence**: se um anúncio sai do produto, ele conta `indisponivel` em toda rodada até você apagar o arquivo, e apagar o arquivo refaz **todos** os vínculos pela API (as chamadas do primeiro vínculo de novo). A leitura é estrita: arquivo que seja link, de outro dono, aberto a grupo ou outros, com mais de 2 MB ou fora do formato é recusado (saída 2); corrija ou apague.
+- **Progresso:** `atualizar_precos_feitos.txt` ganha uma linha `ml|<data>|catalogo|<1º produto do lote>` por lote gravado, só como registro; quem decide o que falta é o `preco_em` de hoje.
+
+**Saídas:**
+
+| Código | Quando | O que fazer |
+|---|---|---|
+| 0 | a rodada terminou. **Não quer dizer que algo foi atualizado**: uma onda de erro passageiro da API termina com 0 atualizados e N não vistos | leia o RESUMO. Muitos "não vistos" por erro: rode de novo mais tarde |
+| 1 | falha de rede (um timeout derruba a rodada) ou erro inesperado (só o tipo na mensagem). Recusa da API e resposta fora do formato **de um item** não chegam aqui: viram "não visto" e a rodada termina com 0 (na renovação, saem com 2) | rede: rode de novo; erro inesperado: mande o tipo ao lead. O que já foi gravado fica |
+| 2 | sem tokens ou autorização vencida; token vencido sem o Secret; Secret ou renovação recusados; permissão do app (403 `PolicyAgent`); arquivo de tokens ou de vínculos recusado | siga a mensagem (`autorizar`, prefixo com o Secret, `chmod 600`, ou corrija/apague o arquivo de vínculos). Se a renovação for recusada **no meio da rodada**, os tokens não mudam, o que já foi gravado fica e o RESUMO não sai: corrija e rode de novo |
+| 3 | **teto de chamadas**: a mensagem `[ml] parou no teto de N chamadas (--max-chamadas); rode de novo para seguir.` e "PAROU: chegou ao teto"; ou **429** (limite da API, depois de 3 tentativas) | teto: rode de novo **sem esperar**. 429: **espere de 15 a 30 min** e rode de novo. Nos dois, o RESUMO sai e o que foi gravado fica |
+| 4 | **outra rodada do ML em andamento** (a trava por loja de "Operação"): a mensagem é `PAROU: outra rodada de ml está em andamento (...)`; sai sem abrir o banco, os tokens nem o `ml_catalogo.json` | espere a outra rodada terminar e rode de novo |
+| 130 | Ctrl+C | o que já foi gravado fica (cada item é gravado e confirmado na hora) e os vínculos novos são guardados; rode de novo |
+
+**RESUMO** (só contagens e até 20 ids; nunca título nem link). No ML:
+
+- `atualizados`: preço, preço antigo e desconto gravados.
+- `usados`: a oferta traz condição diferente de nova, ou o título é de usado.
+- `sem preço legível` (`sem_preco`): moeda que não é real ou preço inválido; os dados antigos ficam.
+- `indisponíveis`: o anúncio está vinculado, mas não está mais no produto.
+- `sumidos`: o item foi excluído do banco no meio da rodada.
+- `não vistos`: sem vínculo (o produto não existe, ou o anúncio ficou para a próxima rodada por causa do `--vincular` ou da metade do teto), erro passageiro da API ou rodada parada antes dele.
+- `fora do piso` aparece no resumo, mas o ML pela API não confere o piso e esta contagem fica em 0.
+
+Nenhum desses últimos é gravado: o preço do item **envelhece**, como em "O que acontece com o item que sumiu ou mudou".
+
+**Avisos:**
+
+- **Uma máquina por vez.** Dois `atualizar_precos.py ml` no mesmo banco não rodam juntos (o segundo sai com 4: "Trava por loja", em "Operação"), mas o `ml_catalogo.json` não tem trava própria: outra máquina, ou outro processo que o grave sem passar pela trava, pode perder vínculos do primeiro (só custa chamadas).
+- **`--max-chamadas` abaixo de 40 pode não fechar nenhum lote de ofertas.** Um lote de 20 produtos gasta de 40 a 80 chamadas, e o lote cortado pelo teto **não é gravado**; repetir o mesmo comando recomeça o mesmo lote e não avança. Regra prática: deixe `--max-chamadas` em pelo menos **10 vezes o `--vincular`** (o vínculo usa uns 5 por item e para na metade; o padrão 300 e 3000 já obedece) e nunca abaixo de 160, para sobrar ao menos um lote de 80 na outra metade. Com `--vincular 0` (só ofertas dos já ligados), o teto todo vai para as ofertas: 80 já garantem um lote.
+- **O preço da API pode diferir da vitrine** (e da página do anúncio): em 2 dos 12 itens comparados na sonda a diferença passou de 2%. Por isso a conferência de 5 itens em "Antes do primeiro lote real".
 
 ### Shopee
 
-O dono **ainda não tem a credencial da Open API da Shopee**. Até ter, a Shopee se atualiza pelo `importar` do painel, um termo por vez:
+Atualiza o **preço** dos itens da Shopee que já estão no banco pela Open API de afiliados, **um item por chamada** (`productOfferV2` com o `shopId` e o `itemId` do item, não pela busca do termo). Plano: `docs/produto/planos/atualizar-precos-shopee-por-item.md`. A coleta de itens novos (`coletar_shopee.py buscas`) e o `importar` do painel não mudam.
+
+**Pelo script:** `operacao/atualizar-shopee.sh` pede o AppID e o Secret e faz os passos abaixo na ordem (G1, teste pequeno de 10 itens, aba inteira), com backup e log (seção "Operação"). Os blocos a seguir são os mesmos passos à mão.
+
+**Antes da primeira rodada (portão G1, só o dono):** o filtro por `shopId` e `itemId` vem de fontes de terceiros, não do painel oficial. Prove-o uma vez, num terminal só para isso, sem `export` (como em "Coleta da Shopee"):
 
 ```
-python3 coletar_shopee.py importar ARQUIVO
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 coletar_shopee.py conferir --por-item; unset S
 ```
 
-Veja "Coleta da Shopee" (importar do painel) para o formato do arquivo e os cuidados. O `importar` grava `preco_em` pelo mesmo caminho da coleta, então conta como atualização; ao contrário do `atualizar_precos.py`, ele também insere item novo. Estimativa de uns 1 a 2 min por termo (não verificada).
+Ele faz o `conferir` de sempre (o link gerado é do dono) e depois consulta por item o primeiro produto válido da busca. Passa com saída 0 só se a API devolver o produto pedido, com os mesmos ids, com o que a rodada exige (link curto de afiliado, título, piso e não usado) e com preço legível. Na saída 0, a última linha mostra os ids e o preço lido (`Produto <shopId>.<itemId>: preço lido R$ 49,90. ...`): abra esse produto no site da Shopee e confira que o preço tem a mesma ordem de grandeza (não 100 vezes maior nem menor); se não bater, **pare** e leve a saída ao lead. O que fazer com a saída 1:
 
-Quando a credencial chegar, o comando de lote da Shopee já está pronto (testado só com resposta falsa). Use **um terminal só para isso** e passe as credenciais só ao comando, sem `export`, como em "Coleta da Shopee":
+- **código 10010 ou 11001:** a API recusou o argumento. Leve a saída ao lead (o ajuste é o tipo do id).
+- **"a consulta por item não devolveu o produto pedido":** **pare**. A API não filtra por item e o `atualizar_precos.py shopee` não deve rodar.
+- **"devolveu o produto pedido, mas a rodada o recusaria":** **pare** e leve a saída ao lead. O produto voltou sem link curto de afiliado, sem título, abaixo do piso ou com título de usado; numa rodada real, todo item acabaria "indisponível" ou "fora do piso" e nada seria gravado.
+- **"devolveu o produto pedido, mas sem preço legível":** **pare** e leve a saída ao lead. Numa rodada real, todo item contaria "sem preço legível" e nada seria gravado.
+
+O `conferir` sem a flag continua fazendo uma chamada só.
+
+**Depois do G1, faça um backup** (seção "Backup"; pode ser com o servidor no ar). O `operacao/atualizar-shopee.sh` já o faz antes de cada rodada; à mão, use o comando abaixo. Ele grava `backups/auto-shopee-AAAAMMDD-HHMMSS.db`, nunca sobrescreve (cada vez é um arquivo novo) e só guarda os 14 `auto-*` mais novos: se quiser manter o de antes da primeira rodada, copie-o para um nome sem o prefixo `auto-`.
 
 ```
-read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria"; unset S
+python3 backup_banco.py --motivo shopee
 ```
 
-- **`--cat` é obrigatório:** a Shopee atualiza uma aba por vez. Lê os termos da aba nas ordens que já constam em `coleta_shopee_feitos.txt` (relevância, se nenhuma).
-- **Antes de gravar o primeiro item**, confere que o link gerado é do dono (`utm_source=an_<ID_AFILIADO_SHOPEE>`); se falhar, não grava nada e sai com 1. O Secret só é lido do ambiente do comando, nunca vai para argumento, arquivo, saída ou erro. **Nunca escreva o AppID nem o Secret em arquivo, no git, na conversa ou neste README**, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`.
-- **Tempo (estimativa, não medida):** 42 termos na "Perfumes e Perfumaria", com pausa de 1 a 3 s entre as chamadas: poucos minutos por aba.
-- **Saídas:** 0 ok; 1 erro (link que não é do dono, API recusou ou resposta fora do formato); 2 configuração (credenciais ausentes, `ID_AFILIADO_SHOPEE` inválido, aba fora do `buscas.json`); **3 limite da API**: o progresso está salvo, espere de 15 a 30 min e rode o mesmo comando de novo. O progresso é o mesmo `atualizar_precos_feitos.txt` da Amazon, por loja e por dia.
-- O formato da resposta da API ainda está "a confirmar" (veja "Coleta da Shopee"): se o comando terminar com "recusou" ou "fora do formato esperado", comece por aí.
+**Primeira vez:** um lote pequeno, também sem `export`, e confira uns 5 itens atualizados no site da Shopee antes de seguir:
+
+```
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria" --max-chamadas 200; unset S
+```
+
+**Depois, a aba inteira:**
+
+```
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<seu AppID> python3 atualizar_precos.py shopee --cat "Perfumes e Perfumaria"; unset S
+```
+
+- **`--cat` é obrigatório:** a Shopee atualiza uma aba por vez. **`--max-chamadas N`** (1 a 5000, padrão 1000) é o teto de chamadas à API por rodada.
+- **Como lê:** consulta cada item da aba, do **preço mais antigo para o mais novo**, com pausa de 1 a 3 s entre as chamadas. Item cujo preço já foi confirmado hoje fica de fora. Só vale o produto devolvido com o mesmo `shopId` e `itemId` do item. O item que a API **não devolveu** desde o último preço dele (resposta vazia, só com outros produtos ou com erro naquele item) vai para o **fim da fila**, em qualquer dia: assim um item que a API não acha não trava as rodadas seguintes.
+- **O que muda:** só `preco`, `preco_antigo` e `desconto` (e o `preco_em`, que registra a hora), sobre a linha relida do banco logo antes de gravar, como no ML. Título, nota, vendas, foto e o link de afiliado ficam os do banco. **Nunca insere** item e nunca troca o link. O `preco_antigo` fica vazio: a API não dá o preço cheio. O piso (nota 4,5 e 50 vendas) e a recusa de usado continuam valendo, pelos dados que a API devolve; item sem preço legível não é gravado (mantém os dados).
+- **Antes de gravar o primeiro item**, confere que o link que a API gera é do dono (`utm_source=an_<ID_AFILIADO_SHOPEE>`); se falhar, não grava nada e sai com 1. O Secret só é lido do ambiente do comando, nunca vai para argumento, arquivo, saída ou erro. Antes de lê-lo, o comando fecha o `/proc/<pid>/environ` dele para os outros programas do seu usuário durante a rodada; se o sistema não deixar, a rodada segue com uma linha `AVISO:` (o Secret fica legível ali para outro programa seu enquanto o comando durar). **Nunca escreva o AppID nem o Secret em arquivo, no git, na conversa ou neste README**, e nunca rode `set`, `declare -p`, `env` ou `printenv` antes do `unset S`.
+- **Tempo (estimativa pelas pausas do código, não medida):** com 540 itens e pausa média de 2 s mais a rede, **~20 a 25 min para 540 itens, não medido**. O padrão de 1000 chamadas comporta a aba inteira.
+- **Progresso:** `atualizar_precos_feitos.txt`, uma linha por item consultado: `shopee|<AAAA-MM-DD>|item|<shopId>.<itemId>` quando a API devolveu o produto e `shopee|<AAAA-MM-DD>|tentado|<shopId>.<itemId>` quando não devolveu (ou errou naquele item). As duas pulam o item **no mesmo dia**: Ctrl+C e rodar de novo no mesmo dia retoma pelos itens ainda não marcados; no dia seguinte, todos voltam, com os `tentado` no fim da fila. **Não apague as linhas `tentado` de dias anteriores**: são elas que mandam esses itens para o fim (sem elas, uma rodada pode parar com "não filtrou" nos primeiros itens; rodar de novo no mesmo dia passa por eles). O limite da API e o teto não marcam o item.
+- **Saídas:** 0 ok; 1 erro (link que não é do dono, API recusou, resposta fora do formato, rede, ou **"não filtrou"**, abaixo); 2 configuração (credenciais ausentes, `ID_AFILIADO_SHOPEE` inválido, aba fora do `buscas.json`); **3 limite da API (10030 ou HTTP 429) ou teto do `--max-chamadas`**: o progresso e o que foi gravado ficam; no teto, rode de novo **sem esperar**; no limite da API, espere de 15 a 30 min e rode o mesmo comando; **4 outra rodada da Shopee em andamento** (a trava de "Operação"): nada foi gravado, espere a outra terminar.
+- **Erro da API num item:** se ele tem cara de ser só daquele produto (a API respondeu `productOfferV2: null`, ou um código de erro que não é dos gerais, com HTTP 200), o item fica `tentado` e a rodada segue. Se é geral (assinatura ou credencial, 10010, 11001, status HTTP de erro) ou a resposta vem fora do formato, o item fica `tentado` e a rodada para com 1 ("a API da Shopee recusou (código N)" ou "fora do formato esperado"); o que já foi gravado fica e a próxima rodada passa por ele.
+- **Saída 1 "não filtrou":** enquanto nenhum item casou desde o início da rodada, 5 respostas (no total, não precisam ser seguidas) que só trouxeram outros produtos, ou 20 respostas sem o produto pedido (vazias, com outros produtos ou com erro do item), param o comando com "PAROU: a API não filtrou pelo item; rode coletar_shopee.py conferir --por-item", para não gastar a cota. Só contam os itens que ainda não tinham sido tentados sem sucesso. Rode o G1 (`conferir --por-item`) e leve a saída ao lead. Os itens consultados até ali ficam `tentado`: rodar de novo no mesmo dia segue pelos outros.
+- **RESUMO** (só contagens e até 20 ids `<shopId>.<itemId>`; nunca título nem link):
+  - `atualizados`: preço, preço antigo e desconto gravados.
+  - `indisponíveis`: a API respondeu sem nenhum produto para aquele item (pode ter saído do ar), ou devolveu o produto sem título ou sem link curto de afiliado. O preço dele envelhece.
+  - `não vistos`: a resposta trouxe só outros produtos, ou a API errou só naquele item (nos dois casos ele fica `tentado`: não repete no dia e, nos dias seguintes, vai para o fim da fila), o id passa do limite do Int64 e não vai à API, ou a rodada parou (teto, limite, erro) antes dele.
+  - `fora do piso`, `usados` e `sem preço legível` não são gravados.
+- O formato da resposta da API e o nome e tipo dos argumentos ainda estão "a confirmar" (veja "Coleta da Shopee" e o G1): se o comando terminar com "recusou" ou "fora do formato esperado", comece por aí.
+- **Sem credencial**, a Shopee ainda se atualiza pelo `importar` do painel, um termo por vez (`python3 coletar_shopee.py importar ARQUIVO`; formato e cuidados em "Coleta da Shopee"). Ao contrário do `atualizar_precos.py`, ele também insere item novo. Estimativa de uns 1 a 2 min por termo (não verificada).
 
 ### O que acontece com o item que sumiu ou mudou
 
@@ -494,13 +764,15 @@ Item que sumiu da busca, ficou indisponível, caiu do piso ou virou usado **não
 
 - **No site:** o cartão mostra a idade ("Preço de hoje, 14:20", "Preço de 03/11 (há 2 dias)") e o selo "Desatualizado" quando passou da validade. A lista tem uma faixa com a contagem da aba, o filtro de preço (Todos, Desatualizados, Em dia) e a ordem "Preço mais antigo primeiro". O "Atualizar preço" do cartão da Amazon também renova a idade. O site **não busca preços sozinho**: o quadro "Como atualizar os preços" só mostra o comando de cada loja, as contagens e o campo da validade.
 - **No disparo:** a regra não cria mensagem (nem mostra na prévia) para item com `preco_em` nulo, ilegível ou mais velho que a validade. Quando um horário fica sem mensagem só por isso, a regra grava o aviso "Nenhuma mensagem saiu: os itens que casam com esta regra têm preço de mais de N h. Atualize os preços." A prévia com informações traz a contagem `preco_velho`.
-- **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). O filtro opcional `preco_max_horas` (1 a 168) só devolve ofertas com preço dessa idade ou mais novo; sem ele a resposta é a de sempre, mais o campo. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
+- **Na confirmação de preço da API v1** (`POST /api/v1/amazon/<ASIN>/confirmar-preco`, desde 11/11/2026): cada `confirmado` renova o `preco_em` daquele item da Amazon, como o "Atualizar preço" do site. Veja "Confirmar o preço de uma oferta da Amazon".
+- **Na API v1:** cada oferta traz `preco_em` (texto ou `null`). Desde 08/11/2026, sem o filtro `preco_max_horas` a API aplica a mesma validade do disparo (`config/preco_validade_horas`): oferta com preço vencido, sem data ou com data no futuro não sai, então o Turbo não recebe preço velho. Com o filtro (1 a 168), vale a idade pedida, mesmo maior que a validade. O `/api/v1/categorias` continua contando todas. Veja [`docs/produto/referencias/api-ofertas.md`](docs/produto/referencias/api-ofertas.md).
 
 ### Reverter
 
 - **Um lote ruim:** pare o `servidor.py` e use o backup de antes dele (`python3 migrar_categorias.py --restaurar backups/<arquivo>.db`; ele devolve o banco **inteiro**, então números, regras, envios e correções feitos depois do backup somem; o estado de antes fica em `backups/`).
 - **A migração v3:** voltar o código é seguro; a coluna `preco_em` fica sem efeito.
-- **O progresso do dia:** para repetir uma página, apague a linha dela em `atualizar_precos_feitos.txt` (Amazon e Shopee) ou use `ColetaML.zerar()` (ML).
+- **O progresso do dia:** para repetir uma página (ou, na Shopee, um item `item|<id>` ou `tentado|<id>` de hoje), apague a linha dela em `atualizar_precos_feitos.txt` (Amazon e Shopee) ou use `ColetaML.zerar()` (ML). Na Shopee, apagar um `tentado` de outro dia só tira o item do fim da fila.
+- **Shopee por item:** pare o `servidor.py` **e o `atualizar_precos.py`** e use o `backups/auto-shopee-*` feito antes da rodada que você quer desfazer (o nome traz a data e a hora; `python3 migrar_categorias.py --restaurar backups/auto-shopee-AAAAMMDD-HHMMSS.db`; devolve o banco **inteiro**, como acima; mais em "Backup"). Sem migração de esquema, voltar o código basta para parar novas gravações; o link de afiliado nunca muda.
 
 ## Plugin do Chrome
 
@@ -538,8 +810,8 @@ Gerar links de verdade também os adiciona a "Minhas recomendações" da conta d
 **Perfumaria nas três lojas** (42 termos em `buscas.json`; plano `docs/produto/planos/perfumaria-tres-lojas.md`). Sempre com backup antes e, em cada loja, primeiro na cópia (8766):
 
 1. Amazon: `python3 coletar_amazon.py buscas --cat "Perfumes e Perfumaria"` (só os termos novos) e depois `--ordens vendidos,avaliados,caros`.
-2. ML, pelo plugin: `coletar({termos: <os termos novos>})`, depois `coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})` e `afiliar()` (confira antes a etiqueta `achadosmenicas` e "Links curtos").
-3. Shopee: `conferir` e depois `buscas --cat "Perfumes e Perfumaria" --ordens relevancia,vendidos,caros` (seção "Coleta da Shopee").
+2. ML, pelo plugin: `coletar({termos: <os termos novos>})`, depois `coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})` e `afiliar()` (confira antes a etiqueta `achadosmenicas` e "Link curto").
+3. Shopee: `conferir` e depois `buscas --cat "Perfumes e Perfumaria"` (só `vendidos`, o padrão; seção "Coleta da Shopee").
 4. Conferência: `curl -s localhost:8765/api/ml-sem-afiliado` devolve `[]` e todo item da Shopee tem link `https://s.shopee.com.br/...`.
 
 ## Disparo automático

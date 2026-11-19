@@ -2522,6 +2522,245 @@ class Shopee(Base):
         self.assertEqual([(e['regra_id'], e['status']) for e in self.envios()], [(r['id'], 'enviado')])
 
 
+# ================================================================ foto grande (a foto que vai ao grupo não é a miniatura)
+AMZ = 'https://m.media-amazon.com/images/I/'
+ML_CDN = 'https://http2.mlstatic.com/'
+SHP = 'https://down-br.img.susercontent.com/file/'
+# (nome, loja, entrada, saída). Mesma tabela, caso a caso, em testes/copiar-imagem.test.html (TABELA_FOTO):
+# FotoGrandeFuncao.test_tabela_igual_a_do_front confere. Na tabela, o host da URL é sempre o da loja: o front só
+# enxerga a URL e deduz a loja pelo host.
+TABELA_FOTO_GRANDE = [
+    ('Amazon UL320', 'amazon', AMZ + '41p2HTchUrL._AC_UL320_.jpg', AMZ + '41p2HTchUrL._AC_SL1000_.jpg'),
+    ('Amazon vários modificadores', 'amazon', AMZ + '71abcDEF12L._AC_SY300_SX300_QL70_ML2_.jpg',
+     AMZ + '71abcDEF12L._AC_SL1000_.jpg'),
+    ('Amazon com + e - no id', 'amazon', AMZ + '81+abc-DEF1L._AC_UL320_.jpg', AMZ + '81+abc-DEF1L._AC_SL1000_.jpg'),
+    ('Amazon png', 'amazon', AMZ + '51xyz._AC_UL320_.png', AMZ + '51xyz._AC_SL1000_.png'),
+    ('Amazon webp', 'amazon', AMZ + '51xyz._AC_UL320_.webp', AMZ + '51xyz._AC_SL1000_.webp'),
+    ('Amazon jpeg', 'amazon', AMZ + '51xyz._AC_UL320_.jpeg', AMZ + '51xyz._AC_SL1000_.jpeg'),
+    ('Amazon extensão em maiúsculas', 'amazon', AMZ + '51xyz._AC_UL320_.JPG', AMZ + '51xyz._AC_SL1000_.JPG'),
+    ('Amazon já em SL1000', 'amazon', AMZ + '41p2HTchUrL._AC_SL1000_.jpg', AMZ + '41p2HTchUrL._AC_SL1000_.jpg'),
+    ('Amazon sem modificador', 'amazon', AMZ + 'abc.jpg', AMZ + 'abc.jpg'),
+    ('Amazon extensão que não é foto da tabela', 'amazon', AMZ + 'abc._AC_UL320_.gif', AMZ + 'abc._AC_UL320_.gif'),
+    ('Amazon com query', 'amazon', AMZ + 'abc._AC_UL320_.jpg?x=1', AMZ + 'abc._AC_UL320_.jpg?x=1'),
+    ('Amazon com fragmento', 'amazon', AMZ + 'abc._AC_UL320_.jpg#f', AMZ + 'abc._AC_UL320_.jpg#f'),
+    ('Amazon com query que termina no padrão', 'amazon', AMZ + 'a._AC_UL320_.jpg?x=._b_.jpg',
+     AMZ + 'a._AC_UL320_.jpg?x=._b_.jpg'),
+    ('Amazon sem TLS', 'amazon', 'http://m.media-amazon.com/images/I/abc._AC_UL320_.jpg',
+     'http://m.media-amazon.com/images/I/abc._AC_UL320_.jpg'),
+    ('Amazon com usuário', 'amazon', 'https://u@m.media-amazon.com/images/I/abc._AC_UL320_.jpg',
+     'https://u@m.media-amazon.com/images/I/abc._AC_UL320_.jpg'),
+    ('Amazon com porta', 'amazon', 'https://m.media-amazon.com:8443/images/I/abc._AC_UL320_.jpg',
+     'https://m.media-amazon.com:8443/images/I/abc._AC_UL320_.jpg'),
+    ('Amazon host parecido', 'amazon', 'https://m.media-amazon.com.evil.example/images/I/abc._AC_UL320_.jpg',
+     'https://m.media-amazon.com.evil.example/images/I/abc._AC_UL320_.jpg'),
+    ('Amazon com esquema e host em maiúsculas', 'amazon', 'HTTPS://M.MEDIA-AMAZON.COM/images/I/a._AC_UL320_.jpg',
+     'HTTPS://M.MEDIA-AMAZON.COM/images/I/a._AC_SL1000_.jpg'),
+    ('ML -E.webp', 'ml', ML_CDN + 'D_Q_NP_2X_840992-MLB95728482450_102025-E.webp',
+     ML_CDN + 'D_Q_NP_2X_840992-MLB95728482450_102025-F.jpg'),
+    ('ML -O.jpg', 'ml', ML_CDN + 'D_840992-MLB95728482450_102025-O.jpg', ML_CDN + 'D_840992-MLB95728482450_102025-F.jpg'),
+    ('ML -I.jpeg', 'ml', ML_CDN + 'D_840992-MLB1_102025-I.jpeg', ML_CDN + 'D_840992-MLB1_102025-F.jpg'),
+    ('ML -V.png', 'ml', ML_CDN + 'D_840992-MLB1_102025-V.png', ML_CDN + 'D_840992-MLB1_102025-F.jpg'),
+    ('ML -F.webp', 'ml', ML_CDN + 'D_840992-MLB1_102025-F.webp', ML_CDN + 'D_840992-MLB1_102025-F.jpg'),
+    ('ML já -F.jpg', 'ml', ML_CDN + 'D_840992-MLB1_102025-F.jpg', ML_CDN + 'D_840992-MLB1_102025-F.jpg'),
+    ('ML letra minúscula', 'ml', ML_CDN + 'D_840992-MLB1_102025-e.webp', ML_CDN + 'D_840992-MLB1_102025-e.webp'),
+    ('ML duas letras', 'ml', ML_CDN + 'D_840992-MLB1_102025-EE.webp', ML_CDN + 'D_840992-MLB1_102025-EE.webp'),
+    ('ML sem sufixo de letra', 'ml', ML_CDN + 'D_840992-MLB1.webp', ML_CDN + 'D_840992-MLB1.webp'),
+    ('ML sufixo só no meio do caminho', 'ml', ML_CDN + 'a-E.webp/b.jpg', ML_CDN + 'a-E.webp/b.jpg'),
+    ('ML gif', 'ml', ML_CDN + 'D_840992-MLB1_102025-E.gif', ML_CDN + 'D_840992-MLB1_102025-E.gif'),
+    ('ML com query', 'ml', ML_CDN + 'D_840992-MLB1_102025-E.webp?x=1', ML_CDN + 'D_840992-MLB1_102025-E.webp?x=1'),
+    ('ML com fragmento', 'ml', ML_CDN + 'D_840992-MLB1_102025-E.webp#f', ML_CDN + 'D_840992-MLB1_102025-E.webp#f'),
+    ('ML com fragmento que termina no padrão', 'ml', ML_CDN + 'D_a-E.webp#b-E.webp',
+     ML_CDN + 'D_a-E.webp#b-E.webp'),
+    ('ML sem TLS', 'ml', 'http://http2.mlstatic.com/D_840992-MLB1_102025-E.webp',
+     'http://http2.mlstatic.com/D_840992-MLB1_102025-E.webp'),
+    ('ML com porta', 'ml', 'https://http2.mlstatic.com:8443/D_840992-MLB1_102025-E.webp',
+     'https://http2.mlstatic.com:8443/D_840992-MLB1_102025-E.webp'),
+    ('ML host parecido', 'ml', 'https://http2.mlstatic.com.evil.example/D_840992-MLB1_102025-E.webp',
+     'https://http2.mlstatic.com.evil.example/D_840992-MLB1_102025-E.webp'),
+    ('ML img-not-available', 'ml', ML_CDN + 'img-not-available/x/E@2x.gif', ML_CDN + 'img-not-available/x/E@2x.gif'),
+    ('Shopee _tn', 'shopee', SHP + 'br-11134207-7r98o-m1abc_tn', SHP + 'br-11134207-7r98o-m1abc'),
+    ('Shopee sem _tn', 'shopee', SHP + 'br-11134207-7r98o-m1abc', SHP + 'br-11134207-7r98o-m1abc'),
+    ('Shopee _tn no meio do caminho', 'shopee', SHP + 'a_tn/b', SHP + 'a_tn/b'),
+    ('Shopee fim parecido com _tn', 'shopee', SHP + 'abc_tnx', SHP + 'abc_tnx'),
+    ('Shopee _tn com query', 'shopee', SHP + 'abc_tn?x=1', SHP + 'abc_tn?x=1'),
+    ('Shopee _tn com fragmento', 'shopee', SHP + 'abc_tn#f', SHP + 'abc_tn#f'),
+    ('Shopee com query que termina em _tn', 'shopee', SHP + 'a?x_tn',
+     SHP + 'a?x_tn'),
+    ('Shopee com fragmento _tn', 'shopee', SHP + 'a#_tn',
+     SHP + 'a#_tn'),
+    ('Shopee _tn sem TLS', 'shopee', 'http://down-br.img.susercontent.com/file/abc_tn',
+     'http://down-br.img.susercontent.com/file/abc_tn'),
+    ('Shopee _tn com usuário', 'shopee', 'https://u@down-br.img.susercontent.com/file/abc_tn',
+     'https://u@down-br.img.susercontent.com/file/abc_tn'),
+    ('Shopee _tn em outro CDN da Shopee', 'shopee', 'https://down-sg.img.susercontent.com/file/abc_tn',
+     'https://down-sg.img.susercontent.com/file/abc_tn'),
+    ('string vazia', 'amazon', '', ''),
+]
+FOTO_FRONT = os.path.join(RAIZ, 'testes', 'copiar-imagem.test.html')
+
+
+class FotoGrandeFuncao(unittest.TestCase):
+    """CA1: disparo.foto_grande(url, loja): função pura que troca a miniatura pela foto grande da loja."""
+
+    def setUp(self):
+        self.assertTrue(hasattr(D, 'foto_grande'), 'disparo.foto_grande não existe')
+
+    def foto_grande(self, *args):
+        return D.foto_grande(*args)
+
+    def test_tabela_de_casos(self):
+        for nome, loja, entrada, saida in TABELA_FOTO_GRANDE:
+            with self.subTest(nome):
+                self.assertEqual(self.foto_grande(entrada, loja), saida)
+
+    def test_exemplos_reais_da_amazon_e_do_ml(self):
+        self.assertEqual(self.foto_grande(AMZ + '41p2HTchUrL._AC_UL320_.jpg', 'amazon'),
+                         AMZ + '41p2HTchUrL._AC_SL1000_.jpg')
+        self.assertEqual(self.foto_grande(AMZ + '71abcDEF12L._AC_SY300_SX300_QL70_ML2_.jpg', 'amazon'),
+                         AMZ + '71abcDEF12L._AC_SL1000_.jpg')
+        self.assertEqual(self.foto_grande(ML_CDN + 'D_Q_NP_2X_840992-MLB95728482450_102025-E.webp', 'ml'),
+                         ML_CDN + 'D_Q_NP_2X_840992-MLB95728482450_102025-F.jpg')
+
+    def test_resultado_sempre_passa_em_imagem_permitida(self):
+        for nome, loja, entrada, _ in TABELA_FOTO_GRANDE:
+            if not D.imagem_permitida(entrada, loja):
+                continue
+            with self.subTest(nome):
+                self.assertTrue(D.imagem_permitida(self.foto_grande(entrada, loja), loja))
+
+    def test_foto_que_nao_passa_em_imagem_permitida_volta_como_veio(self):
+        for nome, loja, entrada, saida in TABELA_FOTO_GRANDE:
+            if D.imagem_permitida(entrada, loja):
+                continue
+            with self.subTest(nome):
+                self.assertEqual(self.foto_grande(entrada, loja), entrada)
+
+    def test_so_o_cdn_da_propria_loja_e_mexido(self):
+        fotos = {'amazon': AMZ + 'a._AC_UL320_.jpg', 'ml': ML_CDN + 'D_a-MLB1_1-E.webp', 'shopee': SHP + 'a_tn'}
+        for loja_item, url in fotos.items():
+            for loja in ('amazon', 'ml', 'shopee', 'outra', ''):
+                with self.subTest(foto=loja_item, loja=loja):
+                    mudou = self.foto_grande(url, loja) != url
+                    self.assertEqual(mudou, loja == loja_item)
+
+    def test_idempotente(self):
+        for nome, loja, entrada, _ in TABELA_FOTO_GRANDE:
+            with self.subTest(nome):
+                uma = self.foto_grande(entrada, loja)
+                self.assertEqual(self.foto_grande(uma, loja), uma)
+
+    def test_entrada_que_nao_e_string_ou_vazia_volta_como_veio_sem_excecao(self):
+        for valor in (None, 5, 1.5, True, b'https://m.media-amazon.com/a._AC_UL320_.jpg', [], {}, ''):
+            for loja in ('amazon', 'ml', 'shopee', None, 7):
+                with self.subTest(valor=valor, loja=loja):
+                    obtido = self.foto_grande(valor, loja)
+                    self.assertIs(type(obtido), type(valor))
+                    self.assertEqual(obtido, valor)
+
+    def test_url_enorme_volta_igual_e_rapido(self):
+        """S1: a regex da Amazon é quadrática; acima de 2048 caracteres a URL volta como veio, sem rodar a regex."""
+        import time
+        for loja, base, fim in (('amazon', AMZ, '._AC_UL320_.jpg'), ('ml', ML_CDN, '-E.webp'), ('shopee', SHP, '_tn')):
+            url = base + 'a' + '._' * 10000 + fim
+            with self.subTest(loja=loja):
+                inicio = time.perf_counter()
+                self.assertEqual(self.foto_grande(url, loja), url)
+                self.assertLess(time.perf_counter() - inicio, 0.2)
+        # no teto (2048) ainda converte; um caractere a mais volta como veio
+        no_teto = AMZ + 'a' * (D.TETO_URL_FOTO - len(AMZ) - len('._AC_UL320_.jpg')) + '._AC_UL320_.jpg'
+        self.assertEqual(len(no_teto), D.TETO_URL_FOTO)
+        self.assertTrue(self.foto_grande(no_teto, 'amazon').endswith('._AC_SL1000_.jpg'))
+        mais_um = no_teto.replace(AMZ, AMZ + 'a', 1)
+        self.assertEqual(self.foto_grande(mais_um, 'amazon'), mais_um)
+
+    def test_url_malformada_nao_levanta_excecao(self):
+        for url in ('https://[::1', 'https://m.media-amazon.com:abc/a._AC_UL320_.jpg', '\x00', ' ', 'não é url',
+                    'https://m.media-amazon.com/' + 'a' * 100000 + '._AC_UL320_.jpg'):
+            with self.subTest(url=url[:40]):
+                self.assertIsInstance(self.foto_grande(url, 'amazon'), str)
+
+    def test_nao_usa_a_rede(self):
+        def proibido(*a, **k):
+            raise AssertionError('foto_grande tentou usar a rede')
+        with mock.patch('socket.socket.connect', proibido), mock.patch('socket.create_connection', proibido), \
+                mock.patch('socket.getaddrinfo', proibido):
+            self.assertEqual(self.foto_grande(AMZ + 'a._AC_UL320_.jpg', 'amazon'), AMZ + 'a._AC_SL1000_.jpg')
+
+    def test_tabela_igual_a_do_front(self):
+        """Paridade: o front tem a mesma tabela (nome, loja, entrada, saída), na mesma ordem."""
+        with open(FOTO_FRONT, encoding='utf-8') as f:
+            html = f.read()
+        m = re.search(r'// TABELA_FOTO_GRANDE_INICIO\nconst TABELA_FOTO = (\[.*?\]);\n// TABELA_FOTO_GRANDE_FIM', html, re.S)
+        self.assertIsNotNone(m, 'copiar-imagem.test.html não tem a TABELA_FOTO entre os marcadores')
+        self.assertEqual([tuple(x) for x in json.loads(m.group(1))], TABELA_FOTO_GRANDE)
+
+
+class FotoGrandeNoDisparo(Base):
+    """CA3 e CA5: o envio sai com a foto grande, e o banco continua com a miniatura."""
+    LOJAS = ('amazon', 'ml', 'shopee')
+    MINI = {'amazon': AMZ + 'mini1._AC_UL320_.jpg', 'ml': ML_CDN + 'D_Q_NP_2X_840992-MLB1_102025-E.webp',
+            'shopee': SHP + 'br-11134207-7r98o-m1abc_tn'}
+    GRANDE = {'amazon': AMZ + 'mini1._AC_SL1000_.jpg', 'ml': ML_CDN + 'D_Q_NP_2X_840992-MLB1_102025-F.jpg',
+              'shopee': SHP + 'br-11134207-7r98o-m1abc'}
+
+    def setUp(self):
+        super().setUp()
+        self.nid = self.numero()['id']
+        self.pks = {}
+        for loja in self.LOJAS:
+            kw = {'url': URL_SHOPEE} if loja == 'shopee' else {}
+            self.pks[loja] = self.item(loja=loja, imagem=self.MINI[loja], **kw)
+
+    def regra_todas(self, **kw):
+        return D.criar_regra(self.con, self.dados_regra(self.nid, lojas=list(self.LOJAS), por_disparo=10, **kw))
+
+    def fotos_no_banco(self):
+        return {r['id']: r['imagem'] for r in self.con.execute('SELECT id, imagem FROM items')}
+
+    def test_previa_devolve_a_foto_grande_de_cada_loja(self):
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=list(self.LOJAS)), 10, SEGUNDA, AFILIADO)
+        self.assertEqual({x['loja']: x['imagem'] for x in p}, self.GRANDE)
+
+    def test_tick_manda_a_foto_grande_ao_transporte_e_grava_no_envio(self):
+        self.regra_todas()
+        t = Gravador()
+        self.assertEqual(self.tick(SEGUNDA.replace(hour=9), t)['criados'], 3)
+        por_pk = {pk: loja for loja, pk in self.pks.items()}
+        self.assertEqual(sorted(c[2] for c in t.chamadas), sorted(self.GRANDE.values()))
+        self.assertEqual({por_pk[e['item_pk']]: e['imagem'] for e in self.envios()}, self.GRANDE)
+
+    def test_envio_manual_na_fila_traz_a_foto_grande(self):
+        self.regra_todas()
+        self.tick(SEGUNDA.replace(hour=9))
+        self.assertEqual(sorted(f['imagem'] for f in D.listar_fila(self.con)), sorted(self.GRANDE.values()))
+
+    def test_sem_com_foto_continua_sem_foto(self):
+        self.regra_todas(com_foto=0)
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=list(self.LOJAS), com_foto=0), 10, SEGUNDA, AFILIADO)
+        self.assertEqual([x['imagem'] for x in p], [''] * 3)
+        t = Gravador()
+        self.tick(SEGUNDA.replace(hour=9), t)
+        self.assertEqual([c[2] for c in t.chamadas], [None] * 3)
+        self.assertEqual([e['imagem'] for e in self.envios()], [''] * 3)
+
+    def test_foto_nao_permitida_continua_sem_foto(self):
+        with self.con:
+            self.con.execute('UPDATE items SET imagem=? WHERE id=?', (AMZ + 'x._AC_UL320_.jpg', self.pks['ml']))
+            self.con.execute('UPDATE items SET imagem=? WHERE id=?',
+                             ('https://evil.example/x-E.webp', self.pks['shopee']))
+        p = D.previa(self.con, self.dados_regra(self.nid, lojas=list(self.LOJAS)), 10, SEGUNDA, AFILIADO)
+        self.assertEqual({x['loja']: x['imagem'] for x in p}, {'amazon': self.GRANDE['amazon'], 'ml': '', 'shopee': ''})
+
+    def test_nada_e_gravado_nos_itens(self):
+        antes = self.fotos_no_banco()
+        self.assertEqual(sorted(antes.values()), sorted(self.MINI.values()))
+        self.regra_todas()
+        D.previa(self.con, self.dados_regra(self.nid, lojas=list(self.LOJAS)), 10, SEGUNDA, AFILIADO)
+        self.tick(SEGUNDA.replace(hour=9), Gravador())
+        self.assertEqual(sorted(e['imagem'] for e in self.envios()), sorted(self.GRANDE.values()))
+        self.assertEqual(self.fotos_no_banco(), antes, 'a foto grande só vale no envio: o item guarda a miniatura')
+
+
 if __name__ == '__main__':
     logging.getLogger('disparo').setLevel(logging.INFO)
     unittest.main()

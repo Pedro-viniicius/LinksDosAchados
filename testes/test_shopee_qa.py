@@ -758,7 +758,7 @@ class TestColetaDeVerdade(ColetaBase):
         for i in self.itens():
             self.assertTrue(S.eh_link_afiliado(i['url']))
             self.assertEqual((i['loja'], i['cat'], i['busca']), ('shopee', CAT, 'Perfume feminino importado'))
-        self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado'])
+        self.assertEqual(self.feitos(), ['vendidos|Perfume feminino importado'])
 
     def test_ca7_mais_de_30_nos_ficam_em_30(self):
         nos = [no(itemId=i, offerLink=f'https://s.shopee.com.br/N{i}') for i in range(1, 80)]

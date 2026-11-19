@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3",
+            "args": ["-I", "${CLAUDE_PROJECT_DIR}/.claude/hooks/segredo_no_prompt.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
