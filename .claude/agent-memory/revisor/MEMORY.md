@@ -3,7 +3,7 @@
 - [Nomes ambíguos](nomes-ambiguos.md) — "Etiqueta" = produto, cor de acento e etiqueta de afiliado do ML; README/repo = LinksDosAchados
 - [Riscos do coletar_ml.js](padroes-coleta-ml.md) — conferência vazia, inelegível por config, toggle às cegas, pré-filtro que esvazia teste negativo (zrp), teste abaixo do limiar (aviso zrp); formatos via GET
 - [Padrões em docs e protocolos](padroes-docs.md) — simule cada passo; some todas as fases; backup antes dos comandos; na r2, grep em toda consequência nova
-- [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste
+- [Shopee e ordens das coletas](padroes-shopee-tres-lojas.md) — constantes duplicadas servidor/disparo, fatos F3-F5 pendentes, urlopen repassa Authorization em redirect; front com cópia sem teste; ORDEM_PADRAO vendidos
 - [Riscos do disparo.py](padroes-disparo.md) — pausa x template apagado, detecção de link por token (14/5.250 recusas), fuzz de paridade, mutantes
 - [API v1 de ofertas](padroes-api-v1.md) — medir no banco copiado, números do contrato; Q1 validade; freio do confirmar-preco: mutantes e estresse 30x
 - [Piso, usado e preço antigo](padroes-coletas-piso.md) — regra posta só no upsert (PATCH escapa), usado fora da Shopee (ambos corrigidos na r2), medições; guarde o diff da r1
