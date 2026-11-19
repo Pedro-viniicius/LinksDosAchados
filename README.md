@@ -487,7 +487,7 @@ Nenhuma variável troca o host da API, o Client ID nem o endereço de retorno. O
 
 ## Ordens da coleta
 
-Além da relevância (o padrão, igual ao de sempre), dá para coletar os mais vendidos, os mais bem avaliados e os mais caros. O campo `busca` do item continua sendo o termo, e a ordem não é gravada. Item que já existe é atualizado, não duplicado.
+Além da relevância (o padrão na Amazon e no ML; na Shopee o padrão é `vendidos`), dá para coletar os mais vendidos, os mais bem avaliados e os mais caros. O campo `busca` do item continua sendo o termo, e a ordem não é gravada. Item que já existe é atualizado, não duplicado.
 
 **Amazon:**
 
@@ -510,7 +510,7 @@ await ColetaML.coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem:
 - Progresso no `localStorage` da aba: a relevância guarda o termo puro (o mesmo de antes) e `caros` guarda `caros|<termo>`. Cada ordem coleta uma vez por termo.
 - "Mais caros" traz lote, atacado e contratipo com frequência. Exclua o que não serve pelo site.
 
-**Shopee:** as ordens são `relevancia`, `vendidos` e `caros` (veja a seção seguinte).
+**Shopee:** as ordens são `relevancia`, `vendidos` e `caros`; o padrão é `vendidos` (veja a seção seguinte).
 
 ## Coleta da Shopee
 

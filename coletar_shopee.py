@@ -22,7 +22,7 @@ Ambiente:
   ACHADINHOS_DB  troca o banco, como no servidor.py.
 Não há variável que troque a URL da API: o Secret assina toda requisição e só vai para o host fixo.
 
-`conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono (utm_source=an_<ID>).
+`conferir` faz uma busca em `vendidos` (ORDEM_PADRAO) e confere, sem gravar nada, que o link gerado é do dono (utm_source=an_<ID>).
 `conferir --por-item` (portão G1) faz o mesmo e, depois da conferência do dono, uma segunda chamada:
 productOfferV2(shopId, itemId) com os ids do primeiro nó válido da busca. Sai com 0 só se voltar o nó com os
 mesmos ids, que passe no no_para_item (link curto de afiliado, título, piso, não usado) e com preço legível, e então
