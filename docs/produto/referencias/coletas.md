@@ -21,7 +21,7 @@ Contrato dos módulos, movido do `CLAUDE.md` em 17/11/2026 (plano `docs/produto/
 **Regra de negócio.** Plano: `docs/produto/planos/perfumaria-tres-lojas.md`.
 
 - Coleta da Shopee pela Open API de afiliados (GraphQL assinado, host fixo, opener sem redirect).
-- Subcomandos `conferir` e `conferir --por-item` (o `--por-item` é o portão G1: depois do `conferir`, consulta por `shopId`+`itemId` o primeiro nó válido e sai com 1 se a API não devolver o produto pedido, se o `no_para_item` o recusar ou sem preço legível; com 0, imprime só os ids e o preço lido) e `buscas --cat ABA [--ordens relevancia,vendidos,caros]`; piso nota ≥ 4,5 e ≥ 50 vendas.
+- Subcomandos `conferir` e `conferir --por-item` (o `--por-item` é o portão G1: depois do `conferir`, consulta por `shopId`+`itemId` o primeiro nó válido e sai com 1 se a API não devolver o produto pedido, se o `no_para_item` o recusar ou sem preço legível; com 0, imprime só os ids e o preço lido) e `buscas --cat ABA [--ordens vendidos,relevancia,caros]` (padrão `vendidos`, constante `ORDEM_PADRAO`, também usada pelo `conferir`); piso nota ≥ 4,5 e ≥ 50 vendas.
 - Subcomando `importar ARQUIVO` (planilha do painel de afiliados, sem credencial, confere o dono de cada link antes de gravar).
 - Só grava `offerLink` `https://s.shopee.com.br/<código>`; confere o dono por `utm_source=an_<ID_AFILIADO_SHOPEE>` antes de gravar.
 - Saídas 0/1/2/3/4, 3 = limite da API, 4 = outra rodada da Shopee em andamento em `buscas`/`importar`, o `conferir` não trava.
@@ -46,4 +46,5 @@ Contrato dos módulos, movido do `CLAUDE.md` em 17/11/2026 (plano `docs/produto/
 
 ## Histórico
 
+- 18/11/2026: o `conferir` e o `buscas` da Shopee passam a buscar em `vendidos` (sortType 2) em vez de `relevancia`: na relevância a busca "perfume" devolveu 30 nós, todos abaixo do piso (o `conferir` saía com 1); em `vendidos`, 25 de 30 aproveitáveis. O progresso é por ordem: a primeira rodada em `vendidos` refaz os termos já feitos em `relevancia`.
 - 15/11/2026: a "Oferta do dia" saiu da busca do ML e a ordem `ofertadodia` foi removida do `coletar_ml.js`.

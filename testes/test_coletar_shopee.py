@@ -425,7 +425,7 @@ class TestColeta(Base):
         self.assertTrue(all(S.eh_link_afiliado(i['url']) and S.eh_link_shopee(i['url']) for i in itens))
         self.assertEqual(itens[0]['vendas'], '1.234 vendidos')
         # o terceiro termo não trouxe nada: fica para a próxima rodada
-        self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado', 'relevancia|Body splash'])
+        self.assertEqual(self.feitos(), ['vendidos|Perfume feminino importado', 'vendidos|Body splash'])
         self.assertEqual(len(self.conf.links), 1, 'a conferência é feita uma vez por execução')
         self.assertEqual(self.conf.links[0], LINK)
         self.assertIn('TOTAL da Shopee no banco: 2', out)
@@ -454,8 +454,8 @@ class TestColeta(Base):
         self.assertEqual([i['item_id'] for i in self.itens()], ['112233.2'])
         self.assertEqual(self.conf.links, ['https://s.shopee.com.br/Novo2'], 'o link do usado nem é conferido')
         # o termo só com usado não entra no piso: fica para a próxima rodada
-        self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado'])
-        self.assertIn('Body splash (relevancia): 1 achados, nenhum no piso', out)
+        self.assertEqual(self.feitos(), ['vendidos|Perfume feminino importado'])
+        self.assertIn('Body splash (vendidos): 1 achados, nenhum no piso', out)
 
     def test_so_termos_da_aba(self):
         api = ApiFalsa(resposta([no()]))
@@ -570,7 +570,7 @@ class TestLimite(Base):
         codigo, _, err = self.rodar(['buscas', '--cat', CAT], api=api)
         self.assertEqual(codigo, 3)
         self.assertIn('10030', err)
-        self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado'])
+        self.assertEqual(self.feitos(), ['vendidos|Perfume feminino importado'])
         self.assertEqual(len(self.itens()), 1)
         self.assertEqual(len(api.pedidos), 2, 'o terceiro termo não é pedido')
         # na rodada seguinte, retoma do termo que bateu no limite
@@ -587,7 +587,7 @@ class TestLimite(Base):
                 api = ApiFalsa(resposta([no()]), corpo)
                 codigo, _, err = self.rodar(['buscas', '--cat', CAT], api=api)
                 self.assertEqual(codigo, 3, err)
-                self.assertEqual(self.feitos(), ['relevancia|Perfume feminino importado'])
+                self.assertEqual(self.feitos(), ['vendidos|Perfume feminino importado'])
                 os.remove(C.FEITOS)
         e = urllib.error.HTTPError(C.URL_API, 403, 'x', http.client.HTTPMessage(),
                                    io.BytesIO(json.dumps(erro('10030')).encode()))

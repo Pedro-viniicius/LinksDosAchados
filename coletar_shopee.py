@@ -2,7 +2,7 @@
 """Coleta produtos da Shopee pela Open API de afiliados (ou de um arquivo do painel) e grava no achadinhos.db.
 
 Uso:  python3 coletar_shopee.py conferir [--por-item]
-      python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens relevancia,vendidos,caros]
+      python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens vendidos,relevancia,caros]
       python3 coletar_shopee.py importar ARQUIVO
 
 Planos: docs/produto/planos/perfumaria-tres-lojas.md, etapa E7 (CA7), e
@@ -80,6 +80,9 @@ ID_AFILIADO_SHOPEE = '18328801339'
 # ---------- formato da Open API: fontes de terceiros, tudo "a confirmar (F5)" no painel do dono ----------
 URL_API = 'https://open-api.affiliate.shopee.com.br/graphql'   # a confirmar (F5): endpoint do Brasil
 ORDENS = {'relevancia': 1, 'vendidos': 2, 'caros': 3}         # a confirmar (F5): sortType 1, 2 e 3
+# Ordem padrão do `buscas` e do `conferir`: em relevância a busca devolve anúncios novos (0 a 3 vendas), todos abaixo do
+# piso (medição de 18/11/2026: "perfume" 0 de 30 aproveitáveis em relevância, 25 de 30 em vendidos).
+ORDEM_PADRAO = 'vendidos'
 ERRO_LIMITE = 10030                                           # a confirmar (F5): código de limite de requisições
 POR_BUSCA = 30                                                # a confirmar (F5): limit máximo por página
 # a confirmar (F5): nome da consulta, dos argumentos e dos campos. O termo e a ordem vão só em "variables".
@@ -552,7 +555,7 @@ def gravar(itens):
 def conferir(cred, por_item=False):
     """Uma busca e a conferência do dono. Com por_item (portão G1), depois dela consulta por item o primeiro
     nó válido da busca: 0 só se voltar o mesmo produto com preço legível."""
-    itens = [i for i in (no_para_item(n, TERMO_CONFERENCIA, '') for n in buscar(cred, TERMO_CONFERENCIA, 'relevancia')) if i]
+    itens = [i for i in (no_para_item(n, TERMO_CONFERENCIA, '') for n in buscar(cred, TERMO_CONFERENCIA, ORDEM_PADRAO)) if i]
     if not itens:
         print(f'A busca "{TERMO_CONFERENCIA}" não trouxe link para conferir. Tente de novo mais tarde.', flush=True)
         return 1
@@ -678,7 +681,7 @@ def ler_argumentos(argv):
                    help='depois, consulta por shopId e itemId o primeiro item da busca (portão G1)')
     b = sub.add_parser('buscas', help='coleta os termos de uma aba do buscas.json')
     b.add_argument('--cat', required=True, help='aba do buscas.json')
-    b.add_argument('--ordens', default='relevancia', help='lista separada por vírgula: ' + ','.join(ORDENS))
+    b.add_argument('--ordens', default=ORDEM_PADRAO, help='lista separada por vírgula: ' + ','.join(ORDENS))
     i = sub.add_parser('importar', help='grava os itens de um arquivo capturado no painel de afiliados; sem credencial')
     i.add_argument('arquivo', help='JSON {cat, busca, nos} (formato no topo do coletar_shopee.py)')
     args = p.parse_args(argv)

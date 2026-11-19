@@ -534,17 +534,18 @@ Nesse terminal, **nunca rode `set` ou `declare -p` antes do `unset S`** (eles mo
 
 ```
 python3 coletar_shopee.py conferir
-python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens relevancia,vendidos,caros]
+python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" [--ordens vendidos,relevancia,caros]
 ```
 
 Cada um roda com o prefixo do passo 3, por exemplo:
 
 ```
-read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria" --ordens relevancia,vendidos,caros; unset S
+read -rs S; ACHADINHOS_SHOPEE_SECRET="$S" ACHADINHOS_SHOPEE_APP_ID=<id> python3 coletar_shopee.py buscas --cat "Perfumes e Perfumaria"; unset S
 ```
 
 - `conferir` faz uma busca e confere, sem gravar nada, que o link gerado é do dono: o destino do link curto precisa trazer `utm_source=an_<ID_AFILIADO_SHOPEE>`. Rode antes da primeira coleta.
-- `buscas --cat ABA` coleta os termos da aba, uma vez por ordem (padrão `relevancia`). Antes de gravar o primeiro termo, faz a mesma conferência do dono; se ela falhar, não grava nada.
+- `buscas --cat ABA` coleta os termos da aba, uma vez por ordem (padrão `vendidos`; `--ordens` aceita também `relevancia` e `caros`). Antes de gravar o primeiro termo, faz a mesma conferência do dono; se ela falhar, não grava nada.
+- **Por que `vendidos` é o padrão (18/11/2026):** na `relevancia` a busca devolve anúncios novos (0 a 3 vendas), todos abaixo do piso: com as credenciais do dono, "perfume" trouxe 30 nós e nenhum passou; em `vendidos`, 25 de 30. O `conferir` também busca em `vendidos` (antes saía com 1 por esse motivo). O progresso é guardado por ordem (`vendidos|<termo>`): **a primeira rodada em `vendidos` refaz os termos que já estavam feitos em `relevancia`**; `--ordens relevancia` continua valendo e usa o progresso antigo.
 - Só entra item com link `https://s.shopee.com.br/<código>` (host exato, sem query) acima do piso de qualidade (**nota 4,5 ou mais e pelo menos 50 vendas**; era 1) e cujo título não é de usado (veja "Piso de qualidade das coletas"). O resto é descartado. Link de outro host (por exemplo `shope.ee`) também é recusado.
 - Progresso em `coleta_shopee_feitos.txt` (chave `<ordem>|<termo>`; `ACHADINHOS_FEITOS_SHOPEE` troca o arquivo). Termo que não trouxe nenhum item no piso não é marcado e fica para a próxima rodada. Ctrl+C e rodar de novo retoma (saída 130).
 - Cada item grava `item_id` = `<shopId>.<itemId>`, `url` = o link de afiliado, e a foto só se for do CDN da Shopee. A API não dá o preço cheio, então não há "preço antigo". A Shopee não tem "Atualizar preço" no site: o preço é o da última coleta.
@@ -810,7 +811,7 @@ Gerar links de verdade também os adiciona a "Minhas recomendações" da conta d
 
 1. Amazon: `python3 coletar_amazon.py buscas --cat "Perfumes e Perfumaria"` (só os termos novos) e depois `--ordens vendidos,avaliados,caros`.
 2. ML, pelo plugin: `coletar({termos: <os termos novos>})`, depois `coletar({termos: ColetaML.BUSCAS['Perfumes e Perfumaria'], ordem: 'caros'})` e `afiliar()` (confira antes a etiqueta `achadosmenicas` e "Link curto").
-3. Shopee: `conferir` e depois `buscas --cat "Perfumes e Perfumaria" --ordens relevancia,vendidos,caros` (seção "Coleta da Shopee").
+3. Shopee: `conferir` e depois `buscas --cat "Perfumes e Perfumaria"` (só `vendidos`, o padrão; seção "Coleta da Shopee").
 4. Conferência: `curl -s localhost:8765/api/ml-sem-afiliado` devolve `[]` e todo item da Shopee tem link `https://s.shopee.com.br/...`.
 
 ## Disparo automático
